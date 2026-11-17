@@ -1,28 +1,43 @@
 import { type ChatClient, type ConversationMemory, formatCost, useChat } from "@enzo/chat";
-import { Box, type Key, Text, useApp, useInput, usePaste } from "ink";
-import { useCallback, useRef, useState } from "react";
-import { LineInput } from "./LineInput.tsx";
+import { useKeyboard } from "@opentui/react";
+import { useRef, useState } from "react";
 
 const HELP = "Commands: /brains, /brain <name|auto>, /quit";
+const DIM = "#8a8a8a";
 
-export function App({ client, memory }: { client: ChatClient; memory: ConversationMemory }) {
+export function App({
+  client,
+  memory,
+  onQuit,
+}: {
+  client: ChatClient;
+  memory: ConversationMemory;
+  onQuit: () => void;
+}) {
   const { state, send, decide, chooseBrain } = useChat(client, memory, "cli");
-  const { exit } = useApp();
-  const [text, setTextState] = useState("");
-  const textRef = useRef("");
-  const setText = useCallback((next: string) => {
-    textRef.current = next;
-    setTextState(next);
-  }, []);
   const [info, setInfo] = useState<string | null>(null);
+  // Remounting the input is how it clears after a submit (its `value` prop only seeds it).
+  const [inputKey, setInputKey] = useState(0);
   const approval = state.approvals[0];
   const typing = state.status === "ready" && !approval;
 
+  // y / n answer the approval on screen; nothing else does. Read through a ref so the handler
+  // always sees the latest state, whenever the renderer delivers the key.
+  const latest = useRef({ approval, ready: state.status === "ready", decide });
+  latest.current = { approval, ready: state.status === "ready", decide };
+  useKeyboard((key) => {
+    const now = latest.current;
+    if (!now.approval || !now.ready) return;
+    if (key.name === "y") void now.decide(now.approval.id, true);
+    if (key.name === "n") void now.decide(now.approval.id, false);
+  });
+
   const submit = (value: string) => {
-    const line = value.trim();
+    setInputKey((k) => k + 1);
     setInfo(null);
+    const line = value.trim();
     if (!line) return;
-    if (line === "/quit") return exit();
+    if (line === "/quit") return onQuit();
     if (line === "/brains") {
       return setInfo(
         state.brains
@@ -33,106 +48,66 @@ export function App({ client, memory }: { client: ChatClient; memory: Conversati
     if (line.startsWith("/brain ")) {
       const name = line.slice("/brain ".length).trim();
       const brain = name === "auto" ? null : name;
-      if (brain && !state.brains.some((b) => b.name === brain))
+      if (brain && !state.brains.some((b) => b.name === brain)) {
         return setInfo(`Unknown brain: ${brain}. ${HELP}`);
+      }
       return void chooseBrain(brain).then(() => setInfo(`Brain: ${brain ?? "auto (routing)"}`));
     }
     if (line.startsWith("/")) return setInfo(HELP);
     void send(line);
   };
 
-  // One listener for the whole app, subscribed once and reading the latest state through a ref.
-  // Toggling listeners per render drops keys typed between a render and its effect.
-  const latest = useRef({ typing, approval, ready: state.status === "ready", submit, decide });
-  latest.current = { typing, approval, ready: state.status === "ready", submit, decide };
-  const onKey = useCallback(
-    (input: string, key: Key) => {
-      const now = latest.current;
-      if (now.approval && now.ready) {
-        // y / n answer the approval on screen; nothing else does.
-        if (input === "y") void now.decide(now.approval.id, true);
-        if (input === "n") void now.decide(now.approval.id, false);
-        return;
-      }
-      if (!now.typing) return;
-      // State updaters may run twice in development; side effects stay out of them.
-      let text = textRef.current;
-      if (key.return) {
-        setText("");
-        now.submit(text);
-        return;
-      }
-      if (key.backspace || key.delete) return setText(text.slice(0, -1));
-      if (key.ctrl || key.meta || key.escape || key.tab) return;
-      // One chunk can hold several keys (fast typing, ssh, terminals without bracketed paste):
-      // handle each. After a submit Enzo is busy, so the rest of the chunk is dropped.
-      for (const ch of input) {
-        if (ch === "\r" || ch === "\n") {
-          setText("");
-          now.submit(text);
-          return;
-        }
-        if (ch >= " ") text += ch;
-      }
-      setText(text);
-    },
-    [setText],
-  );
-  const onPaste = useCallback(
-    (pasted: string) => {
-      if (latest.current.typing) setText(textRef.current + pasted.replace(/\r?\n/g, " "));
-    },
-    [setText],
-  );
-  useInput(onKey);
-  usePaste(onPaste);
-
-  if (state.status === "connecting") return <Text dimColor>Connecting to Enzo…</Text>;
-  if (state.status === "offline")
-    return <Text color="red">Gateway unreachable: {state.error}</Text>;
+  if (state.status === "connecting") return <text fg={DIM}>Connecting to Enzo…</text>;
+  if (state.status === "offline") {
+    return <text fg="red">Gateway unreachable: {state.error}</text>;
+  }
 
   return (
-    <Box flexDirection="column">
-      <Text>
-        <Text bold>Enzo</Text>
-        <Text dimColor>
+    <box flexDirection="column">
+      <text>
+        <strong>Enzo</strong>
+        <span fg={DIM}>
           {" "}
           · brain: {state.brain ?? "auto"} · {HELP}
-        </Text>
-      </Text>
+        </span>
+      </text>
       {state.items.map((item, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: the transcript only ever appends
-        <Text key={i} dimColor={item.role === "notice"}>
-          {item.role === "user" ? (
-            <Text color="cyan">you: </Text>
-          ) : item.role === "assistant" ? (
-            <Text color="green">enzo: </Text>
-          ) : null}
+        <text key={i} {...(item.role === "notice" ? { fg: DIM } : {})}>
+          {item.role === "user" ? <span fg="cyan">you: </span> : null}
+          {item.role === "assistant" ? <span fg="green">enzo: </span> : null}
           {item.text}
-        </Text>
+        </text>
       ))}
-      {state.draft && (
-        <Text>
-          <Text color="green">enzo: </Text>
+      {state.draft ? (
+        <text>
+          <span fg="green">enzo: </span>
           {state.draft}
-        </Text>
-      )}
-      {state.working > 0 && <Text dimColor>Working…</Text>}
-      {approval && (
-        <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
-          <Text bold>Approve this action? (y / n)</Text>
-          <Text>
+        </text>
+      ) : null}
+      {state.working > 0 ? <text fg={DIM}>Working…</text> : null}
+      {approval ? (
+        <box
+          border
+          borderColor="yellow"
+          title="Approve this action? (y / n)"
+          flexDirection="column"
+        >
+          <text>
             {approval.tool} with exactly: {JSON.stringify(approval.arguments, null, 2)}
-          </Text>
-        </Box>
-      )}
-      {state.error && <Text color="red">{state.error}</Text>}
-      {info && <Text color="yellow">{info}</Text>}
-      <LineInput
-        value={text}
-        placeholder={state.status === "streaming" ? "Enzo is working…" : "Message Enzo"}
-      />
-      {state.lastCost !== undefined && <Text dimColor>{formatCost(state.lastCost)}</Text>}
-    </Box>
+          </text>
+        </box>
+      ) : null}
+      {state.error ? <text fg="red">{state.error}</text> : null}
+      {info ? <text fg="yellow">{info}</text> : null}
+      <box
+        border
+        title={state.status === "streaming" ? "Enzo is working…" : "Message Enzo"}
+        height={3}
+      >
+        <input key={inputKey} focused={typing} placeholder="Type a message" onSubmit={submit} />
+      </box>
+      {state.lastCost !== undefined ? <text fg={DIM}>{formatCost(state.lastCost)}</text> : null}
+    </box>
   );
 }
