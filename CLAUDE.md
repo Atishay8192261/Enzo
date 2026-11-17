@@ -104,6 +104,12 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
   that break replay, and an "incomplete" (max tokens) stop raises. Read raw events (ADR 0002 #9).
 - `curl` reaches `developers.openai.com`, `WebFetch` does not (different network path): fetch docs with
   `curl` (`/llms.txt` lists Markdown pages).
+- FastAPI's 422 errors echo the submitted value (`input`): the gateway's handler drops it, so a bad
+  request never sends a key back.
+- Anthropic SDK 2.9 sends API keys as `Authorization: Bearer`, not `x-api-key` (check the installed source).
+- Cloud sessions: the proxy blocks api.x.ai, api.moonshot.ai and api.openai.com (403). Key checks there
+  report "could not check", which is correct; live tests need those hosts allowed.
+- Secrets: `enzo.accounts` vault (keychain or AES-GCM file with `ENZO_VAULT_KEY`), never plaintext (ADR 0009).
 
 ## Brain providers and auth (verified 2026-11-17, details in ADR 0001)
 
@@ -131,6 +137,12 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
 - [x] Gateway: conversations, SSE turns, approvals, brain choice, auth (`enzo.gateway`, `enzo.agent.service`, ADR 0006)
 - [x] Web chat: streaming, approval cards with exact arguments, brain picker, history (`clients/web`)
 - [x] Terminal chat (`clients/cli`, OpenTUI on Bun), sharing chat state with web via `@enzo/chat`
+- [ ] Bring your own account (decision 2026-11-17):
+  1. [x] Server: vault, connections index, live key check, `/connections` endpoints (ADR 0009,
+     `docs/ops/provider-accounts.md`)
+  2. [ ] Clients: SDK + `/login`, `/logout`, `/connections` in terminal and web
+  3. [ ] Model catalog tiers (fast / balanced / powerful), `/models`, `/model`, provider-neutral routing
+  4. [ ] Sign in with ChatGPT (`enzo login chatgpt`, runs on the user's machine)
 - [ ] Release automation (release PRs, CHANGELOG, tags)
 - [ ] GitHub connector: issue #2
 - Then continue in the order of the spec §17 checklist.
