@@ -1,9 +1,28 @@
+import { type ChatClient, type ConversationMemory, formatCost, useChat } from "@enzo/chat";
 import { type FormEvent, useState } from "react";
-import { type ChatClient, formatCost } from "./chat.ts";
-import { useChat } from "./useChat.ts";
+
+const KEY = "enzo.conversation";
+
+/** Browser storage can throw (private mode, blocked site data): never fatal. */
+const browserMemory: ConversationMemory = {
+  get() {
+    try {
+      return localStorage.getItem(KEY);
+    } catch {
+      return null;
+    }
+  },
+  set(id) {
+    try {
+      localStorage.setItem(KEY, id);
+    } catch {
+      // the next visit starts a new conversation
+    }
+  },
+};
 
 export function App({ client }: { client: ChatClient }) {
-  const { state, send, decide, chooseBrain } = useChat(client);
+  const { state, send, decide, chooseBrain } = useChat(client, browserMemory, "web");
   const [text, setText] = useState("");
   const busy = state.status !== "ready";
 

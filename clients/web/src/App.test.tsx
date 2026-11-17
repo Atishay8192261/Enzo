@@ -1,9 +1,9 @@
+import type { ChatClient } from "@enzo/chat";
 import type { AgentEvent, Brain, Conversation, StoredMessage } from "@enzo/sdk";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App.tsx";
-import type { ChatClient } from "./chat.ts";
 
 afterEach(() => {
   cleanup();

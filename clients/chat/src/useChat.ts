@@ -10,22 +10,10 @@ import {
   toItems,
 } from "./chat.ts";
 
-const KEY = "enzo.conversation";
-
-function remembered(): string | null {
-  try {
-    return localStorage.getItem(KEY);
-  } catch {
-    return null; // private mode or blocked storage: start fresh
-  }
-}
-
-function remember(id: string): void {
-  try {
-    localStorage.setItem(KEY, id);
-  } catch {
-    // not fatal: the next visit starts a new conversation
-  }
+/** Where a surface keeps the current conversation id (browser storage, a config file, ...). */
+export interface ConversationMemory {
+  get(): string | null;
+  set(id: string): void;
 }
 
 interface Connection {
@@ -41,24 +29,24 @@ interface Connection {
  */
 const connections = new WeakMap<ChatClient, Promise<Connection>>();
 
-function connect(client: ChatClient): Promise<Connection> {
+function connect(client: ChatClient, memory: ConversationMemory): Promise<Connection> {
   let attempt = connections.get(client);
   if (!attempt) {
-    attempt = open(client);
+    attempt = open(client, memory);
     connections.set(client, attempt);
     attempt.catch(() => connections.delete(client)); // allow a retry after a failure
   }
   return attempt;
 }
 
-async function open(client: ChatClient): Promise<Connection> {
+async function open(client: ChatClient, memory: ConversationMemory): Promise<Connection> {
   await client.health();
   const brains = await client.brains();
-  const saved = remembered();
+  const saved = memory.get();
   let conversation = saved ? await client.conversation(saved).catch(() => null) : null;
   if (!conversation) {
     conversation = await client.createConversation("main");
-    remember(conversation.id);
+    memory.set(conversation.id);
   }
   const items = toItems(await client.messages(conversation.id));
   return { conversationId: conversation.id, brains, brain: conversation.brain, items };
@@ -73,12 +61,12 @@ async function pump(
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-export function useChat(client: ChatClient) {
+export function useChat(client: ChatClient, memory: ConversationMemory, device: string) {
   const [state, dispatch] = useReducer(reduce, initialState);
 
   useEffect(() => {
     let cancelled = false;
-    connect(client).then(
+    connect(client, memory).then(
       (c) => {
         if (!cancelled) dispatch({ type: "connected", ...c });
       },
@@ -89,7 +77,7 @@ export function useChat(client: ChatClient) {
     return () => {
       cancelled = true;
     };
-  }, [client]);
+  }, [client, memory]);
 
   const send = useCallback(
     async (text: string) => {
@@ -97,11 +85,11 @@ export function useChat(client: ChatClient) {
       if (!id || !text.trim()) return;
       dispatch({ type: "user_sent", text });
       const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      await pump(client.send(id, text, { timezone, device: "web" }), dispatch).catch((e: unknown) =>
+      await pump(client.send(id, text, { timezone, device }), dispatch).catch((e: unknown) =>
         dispatch({ type: "event", event: { type: "error", message: message(e) } }),
       );
     },
-    [client, state.conversationId],
+    [client, state.conversationId, device],
   );
 
   const decide = useCallback(
