@@ -117,7 +117,7 @@ class AnthropicBrain:
     ) -> AsyncIterator[StreamEvent]:
         request = self.build_request(messages, tools, tool_choice, max_output_tokens)
         started = time.perf_counter()
-        with _mapped_errors(self._model):
+        with mapped_errors(self._model):
             async with self._client.messages.stream(**request) as wire:
                 async for event in wire:
                     if event.type == "text":
@@ -135,7 +135,7 @@ class AnthropicBrain:
             kwargs["system"] = system
         if tools:
             kwargs["tools"] = [to_wire_tool(t) for t in tools]
-        with _mapped_errors(self._model):
+        with mapped_errors(self._model):
             result = await self._client.messages.count_tokens(**kwargs)
         return result.input_tokens
 
@@ -300,7 +300,7 @@ def from_wire(message: WireMessage, latency_ms: float) -> BrainResponse:
 
 
 @contextmanager
-def _mapped_errors(model: str) -> Iterator[None]:
+def mapped_errors(model: str) -> Iterator[None]:
     """Map every SDK failure onto one canonical error. Most specific first."""
     ctx = {"provider": PROVIDER, "model": model}
     try:

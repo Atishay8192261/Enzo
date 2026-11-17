@@ -142,6 +142,11 @@ class Router:
     def config(self) -> BrainsConfig:
         return self._config
 
+    def forget(self, provider: str) -> None:
+        """Drop built adapters for a provider, so a new or removed key takes effect at once."""
+        for name in [n for n in self._live if self._config.brains[n].provider_name == provider]:
+            del self._live[name]
+
     def brain(self, name: str) -> BrainProvider:
         """Adapters are built on first use, so a missing key only matters for brains in use."""
         if name not in self._live:

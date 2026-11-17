@@ -1,7 +1,7 @@
-"""Build a live adapter from configuration. Keys come from the environment, never from files."""
+"""Build a live adapter from config. Keys come from the vault or the environment, never files."""
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import cast
 
 import anthropic
@@ -13,12 +13,20 @@ from enzo.brain.config import BrainConfig
 from enzo.brain.errors import AuthError
 from enzo.brain.provider import BrainProvider
 
+type KeyLookup = Callable[[str], str | None]
 
-def build_brain(cfg: BrainConfig, env: Mapping[str, str] | None = None) -> BrainProvider:
+
+def build_brain(
+    cfg: BrainConfig, env: Mapping[str, str] | None = None, *, keys: KeyLookup | None = None
+) -> BrainProvider:
+    """The user's connected account comes first; an environment variable is the fallback."""
     source = os.environ if env is None else env
-    key = source.get(cfg.api_key_env)
+    key = (keys(cfg.provider_name) if keys else None) or source.get(cfg.api_key_env)
     if not key:
-        msg = f"no API key: set {cfg.api_key_env}"
+        msg = (
+            f"{cfg.provider_name} is not connected: run /login {cfg.provider_name} "
+            f"(or set {cfg.api_key_env})"
+        )
         raise AuthError(msg, provider=cfg.provider_name, model=cfg.model)
     if cfg.api == "anthropic":
         return AnthropicBrain(
