@@ -31,6 +31,18 @@ class ToolCall(_Frozen):
     arguments_json: str
 
 
+class NativePart(_Frozen):
+    """Provider-native data that must be replayed unchanged to the same provider.
+
+    Example: Claude's thinking blocks, which must be sent back exactly as received in a tool loop.
+    Adapters for other providers ignore it; the canonical parts beside it carry the meaning.
+    """
+
+    type: Literal["native"] = "native"
+    provider: str = Field(min_length=1)
+    payload: dict[str, Any]
+
+
 class ToolResult(_Frozen):
     type: Literal["tool_result"] = "tool_result"
     call_id: str = Field(min_length=1)
@@ -39,13 +51,13 @@ class ToolResult(_Frozen):
     is_error: bool = False
 
 
-type Part = Annotated[TextPart | ToolCall | ToolResult, Field(discriminator="type")]
+type Part = Annotated[TextPart | ToolCall | ToolResult | NativePart, Field(discriminator="type")]
 type Role = Literal["system", "user", "assistant", "tool"]
 
 _ALLOWED_PARTS: dict[str, tuple[type[_Frozen], ...]] = {
     "system": (TextPart,),
     "user": (TextPart,),
-    "assistant": (TextPart, ToolCall),
+    "assistant": (TextPart, ToolCall, NativePart),
     "tool": (ToolResult,),
 }
 
@@ -88,6 +100,12 @@ class Message(_Frozen):
     def tool_calls(self) -> tuple[ToolCall, ...]:
         return tuple(p for p in self.parts if isinstance(p, ToolCall))
 
+    def native(self, provider: str) -> NativePart | None:
+        """This message's replay data for ``provider``, if it was produced by that provider."""
+        return next(
+            (p for p in self.parts if isinstance(p, NativePart) and p.provider == provider), None
+        )
+
 
 class ToolSpec(_Frozen):
     """What the brain sees of a tool. Adapters translate this into each provider's format."""
@@ -108,9 +126,19 @@ class ToolSpec(_Frozen):
 
 
 class Usage(_Frozen):
+    """Token usage. ``input_tokens`` is the whole prompt; the cache fields are subsets of it."""
+
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
     cached_input_tokens: int = Field(default=0, ge=0)
+    cache_write_input_tokens: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def _cache_is_part_of_input(self) -> Self:
+        if self.cached_input_tokens + self.cache_write_input_tokens > self.input_tokens:
+            msg = "cache token counts must be subsets of input_tokens"
+            raise ValueError(msg)
+        return self
 
 
 type StopReason = Literal["end_turn", "tool_use", "max_tokens", "refusal", "other"]
@@ -160,6 +188,8 @@ class Capabilities(_Frozen):
     """What a brain can really do. Enzo must not claim a capability a brain lacks (spec §1.3.2)."""
 
     tool_calling: Literal["native", "emulated", "unsupported"]
+    #: Can the brain be forced to call a tool? Some current models reject forcing with a 400.
+    forced_tool_choice: bool
     streaming: bool
     token_counting: Literal["exact", "estimate"]
     embeddings: bool

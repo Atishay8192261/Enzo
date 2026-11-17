@@ -70,7 +70,8 @@ async def tool_call(
 ) -> list[ValidatedCall | ToolCallRejection]:
     """Force the brain to call a tool and return every call validated (spec §1.3.1 ``tool_call()``).
 
-    Implemented once on top of ``chat`` so every brain gets identical validation.
+    Implemented once on top of ``chat`` so every brain gets identical validation. A brain that
+    cannot be forced gets ``tool_choice="auto"``; an empty list then means it chose no tool.
     """
     if brain.capabilities.tool_calling == "unsupported":
         msg = "this brain cannot call tools"
@@ -78,7 +79,7 @@ async def tool_call(
     response = await brain.chat(
         messages,
         tools=[spec for spec, _ in tools.values()],
-        tool_choice="required",
+        tool_choice="required" if brain.capabilities.forced_tool_choice else "auto",
         max_output_tokens=max_output_tokens,
     )
     params = {name: model for name, (_, model) in tools.items()}
