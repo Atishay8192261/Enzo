@@ -1,7 +1,16 @@
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from enzo.brain import BrainResponse, Message, TextPart, ToolCall, ToolResult, ToolSpec, Usage
+from enzo.brain import (
+    BrainResponse,
+    Message,
+    NativePart,
+    TextPart,
+    ToolCall,
+    ToolResult,
+    ToolSpec,
+    Usage,
+)
 from tests.brain.schemas import SearchWeb
 
 CALL = ToolCall(id="c1", name="search_web", arguments_json='{"query": "x"}')
@@ -70,3 +79,23 @@ def test_brain_response_must_come_from_the_assistant() -> None:
             usage=Usage(input_tokens=1, output_tokens=1),
             latency_ms=1,
         )
+
+
+def test_native_part_is_replay_data_not_content() -> None:
+    native = NativePart(provider="anthropic", payload={"content": [{"type": "thinking"}]})
+    msg = Message(role="assistant", parts=(native, TextPart(text="hi"), CALL))
+    assert msg.native("anthropic") == native
+    assert msg.native("openai") is None
+    assert (msg.text, msg.tool_calls) == ("hi", (CALL,))
+    assert Message.model_validate_json(msg.model_dump_json()) == msg
+
+
+def test_only_assistant_messages_carry_native_parts() -> None:
+    with pytest.raises(ValidationError, match="cannot contain"):
+        Message(role="user", parts=(NativePart(provider="x", payload={}),))
+
+
+def test_cache_tokens_cannot_exceed_the_prompt() -> None:
+    Usage(input_tokens=10, output_tokens=1, cached_input_tokens=6, cache_write_input_tokens=4)
+    with pytest.raises(ValidationError, match="subsets"):
+        Usage(input_tokens=10, output_tokens=1, cached_input_tokens=8, cache_write_input_tokens=4)

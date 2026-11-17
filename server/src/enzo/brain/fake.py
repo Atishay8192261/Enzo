@@ -66,6 +66,7 @@ class ScriptedBrain:
     def capabilities(self) -> Capabilities:
         return Capabilities(
             tool_calling="native",
+            forced_tool_choice=True,
             streaming=True,
             token_counting="estimate",  # noqa: S106 - a capability label, not a secret
             embeddings=True,

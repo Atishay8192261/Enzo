@@ -26,6 +26,13 @@ class ProviderServerError(BrainError):
     fallback_eligible = True
 
 
+class ProviderConnectionError(BrainError):
+    """The provider could not be reached at all. Treated like a server error for fallback."""
+
+    kind = "connection"
+    fallback_eligible = True
+
+
 class ProviderTimeoutError(BrainError):
     kind = "timeout"
     fallback_eligible = True

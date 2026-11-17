@@ -100,6 +100,7 @@ async def test_tool_call_refuses_a_brain_without_tool_calling() -> None:
         def capabilities(self) -> Capabilities:
             return Capabilities(
                 tool_calling="unsupported",
+                forced_tool_choice=False,
                 streaming=False,
                 token_counting="estimate",  # noqa: S106
                 embeddings=False,
@@ -117,3 +118,17 @@ async def test_fake_embeddings_are_deterministic_unit_vectors() -> None:
     assert a1 == a2
     assert a1 != b
     assert math.isclose(sum(x * x for x in a1), 1.0)
+
+
+async def test_tool_call_falls_back_to_auto_when_the_brain_cannot_be_forced() -> None:
+    class Unforceable(ScriptedBrain):
+        @property
+        def capabilities(self) -> Capabilities:
+            return super().capabilities.model_copy(update={"forced_tool_choice": False})
+
+    brain = Unforceable([Message.assistant("no tool needed")])
+    results = await tool_call(
+        brain, [Message.user("hi")], {"search_web": (SPEC, SearchWeb)}, max_output_tokens=50
+    )
+    assert brain.calls[0].tool_choice == "auto"
+    assert results == []
