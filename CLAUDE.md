@@ -90,6 +90,9 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
   4. [x] Kimi (Moonshot) and Grok (xAI) configured via `OpenAIBrain` + `base_url` (ADR 0002 #11); verify live
   5. [x] Router, single fallback, budget check, cost accounting (`enzo.brain.router`, `brains.toml`, ADR 0003)
   6. Live conformance (§1.4) on every configured brain: needs API keys
+- [ ] Spec §7 tools: [x] typed registry (`enzo.tools`, `@tool`), validation before execution, errors as data,
+  timeouts, parallel batches; [ ] real tools and connectors
+- [ ] Spec §4 agent loop
 - [ ] Release automation (release PRs, CHANGELOG, tags)
 - [ ] GitHub connector: issue #2
 - Then continue in the order of the spec §17 checklist.
