@@ -269,6 +269,19 @@ def from_wire(message: WireMessage, latency_ms: float) -> BrainResponse:
     usage = message.usage
     cache_read = usage.cache_read_input_tokens or 0
     cache_write = usage.cache_creation_input_tokens or 0
+    by_ttl = usage.cache_creation
+    breakdown = (
+        {
+            ttl: n
+            for ttl, n in (
+                ("5m", by_ttl.ephemeral_5m_input_tokens),
+                ("1h", by_ttl.ephemeral_1h_input_tokens),
+            )
+            if n
+        }
+        if by_ttl
+        else {}
+    )
     return BrainResponse(
         provider=PROVIDER,
         model=message.model,
@@ -280,6 +293,7 @@ def from_wire(message: WireMessage, latency_ms: float) -> BrainResponse:
             output_tokens=usage.output_tokens,
             cached_input_tokens=cache_read,
             cache_write_input_tokens=cache_write,
+            cache_write_breakdown=breakdown,
         ),
         latency_ms=latency_ms,
     )

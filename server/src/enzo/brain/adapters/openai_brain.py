@@ -291,8 +291,7 @@ def from_wire(response: WireResponse, latency_ms: float, provider: str = PROVIDE
                     parts.append(TextPart(text=content.refusal))
         elif item.type == "function_call":
             parts.append(ToolCall(id=item.call_id, name=item.name, arguments_json=item.arguments))
-    usage = response.usage
-    cached = usage.input_tokens_details.cached_tokens if usage else 0
+    usage = _usage(response)
     return BrainResponse(
         provider=provider,
         model=response.model,
@@ -300,12 +299,38 @@ def from_wire(response: WireResponse, latency_ms: float, provider: str = PROVIDE
         stop_reason=_stop_reason(
             response, refused=refused, called=any(isinstance(p, ToolCall) for p in parts)
         ),
-        usage=Usage(
-            input_tokens=usage.input_tokens if usage else 0,
-            output_tokens=usage.output_tokens if usage else 0,
-            cached_input_tokens=cached,
-        ),
+        usage=usage,
         latency_ms=latency_ms,
+    )
+
+
+def _usage(response: WireResponse) -> Usage:
+    """OpenAI-compatible providers may omit detail fields, so every one is optional here."""
+    usage = response.usage
+    if usage is None:
+        return Usage(input_tokens=0, output_tokens=0)
+    details = getattr(usage, "input_tokens_details", None)
+    cached = getattr(details, "cached_tokens", None) or 0
+    writes = getattr(details, "cache_write_tokens", None) or 0
+    by_ttl = getattr(details, "cache_write_tokens_details", None)
+    breakdown = (
+        {
+            ttl: n
+            for ttl, n in (
+                ("30m", getattr(by_ttl, "ttl_30m_tokens", 0)),
+                ("12h", getattr(by_ttl, "ttl_12h_tokens", 0)),
+            )
+            if n
+        }
+        if by_ttl
+        else {}
+    )
+    return Usage(
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cached_input_tokens=cached,
+        cache_write_input_tokens=writes,
+        cache_write_breakdown=breakdown,
     )
 
 

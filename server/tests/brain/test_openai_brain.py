@@ -293,6 +293,7 @@ async def test_stream_yields_text_then_a_canonical_response() -> None:
         "output_tokens": 30,
         "cached_input_tokens": 300,
         "cache_write_input_tokens": 0,
+        "cache_write_breakdown": {},
     }
 
 
@@ -479,3 +480,16 @@ async def test_items_are_recovered_when_the_final_event_omits_output() -> None:
     native = r.message.native("openai")
     assert native is not None
     assert [i["id"] for i in native.payload["output"]] == ["rs_1", "msg_1", "fc_1"]
+
+
+async def test_cache_writes_are_counted_with_their_retention() -> None:
+    """Regression: cache writes are billed separately and were once dropped as 0."""
+    final = response([TEXT])
+    final["usage"]["input_tokens_details"] = {
+        "cached_tokens": 300,
+        "cache_write_tokens": 50,
+        "cache_write_tokens_details": {"ttl_30m_tokens": 40, "ttl_12h_tokens": 10},
+    }
+    r = await brain(streaming(final)).chat([Message.user("x")], max_output_tokens=10)
+    assert r.usage.cache_write_input_tokens == 50
+    assert r.usage.cache_write_breakdown == {"30m": 40, "12h": 10}
