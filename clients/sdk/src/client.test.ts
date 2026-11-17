@@ -1,0 +1,87 @@
+import { describe, expect, it } from "vitest";
+import { GatewayClient, GatewayError } from "./client.ts";
+
+interface Seen {
+  url: string;
+  init: RequestInit;
+}
+
+function fakeFetch(
+  respond: (url: string, init: RequestInit) => Response,
+  seen: Seen[] = [],
+): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    seen.push({ url: String(input), init: init ?? {} });
+    return respond(String(input), init ?? {});
+  }) as typeof fetch;
+}
+
+const sse = (body: string) =>
+  new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+
+describe("GatewayClient", () => {
+  it("streams a turn as typed events and sends the token", async () => {
+    const seen: Seen[] = [];
+    const client = new GatewayClient({
+      baseUrl: "http://enzo/",
+      token: "s3cret",
+      fetch: fakeFetch(
+        () =>
+          sse(
+            'event: text\ndata: {"text":"hi"}\n\nevent: done\ndata: {"stop":"final_answer","text":"hi","steps":1,"cost_usd":0.001}\n\n',
+          ),
+        seen,
+      ),
+    });
+    const events = [];
+    for await (const e of client.send("c-1", "hello", { timezone: "UTC", device: "web" }))
+      events.push(e);
+    expect(events.map((e) => e.type)).toEqual(["text", "done"]);
+    expect(seen[0]?.url).toBe("http://enzo/conversations/c-1/turns");
+    const headers = seen[0]?.init.headers as Record<string, string> | undefined;
+    expect(headers?.authorization).toBe("Bearer s3cret");
+    expect(JSON.parse(String(seen[0]?.init.body))).toEqual({
+      message: "hello",
+      timezone: "UTC",
+      device: "web",
+    });
+  });
+
+  it("reports HTTP errors with the server's reason before any streaming", async () => {
+    const client = new GatewayClient({
+      baseUrl: "http://enzo",
+      fetch: fakeFetch(() =>
+        Response.json({ detail: "a turn is already running" }, { status: 409 }),
+      ),
+    });
+    const stream = client.send("c-1", "hello");
+    await expect(stream.next()).rejects.toMatchObject({
+      name: "GatewayError",
+      status: 409,
+      message: expect.stringContaining("a turn is already running"),
+    });
+  });
+
+  it("handles empty 204 replies", async () => {
+    const client = new GatewayClient({
+      baseUrl: "http://enzo",
+      fetch: fakeFetch(() => new Response(null, { status: 204 })),
+    });
+    await expect(client.decide("c", "appr_1", true)).resolves.toBeUndefined();
+    await expect(client.chooseBrain("c", null)).resolves.toBeUndefined();
+  });
+
+  it("escapes ids in paths", async () => {
+    const seen: Seen[] = [];
+    const client = new GatewayClient({
+      baseUrl: "http://enzo",
+      fetch: fakeFetch(() => new Response(null, { status: 204 }), seen),
+    });
+    await client.decide("c/../x", "a b", false);
+    expect(seen[0]?.url).toBe("http://enzo/conversations/c%2F..%2Fx/approvals/a%20b");
+  });
+
+  it("keeps GatewayError exported for callers", () => {
+    expect(new GatewayError("x", 500).status).toBe(500);
+  });
+});
