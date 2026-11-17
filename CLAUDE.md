@@ -40,7 +40,8 @@ Read this first in every session. It carries the context from earlier sessions.
 ## Stack (ADR 0001)
 
 - `server/`: Python 3.13, FastAPI, Pydantic v2, uv. ruff, mypy `--strict`, pytest with warnings as errors.
-- `clients/sdk`: the only TS code that talks to the gateway. `clients/web`: React + Vite. `clients/cli`: Ink.
+- `clients/sdk`: the only TS code that talks to the gateway. `clients/web`: React + Vite.
+  `clients/cli`: OpenTUI 0.9.2 (pinned, pre-1.0) on Bun 1.4.4 (ADR 0008). `clients/chat`: shared chat state.
 - Biome (lint/format, Markdown excluded), TypeScript 7, Vitest. pnpm workspace.
 - Postgres 16 + pgvector for persistence (ADR 0005). No agent frameworks: brain adapters, loop, memory and
   safety are hand-built on official provider SDKs.
@@ -75,9 +76,10 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
 
 - Browsers throw "Illegal invocation" when `fetch` is called as a method of another object; the SDK wraps it.
 - `EventSource` cannot POST: the SDK parses SSE from `fetch` (tested at every byte split).
-- Ink delivers several keys typed at once as one `input` string (an Enter inside it is not `key.return`):
-  handle chunks key by key. Use one app-level `useInput` reading state from a ref; toggling listeners
-  per render drops keys. Real-terminal check: `clients/cli/scripts/tty-smoke.py`.
+- OpenTUI tests (`bun test`): render, type, wait and tear down inside React `act()` (helpers in
+  `clients/cli/src/App.test.tsx`). Its `waitForFrame` does not let async work run: wait with real time.
+- Real-terminal check (reads the screen through a terminal emulator), with a gateway running:
+  `uv run --no-project --with pyte==0.8.2 python -I scripts/tty-smoke.py . "$(mktemp -d)"` in clients/cli.
 - React StrictMode runs effects twice in dev: one-time startup work must be shared (see `connect()` in
   `clients/web/src/useChat.ts`), or it runs twice.
 - Starlette's `TestClient` needs `httpx2`, not `httpx`.
@@ -128,7 +130,7 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
 - [x] Spec §11 persistence base: Postgres store for transcripts, brain/tool call ledgers, approvals (ADR 0005)
 - [x] Gateway: conversations, SSE turns, approvals, brain choice, auth (`enzo.gateway`, `enzo.agent.service`, ADR 0006)
 - [x] Web chat: streaming, approval cards with exact arguments, brain picker, history (`clients/web`)
-- [x] Terminal chat (`clients/cli`), sharing chat state with web via `@enzo/chat`
+- [x] Terminal chat (`clients/cli`, OpenTUI on Bun), sharing chat state with web via `@enzo/chat`
 - [ ] Release automation (release PRs, CHANGELOG, tags)
 - [ ] GitHub connector: issue #2
 - Then continue in the order of the spec §17 checklist.
