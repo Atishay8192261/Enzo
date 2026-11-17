@@ -64,6 +64,9 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
 ## Gotchas already found
 
 - Browsers throw "Illegal invocation" when `fetch` is called as a method of another object; the SDK wraps it.
+- `EventSource` cannot POST: the SDK parses SSE from `fetch` (tested at every byte split).
+- React StrictMode runs effects twice in dev: one-time startup work must be shared (see `connect()` in
+  `clients/web/src/useChat.ts`), or it runs twice.
 - Starlette's `TestClient` needs `httpx2`, not `httpx`.
 - Biome formats Markdown by default; it is excluded so the spec stays verbatim.
 - FastAPI has native SSE (`fastapi.sse`); no extra streaming library needed.
@@ -111,7 +114,8 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
 - [x] Spec §4 agent loop (`enzo.agent`: `run_turn`, approvals, prompt order; ADR 0004)
 - [x] Spec §11 persistence base: Postgres store for transcripts, brain/tool call ledgers, approvals (ADR 0005)
 - [x] Gateway: conversations, SSE turns, approvals, brain choice, auth (`enzo.gateway`, `enzo.agent.service`, ADR 0006)
-- [ ] Clients: chat UI in web and terminal on top of the gateway
+- [x] Web chat: streaming, approval cards with exact arguments, brain picker, history (`clients/web`)
+- [ ] Terminal chat (`clients/cli`)
 - [ ] Release automation (release PRs, CHANGELOG, tags)
 - [ ] GitHub connector: issue #2
 - Then continue in the order of the spec §17 checklist.
