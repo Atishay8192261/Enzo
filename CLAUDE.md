@@ -32,7 +32,7 @@ Read this first in every session. It carries the context from earlier sessions.
 - `server/`: Python 3.13, FastAPI, Pydantic v2, uv. ruff, mypy `--strict`, pytest with warnings as errors.
 - `clients/sdk`: the only TS code that talks to the gateway. `clients/web`: React + Vite. `clients/cli`: Ink.
 - Biome (lint/format, Markdown excluded), TypeScript 7, Vitest. pnpm workspace.
-- Postgres + pgvector planned for persistence. No agent frameworks: brain adapters, loop, memory and
+- Postgres 16 + pgvector for persistence (ADR 0005). No agent frameworks: brain adapters, loop, memory and
   safety are hand-built on official provider SDKs.
 
 ## Commands
@@ -76,6 +76,7 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
 - Prove a test has teeth: break the code on purpose, watch it fail, restore. Mind test order: a
   mutation can survive only because tests ran in a lucky order.
 - Alembic `fileConfig` disables existing loggers unless `disable_existing_loggers=False` (kept in env.py).
+- Mutations that make code hang need timeouts: pytest has `timeout = 30`; run mutation loops under `timeout`.
 - Provider SDKs retry on their own (Anthropic: 2 retries). Adapters must set `max_retries=0` (ADR 0002).
 - Current Claude models (Opus 5.5, Sonnet 5.5) reject forced `tool_choice` with a 400.
 - Claude thinking blocks must be replayed unchanged: `model_dump(mode="json", exclude_unset=True)`.
@@ -109,6 +110,8 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
   timeouts, parallel batches; [ ] real tools and connectors
 - [x] Spec §4 agent loop (`enzo.agent`: `run_turn`, approvals, prompt order; ADR 0004)
 - [x] Spec §11 persistence base: Postgres store for transcripts, brain/tool call ledgers, approvals (ADR 0005)
+- [x] Gateway: conversations, SSE turns, approvals, brain choice, auth (`enzo.gateway`, `enzo.agent.service`, ADR 0006)
+- [ ] Clients: chat UI in web and terminal on top of the gateway
 - [ ] Release automation (release PRs, CHANGELOG, tags)
 - [ ] GitHub connector: issue #2
 - Then continue in the order of the spec §17 checklist.
