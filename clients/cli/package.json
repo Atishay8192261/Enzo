@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@enzo/chat": "workspace:*",
     "@enzo/sdk": "workspace:*",
     "ink": "8.0.0",
     "react": "19.3.1"
