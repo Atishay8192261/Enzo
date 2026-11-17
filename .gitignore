@@ -1,0 +1,21 @@
+# deps / builds
+node_modules/
+dist/
+.venv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+coverage/
+
+# local config and secrets: never committed (spec §11.2)
+.env
+.env.*
+!.env.example
+
+# editors / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
