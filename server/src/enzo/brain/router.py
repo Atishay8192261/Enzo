@@ -138,6 +138,10 @@ class Router:
         self._clock = clock
         self._live: dict[str, BrainProvider] = {}
 
+    @property
+    def config(self) -> BrainsConfig:
+        return self._config
+
     def brain(self, name: str) -> BrainProvider:
         """Adapters are built on first use, so a missing key only matters for brains in use."""
         if name not in self._live:
@@ -238,6 +242,7 @@ class Router:
                     )
                     continue
                 if number == 1:
+                    exc.attempts = tuple(attempts)
                     raise
                 raise AllBrainsFailedError(attempts) from exc
 

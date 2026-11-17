@@ -183,6 +183,7 @@ async def _ask_brain(ask: _Ask, turn: _Turn) -> AsyncIterator[TextDelta | TurnDo
         yield turn.done("over_budget", f"The conversation is too long for this task: {exc}.")
         return
     except (BrainError, AllBrainsFailedError) as exc:
+        turn.brain_calls.extend(a for a in exc.attempts if isinstance(a, CallRecord))
         yield turn.done("brain_failure", f"I could not get an answer: {exc}")
         return
     if routed is None:  # router.stream always ends in RoutedDone or raises; guard regardless
