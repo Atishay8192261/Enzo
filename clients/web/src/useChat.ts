@@ -1,0 +1,139 @@
+import type { AgentEvent, Brain } from "@enzo/sdk";
+import { type Dispatch, useCallback, useEffect, useReducer } from "react";
+import {
+  type ChatAction,
+  type ChatClient,
+  type ChatItem,
+  type ChatState,
+  initialState,
+  reduce,
+  toItems,
+} from "./chat.ts";
+
+const KEY = "enzo.conversation";
+
+function remembered(): string | null {
+  try {
+    return localStorage.getItem(KEY);
+  } catch {
+    return null; // private mode or blocked storage: start fresh
+  }
+}
+
+function remember(id: string): void {
+  try {
+    localStorage.setItem(KEY, id);
+  } catch {
+    // not fatal: the next visit starts a new conversation
+  }
+}
+
+interface Connection {
+  conversationId: string;
+  brains: Brain[];
+  brain: string | null;
+  items: ChatItem[];
+}
+
+/**
+ * One connection attempt per client. React runs effects twice in development (StrictMode);
+ * without this, both runs would create a conversation and race to remember theirs.
+ */
+const connections = new WeakMap<ChatClient, Promise<Connection>>();
+
+function connect(client: ChatClient): Promise<Connection> {
+  let attempt = connections.get(client);
+  if (!attempt) {
+    attempt = open(client);
+    connections.set(client, attempt);
+    attempt.catch(() => connections.delete(client)); // allow a retry after a failure
+  }
+  return attempt;
+}
+
+async function open(client: ChatClient): Promise<Connection> {
+  await client.health();
+  const brains = await client.brains();
+  const saved = remembered();
+  let conversation = saved ? await client.conversation(saved).catch(() => null) : null;
+  if (!conversation) {
+    conversation = await client.createConversation("main");
+    remember(conversation.id);
+  }
+  const items = toItems(await client.messages(conversation.id));
+  return { conversationId: conversation.id, brains, brain: conversation.brain, items };
+}
+
+async function pump(
+  stream: AsyncIterable<AgentEvent>,
+  dispatch: Dispatch<ChatAction>,
+): Promise<void> {
+  for await (const event of stream) dispatch({ type: "event", event });
+}
+
+const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+export function useChat(client: ChatClient) {
+  const [state, dispatch] = useReducer(reduce, initialState);
+
+  useEffect(() => {
+    let cancelled = false;
+    connect(client).then(
+      (c) => {
+        if (!cancelled) dispatch({ type: "connected", ...c });
+      },
+      (e: unknown) => {
+        if (!cancelled) dispatch({ type: "offline", error: message(e) });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  const send = useCallback(
+    async (text: string) => {
+      const id = state.conversationId;
+      if (!id || !text.trim()) return;
+      dispatch({ type: "user_sent", text });
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      await pump(client.send(id, text, { timezone, device: "web" }), dispatch).catch((e: unknown) =>
+        dispatch({ type: "event", event: { type: "error", message: message(e) } }),
+      );
+    },
+    [client, state.conversationId],
+  );
+
+  const decide = useCallback(
+    async (approvalId: string, approved: boolean) => {
+      const id = state.conversationId;
+      if (!id) return;
+      try {
+        await client.decide(id, approvalId, approved);
+        dispatch({ type: "approval_decided", id: approvalId });
+        dispatch({ type: "resuming" });
+        await pump(client.resume(id), dispatch);
+      } catch (e: unknown) {
+        dispatch({ type: "event", event: { type: "error", message: message(e) } });
+      }
+    },
+    [client, state.conversationId],
+  );
+
+  const chooseBrain = useCallback(
+    async (brain: string | null) => {
+      const id = state.conversationId;
+      if (!id) return;
+      await client.chooseBrain(id, brain);
+      dispatch({ type: "brain_chosen", brain });
+    },
+    [client, state.conversationId],
+  );
+
+  return { state, send, decide, chooseBrain } satisfies {
+    state: ChatState;
+    send: (text: string) => Promise<void>;
+    decide: (id: string, approved: boolean) => Promise<void>;
+    chooseBrain: (brain: string | null) => Promise<void>;
+  };
+}
