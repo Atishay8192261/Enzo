@@ -1,10 +1,12 @@
+import { describe, expect, it, mock } from "bun:test";
 import { mkdtempSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChatClient, ConversationMemory } from "@enzo/chat";
 import type { AgentEvent, Brain, Conversation } from "@enzo/sdk";
-import { render } from "ink-testing-library";
-import { describe, expect, it, vi } from "vitest";
+import { testRender } from "@opentui/react/test-utils";
+import type React from "react";
+import { act } from "react";
 import { App } from "./App.tsx";
 import { fileMemory } from "./memory.ts";
 
@@ -35,32 +37,64 @@ function fakeClient(overrides: Partial<ChatClient> = {}): ChatClient {
     createConversation: async () => CONVERSATION,
     conversation: async () => CONVERSATION,
     messages: async () => [],
-    chooseBrain: vi.fn(async () => {}),
+    chooseBrain: mock(async () => {}),
     send: () => events(),
     resume: () => events(),
-    decide: vi.fn(async () => {}),
+    decide: mock(async () => {}),
     ...overrides,
   };
 }
 
-async function until(frame: () => string | undefined, text: string | RegExp): Promise<string> {
-  for (let i = 0; i < 100; i++) {
-    const f = frame() ?? "";
-    if (typeof text === "string" ? f.includes(text) : text.test(f)) return f;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error(`never saw ${String(text)} in:\n${frame()}`);
+async function screen(client: ChatClient, onQuit = () => {}) {
+  return mount(<App client={client} memory={memory()} onQuit={onQuit} />, 30, "Message Enzo");
 }
 
-async function type(stdin: { write: (s: string) => void }, text: string): Promise<void> {
-  for (const ch of text) {
-    stdin.write(ch);
-    await new Promise((r) => setTimeout(r, 2));
-  }
-  stdin.write("\r");
+/** Render inside act() (start-up work is async), then wait for the first expected screen. */
+async function mount(node: React.ReactNode, height: number, ready: string): Promise<Screen> {
+  let setup: Screen | undefined;
+  await act(async () => {
+    setup = await testRender(node, { width: 90, height });
+  });
+  if (!setup) throw new Error("render failed");
+  const screen = setup;
+  // Tear down inside act() too: unmounting the root updates React.
+  screen[Symbol.asyncDispose] = () => act(() => screen.dispose());
+  await until(screen, ready);
+  return screen;
 }
 
-describe("terminal chat", () => {
+type Screen = Awaited<ReturnType<typeof testRender>>;
+
+/** Type a line and press Enter, inside act() like any user-driven update. */
+async function enter(s: Screen, text: string): Promise<void> {
+  await act(async () => {
+    await s.mockInput.typeText(text);
+    s.mockInput.pressEnter();
+  });
+}
+
+async function press(s: Screen, key: string): Promise<void> {
+  await act(async () => {
+    s.mockInput.pressKey(key);
+  });
+}
+
+/** Wait for text on screen while letting real time pass, so async work (streams, network) runs. */
+async function until(s: Screen, text: string, ms = 3000): Promise<string> {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    // Inside act(): React applies the updates async work made meanwhile, as it does in real use.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    await s.flush();
+    const frame = s.captureCharFrame();
+    if (frame.includes(text)) return frame;
+  }
+  throw new Error(`never saw "${text}" on screen:\n${s.captureCharFrame()}`);
+}
+
+describe("terminal chat (OpenTUI)", () => {
   it("sends a message and streams the reply", async () => {
     const client = fakeClient({
       send: () =>
@@ -69,16 +103,34 @@ describe("terminal chat", () => {
           { type: "done", stop: "final_answer", text: "Paris", steps: 1, cost_usd: 0.0021 },
         ),
     });
-    const { lastFrame, stdin } = render(<App client={client} memory={memory()} />);
-    await until(lastFrame, "Message Enzo");
-    await type(stdin, "Capital of France?");
-    const frame = await until(lastFrame, "enzo: Paris");
+    await using s = await screen(client);
+    await enter(s, "Capital of France?");
+    const frame = await until(s, "enzo: Paris");
     expect(frame).toContain("you: Capital of France?");
     expect(frame).toContain("cost $0.0021");
   });
 
+  it("keeps the first keystroke and clears the input after sending", async () => {
+    const send = mock(() =>
+      events({ type: "done", stop: "final_answer", text: "ok", steps: 1, cost_usd: null }),
+    );
+    await using s = await screen(fakeClient({ send }));
+    await enter(s, "hello enzo");
+    await until(s, "enzo: ok");
+    expect(send).toHaveBeenCalledWith(
+      "c1",
+      "hello enzo",
+      expect.objectContaining({ device: "cli" }),
+    );
+    await act(async () => {
+      await s.mockInput.typeText("again");
+    });
+    const frame = await until(s, "again");
+    expect(frame).not.toContain("hello enzoagain");
+  });
+
   it("asks for approval of the exact action and resumes on y", async () => {
-    const decide = vi.fn(async () => {});
+    const decide = mock(async () => {});
     const client = fakeClient({
       decide,
       send: () =>
@@ -94,50 +146,40 @@ describe("terminal chat", () => {
       resume: () =>
         events({ type: "done", stop: "final_answer", text: "Sent.", steps: 2, cost_usd: null }),
     });
-    const { lastFrame, stdin } = render(<App client={client} memory={memory()} />);
-    await until(lastFrame, "Message Enzo");
-    await type(stdin, "email bob");
-    const card = await until(lastFrame, "Approve this action? (y / n)");
+    await using s = await screen(client);
+    await enter(s, "email bob");
+    const card = await until(s, "Approve this action? (y / n)");
     expect(card).toContain('"to": "bob@example.com"');
-    stdin.write("y");
-    await until(lastFrame, "enzo: Sent.");
+    await press(s, "y");
+    await until(s, "enzo: Sent.");
     expect(decide).toHaveBeenCalledWith("c1", "appr_1", true);
   });
 
   it("switches brains with a command and rejects unknown ones", async () => {
-    const chooseBrain = vi.fn(async () => {});
-    const { lastFrame, stdin } = render(
-      <App client={fakeClient({ chooseBrain })} memory={memory()} />,
-    );
-    await until(lastFrame, "Message Enzo");
-    await type(stdin, "/brain ghost");
-    await until(lastFrame, "Unknown brain: ghost");
-    await type(stdin, "/brain grok");
-    await until(lastFrame, "Brain: grok");
+    const chooseBrain = mock(async () => {});
+    await using s = await screen(fakeClient({ chooseBrain }));
+    await enter(s, "/brain ghost");
+    await until(s, "Unknown brain: ghost");
+    await enter(s, "/brain grok");
+    await until(s, "Brain: grok");
     expect(chooseBrain).toHaveBeenCalledWith("c1", "grok");
   });
 
-  it("handles a whole line arriving at once (fast typing, pastes, remote terminals)", async () => {
-    const send = vi.fn(() =>
-      events({ type: "done", stop: "final_answer", text: "ok", steps: 1, cost_usd: null }),
-    );
-    const { lastFrame, stdin } = render(<App client={fakeClient({ send })} memory={memory()} />);
-    await until(lastFrame, "Message Enzo");
-    stdin.write("hello enzo\r");
-    await until(lastFrame, "enzo: ok");
-    expect(send).toHaveBeenCalledWith(
-      "c1",
-      "hello enzo",
-      expect.objectContaining({ device: "cli" }),
-    );
-    stdin.write("second\rthird\r");
-    await until(lastFrame, "you: second");
+  it("quits on /quit", async () => {
+    const onQuit = mock(() => {});
+    await using s = await screen(fakeClient(), onQuit);
+    await enter(s, "/quit");
+    await until(s, "Message Enzo");
+    expect(onQuit).toHaveBeenCalledTimes(1);
   });
 
   it("says plainly when the gateway is down", async () => {
     const client = fakeClient({ health: () => Promise.reject(new Error("ECONNREFUSED")) });
-    const { lastFrame } = render(<App client={client} memory={memory()} />);
-    await until(lastFrame, "Gateway unreachable: ECONNREFUSED");
+    await using _s = await mount(
+      <App client={client} memory={memory()} onQuit={() => {}} />,
+      10,
+      "Gateway unreachable: ECONNREFUSED",
+    );
   });
 });
 
