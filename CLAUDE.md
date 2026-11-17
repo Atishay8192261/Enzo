@@ -63,6 +63,10 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
 - Claude thinking blocks must be replayed unchanged: `model_dump(mode="json", exclude_unset=True)`.
 - Cloud sessions: `api.anthropic.com` bypasses the egress proxy, so a key saved as a network secret is
   not injected there. Live Claude tests need another route.
+- OpenAI: never use `responses.stream()` / `get_final_response()` in adapters: parsed wrappers add fields
+  that break replay, and an "incomplete" (max tokens) stop raises. Read raw events (ADR 0002 #9).
+- `curl` reaches `developers.openai.com`, `WebFetch` does not (different network path): fetch docs with
+  `curl` (`/llms.txt` lists Markdown pages).
 
 ## Brain providers and auth (verified 2026-11-17, details in ADR 0001)
 
@@ -70,7 +74,7 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
 - ChatGPT: official "Sign in with ChatGPT" open-source flow (user's plan pays), API key fallback.
 - Grok: API key. Subscription OAuth only as an "experimental" adapter.
 - Kimi K3 / K3.1: Moonshot API (OpenAI-compatible). Not self-hosted (~1.4 TB weights).
-- SDKs checked: `anthropic` 2.9.0, `openai` 3.52.0.
+- SDKs checked: `anthropic` 2.9.0, `openai` 3.53.0.
 
 ## Status and next steps
 
@@ -79,8 +83,8 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
   1. [x] Canonical types (`enzo.brain.models`), `BrainProvider` protocol + `tool_call()`, strict
      tool-argument validation, `ScriptedBrain` for tests
   2. [x] Anthropic adapter (`AnthropicBrain`, ADR 0002); live conformance pending an API key
-  3. OpenAI Responses adapter (Sign in with ChatGPT later)
-  4. OpenAI-compatible adapter for Kimi (Moonshot) and xAI
+  3. [x] OpenAI Responses adapter (`OpenAIBrain`); live conformance pending a key; Sign in with ChatGPT later
+  4. Kimi (Moonshot) and Grok (xAI) via `OpenAIBrain` + `base_url` (ADR 0002 #11); verify base URLs live
   5. Router, single fallback, token and cost accounting (cost "unknown" when unpublished, never 0)
 - [ ] Release automation (release PRs, CHANGELOG, tags)
 - [ ] GitHub connector: issue #2
