@@ -22,6 +22,7 @@ Read this first in every session. It carries the context from earlier sessions.
 - Commits: one line, Conventional Commits, e.g. `feat(brain): add provider fallback with single retry`.
 - Every change lands through a PR that fills `.github/pull_request_template.md`. CI must be green.
 - Merge method: rebase-merge. Delete the branch after merge.
+- Standing permission from Atishay: merge your own PRs once CI is green.
 - Cloud sessions: GitHub GraphQL is blocked, so use `gh api` REST endpoints. They cannot create repos,
   delete branches, or approve PRs (GitHub never allows approving your own PR). The repo may be checked
   out as `Enzo` or `enzo`.
@@ -56,6 +57,8 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
 - Pydantic `model_validate_json(..., strict=True)` with `extra="forbid"` rejects coerced types and unknown
   fields: use it to validate tool-call arguments from the brain.
 - Never name a module after a stdlib module (e.g. `types.py`): scripts run from that folder break.
+- Every price in `brains.toml` carries its source and read date; an unconfirmed price is left out (cost unknown).
+- Providers bill cache writes per retention (OpenAI 30m/12h, Anthropic 5m/1h): keep `cache_write_breakdown`.
 - Tests: shared helpers live in normal modules (`tests/brain/schemas.py`), never imported from `conftest.py`.
 - Prove a test has teeth: break the code on purpose, watch it fail, restore.
 - Provider SDKs retry on their own (Anthropic: 2 retries). Adapters must set `max_retries=0` (ADR 0002).
@@ -84,8 +87,9 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
      tool-argument validation, `ScriptedBrain` for tests
   2. [x] Anthropic adapter (`AnthropicBrain`, ADR 0002); live conformance pending an API key
   3. [x] OpenAI Responses adapter (`OpenAIBrain`); live conformance pending a key; Sign in with ChatGPT later
-  4. Kimi (Moonshot) and Grok (xAI) via `OpenAIBrain` + `base_url` (ADR 0002 #11); verify base URLs live
-  5. Router, single fallback, token and cost accounting (cost "unknown" when unpublished, never 0)
+  4. [x] Kimi (Moonshot) and Grok (xAI) configured via `OpenAIBrain` + `base_url` (ADR 0002 #11); verify live
+  5. [x] Router, single fallback, budget check, cost accounting (`enzo.brain.router`, `brains.toml`, ADR 0003)
+  6. Live conformance (§1.4) on every configured brain: needs API keys
 - [ ] Release automation (release PRs, CHANGELOG, tags)
 - [ ] GitHub connector: issue #2
 - Then continue in the order of the spec §17 checklist.
