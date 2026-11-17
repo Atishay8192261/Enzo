@@ -45,6 +45,19 @@ cd server && uv sync && uv run ruff format --check . && uv run ruff check . && u
 pnpm install && pnpm check && pnpm typecheck && pnpm test && pnpm --filter @enzo/web build
 ```
 
+Postgres 16 + pgvector is required (tests use a real database, never mocks). Local dev URL:
+`postgresql+asyncpg://enzo:enzo@localhost:5432/enzo` (`ENZO_DATABASE_URL` overrides). Set it up with:
+
+```bash
+sudo apt-get install -y postgresql-16 postgresql-16-pgvector && sudo pg_ctlcluster 16 main start
+```
+
+```bash
+sudo -u postgres psql -c "CREATE ROLE enzo LOGIN SUPERUSER PASSWORD 'enzo'" && sudo -u postgres createdb -O enzo enzo
+```
+
+If a resumed session finds Postgres down: `pg_ctlcluster 16 main start`. Migrations: `uv run alembic upgrade head`.
+
 Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter @enzo/cli start` or
 `pnpm --filter @enzo/web dev`.
 
@@ -60,7 +73,9 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
 - Every price in `brains.toml` carries its source and read date; an unconfirmed price is left out (cost unknown).
 - Providers bill cache writes per retention (OpenAI 30m/12h, Anthropic 5m/1h): keep `cache_write_breakdown`.
 - Tests: shared helpers live in normal modules (`tests/brain/schemas.py`), never imported from `conftest.py`.
-- Prove a test has teeth: break the code on purpose, watch it fail, restore.
+- Prove a test has teeth: break the code on purpose, watch it fail, restore. Mind test order: a
+  mutation can survive only because tests ran in a lucky order.
+- Alembic `fileConfig` disables existing loggers unless `disable_existing_loggers=False` (kept in env.py).
 - Provider SDKs retry on their own (Anthropic: 2 retries). Adapters must set `max_retries=0` (ADR 0002).
 - Current Claude models (Opus 5.5, Sonnet 5.5) reject forced `tool_choice` with a 400.
 - Claude thinking blocks must be replayed unchanged: `model_dump(mode="json", exclude_unset=True)`.
@@ -93,6 +108,7 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
 - [ ] Spec §7 tools: [x] typed registry (`enzo.tools`, `@tool`), validation before execution, errors as data,
   timeouts, parallel batches; [ ] real tools and connectors
 - [x] Spec §4 agent loop (`enzo.agent`: `run_turn`, approvals, prompt order; ADR 0004)
+- [x] Spec §11 persistence base: Postgres store for transcripts, brain/tool call ledgers, approvals (ADR 0005)
 - [ ] Release automation (release PRs, CHANGELOG, tags)
 - [ ] GitHub connector: issue #2
 - Then continue in the order of the spec §17 checklist.
