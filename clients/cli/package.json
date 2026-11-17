@@ -1,0 +1,24 @@
+{
+  "name": "@enzo/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "enzo": "./src/bin.tsx"
+  },
+  "scripts": {
+    "start": "tsx src/bin.tsx",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@enzo/sdk": "workspace:*",
+    "ink": "8.0.0",
+    "react": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "ink-testing-library": "4.0.0",
+    "tsx": "4.23.15"
+  }
+}
