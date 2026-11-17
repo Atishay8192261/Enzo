@@ -41,16 +41,19 @@ export class GatewayError extends Error {
   }
 }
 
+/** Any fetch-shaped function. Not `typeof fetch`: runtimes (Bun) add members a wrapper lacks. */
+export type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
 export interface GatewayClientOptions {
   baseUrl: string;
   token?: string;
-  fetch?: typeof fetch;
+  fetch?: Fetcher;
 }
 
 export class GatewayClient {
   readonly #baseUrl: string;
   readonly #token: string | undefined;
-  readonly #fetch: typeof fetch;
+  readonly #fetch: Fetcher;
 
   constructor({ baseUrl, token, fetch: fetchImpl = globalThis.fetch }: GatewayClientOptions) {
     this.#baseUrl = baseUrl.replace(/\/+$/, "");
