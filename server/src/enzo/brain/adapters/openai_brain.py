@@ -126,7 +126,7 @@ class OpenAIBrain:
         # Raw events, not the ``responses.stream()`` helper: the helper wraps items in "parsed"
         # types that add fields the API never sent (breaking exact replay), and its
         # get_final_response() raises on a normal max-token stop ("incomplete"). Both verified.
-        with _mapped_errors(self._provider, self._model):
+        with mapped_errors(self._provider, self._model):
             wire = await self._client.responses.create(**request, stream=True)
             async with wire:
                 async for event in wire:
@@ -165,7 +165,7 @@ class OpenAIBrain:
         }
         if tools:
             kwargs["tools"] = [to_wire_tool(t) for t in tools]
-        with _mapped_errors(self._provider, self._model):
+        with mapped_errors(self._provider, self._model):
             result = await self._client.responses.input_tokens.count(**kwargs)
         return result.input_tokens
 
@@ -173,7 +173,7 @@ class OpenAIBrain:
         if self._embedding_model is None:
             msg = "no embedding model configured for this brain"
             raise UnsupportedCapabilityError(msg, provider=self._provider, model=self._model)
-        with _mapped_errors(self._provider, self._embedding_model):
+        with mapped_errors(self._provider, self._embedding_model):
             result = await self._client.embeddings.create(
                 model=self._embedding_model, input=list(texts)
             )
@@ -348,7 +348,7 @@ def _stop_reason(response: WireResponse, *, refused: bool, called: bool) -> Stop
 
 
 @contextmanager
-def _mapped_errors(provider: str, model: str) -> Iterator[None]:
+def mapped_errors(provider: str, model: str) -> Iterator[None]:
     """Map every SDK failure onto one canonical error. Most specific first."""
     ctx = {"provider": provider, "model": model}
     try:

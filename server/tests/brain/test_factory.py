@@ -30,3 +30,25 @@ def test_openai_compatible_providers_keep_their_base_url_and_name() -> None:
     assert (brain.provider, brain.model) == ("xai", "grok-4.7")
     assert str(brain._client.base_url).rstrip("/") == "https://api.x.ai/v1"
     assert brain._client.max_retries == 0
+
+
+def test_a_connected_account_wins_over_the_environment() -> None:
+    keys = {"anthropic": "sk-from-vault"}
+    brain = build_brain(
+        CFG.brains["claude-opus"], env={"ANTHROPIC_API_KEY": "sk-from-env"}, keys=keys.get
+    )
+    assert isinstance(brain, AnthropicBrain)
+    assert brain._client.api_key == "sk-from-vault"
+
+
+def test_the_environment_is_the_fallback_when_not_connected() -> None:
+    brain = build_brain(CFG.brains["grok"], env={"XAI_API_KEY": "xai-env"}, keys=lambda _p: None)
+    assert isinstance(brain, OpenAIBrain)
+    assert brain._client.api_key == "xai-env"
+
+
+def test_missing_key_says_how_to_connect() -> None:
+    with pytest.raises(
+        AuthError, match=r"xai is not connected: run /login xai \(or set XAI_API_KEY\)"
+    ):
+        build_brain(CFG.brains["grok"], env={}, keys=lambda _p: None)

@@ -222,3 +222,35 @@ async def test_stream_ends_with_routed_done() -> None:
     events = [e async for e in r.stream("hard", [Message.user("x")], max_output_tokens=10)]
     assert [e.text for e in events if isinstance(e, TextDelta)] == ["a", "b"]
     assert isinstance(events[-1], RoutedDone)
+
+
+def test_forget_rebuilds_only_that_providers_brains() -> None:
+    config = BrainsConfig.model_validate(
+        {
+            "brains": {
+                "a1": brain_cfg("m-a1"),
+                "a2": brain_cfg("m-a2"),
+                "x": {
+                    "api": "openai-responses",
+                    "provider": "xai",
+                    "model": "m-x",
+                    "api_key_env": "K",
+                },
+            },
+            "routing": {"default": "a1"},
+        }
+    )
+    built: list[str] = []
+
+    def build(c: BrainConfig) -> BrainProvider:
+        built.append(c.model)
+        return ok()
+
+    r = Router(config, build=build, ledger=InMemoryLedger(), clock=lambda: NOW)
+    first = [r.brain(n) for n in ("a1", "a2", "x")]
+    r.forget("anthropic")
+    second = [r.brain(n) for n in ("a1", "a2", "x")]
+    assert built == ["m-a1", "m-a2", "m-x", "m-a1", "m-a2"]
+    assert second[2] is first[2]
+    assert second[0] is not first[0]
+    r.forget("nobody")  # unknown provider: nothing to drop
