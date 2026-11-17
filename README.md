@@ -21,13 +21,15 @@ a background runtime and a safety layer with approval gating. The LLM is a repla
 server/        Python agent core + gateway (FastAPI)
 clients/sdk/   Typed TS client for the gateway, shared by every surface
 clients/web/   Web UI (React + Vite)
-clients/cli/   Terminal UI (Ink)
+clients/cli/   Terminal UI (OpenTUI, runs on Bun)
+clients/chat/  Chat state shared by web and terminal
 docs/          Spec and architecture decision records
 ```
 
 ## Quickstart
 
-Requires Python 3.13+ with [uv](https://docs.astral.sh/uv/), Node 22.12+ and pnpm 10.
+Requires Python 3.13+ with [uv](https://docs.astral.sh/uv/), Node 22.12+, pnpm 10, [Bun](https://bun.sh) 1.3.14+
+(the terminal app) and Postgres 16 with pgvector (see `CLAUDE.md`).
 
 ```bash
 pnpm install
