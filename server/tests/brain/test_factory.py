@@ -5,6 +5,7 @@ from enzo.brain.adapters.anthropic_brain import AnthropicBrain
 from enzo.brain.adapters.openai_brain import OpenAIBrain
 from enzo.brain.config import load_config
 from enzo.brain.factory import build_brain
+from tests.fakes import fake_key
 
 CFG = load_config()
 
@@ -30,3 +31,27 @@ def test_openai_compatible_providers_keep_their_base_url_and_name() -> None:
     assert (brain.provider, brain.model) == ("xai", "grok-4.7")
     assert str(brain._client.base_url).rstrip("/") == "https://api.x.ai/v1"
     assert brain._client.max_retries == 0
+
+
+def test_a_connected_account_wins_over_the_environment() -> None:
+    keys = {"anthropic": fake_key("vault")}
+    brain = build_brain(
+        CFG.brains["claude-opus"], env={"ANTHROPIC_API_KEY": fake_key("env")}, keys=keys.get
+    )
+    assert isinstance(brain, AnthropicBrain)
+    assert brain._client.api_key == fake_key("vault")
+
+
+def test_the_environment_is_the_fallback_when_not_connected() -> None:
+    brain = build_brain(
+        CFG.brains["grok"], env={"XAI_API_KEY": fake_key("xai")}, keys=lambda _p: None
+    )
+    assert isinstance(brain, OpenAIBrain)
+    assert brain._client.api_key == fake_key("xai")
+
+
+def test_missing_key_says_how_to_connect() -> None:
+    with pytest.raises(
+        AuthError, match=r"xai is not connected: run /login xai \(or set XAI_API_KEY\)"
+    ):
+        build_brain(CFG.brains["grok"], env={}, keys=lambda _p: None)
