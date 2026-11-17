@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 
-from enzo.brain.models import Message
+from enzo.brain.models import Message, TextPart
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,11 +24,13 @@ def compose_prompt(
     history: Sequence[Message],
     user_message: str | Message | None,
 ) -> list[Message]:
-    """(1) system, (2) developer, (3) retrieved memory, (4) history, (6) the user's message.
+    """(1) system, (2) developer, (4) history, (6) the user's message carrying (3) memory.
 
-    (5) tool definitions travel as API parameters and (7) this turn's tool results are appended
-    by the loop, so both keep their place in the order without being text here. With no user
-    message, the prompt resumes a paused turn whose history already ends where it stopped.
+    Retrieved memory rides inside the new user message, after the history (ADR 0007, a deliberate
+    change from spec §3's listed order): the conversation stays append-only, so provider prompt
+    caches keep covering the whole history and reasoning replay never sees an edited prefix.
+    (5) tool definitions travel as API parameters and (7) this turn's tool results are appended by
+    the loop. With no user message, the prompt resumes a paused turn exactly where it stopped.
     """
     if any(m.role == "system" for m in history):
         msg = "history must not contain system messages; pass instructions as system/developer"
@@ -36,16 +38,16 @@ def compose_prompt(
     prompt = [Message.system(system)]
     if developer:
         prompt.append(Message.system(developer))
-    if memory:
-        prompt.append(Message.system(render_memory(memory)))
     prompt.extend(history)
-    if isinstance(user_message, str):
-        prompt.append(Message.user(user_message))
-    elif user_message is not None:
-        if user_message.role != "user":
-            msg = "the new message must come from the user"
-            raise ValueError(msg)
-        prompt.append(user_message)
+    if user_message is None:
+        return prompt
+    user = Message.user(user_message) if isinstance(user_message, str) else user_message
+    if user.role != "user":
+        msg = "the new message must come from the user"
+        raise ValueError(msg)
+    if memory:
+        user = Message(role="user", parts=(*user.parts, TextPart(text=render_memory(memory))))
+    prompt.append(user)
     return prompt
 
 
