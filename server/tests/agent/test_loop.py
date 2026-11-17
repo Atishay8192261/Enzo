@@ -224,6 +224,8 @@ async def test_brain_failure_is_reported_honestly() -> None:
     _, out = await run(brain, t.registry())
     assert out.stop == "brain_failure"
     assert "slow down" in out.text
+    # Spec §1.3.4 step 1: the failed attempt is recorded, not lost with the error.
+    assert [(c.brain, c.outcome) for c in out.brain_calls] == [("main", "rate_limit")]
 
 
 async def test_over_budget_stops_before_calling_the_brain() -> None:

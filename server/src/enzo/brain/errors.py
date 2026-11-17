@@ -14,6 +14,9 @@ class BrainError(Exception):
         super().__init__(message)
         self.provider = provider
         self.model = model
+        #: The router's records of every attempt behind this error (``CallRecord``s), so a
+        #: failure is never lost on the way to the ledger (spec §1.3.4 step 1).
+        self.attempts: tuple[object, ...] = ()
 
 
 class RateLimitError(BrainError):
