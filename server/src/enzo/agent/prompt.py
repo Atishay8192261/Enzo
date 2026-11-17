@@ -22,12 +22,13 @@ def compose_prompt(
     developer: str | None,
     memory: Sequence[MemorySnippet],
     history: Sequence[Message],
-    user_message: str,
+    user_message: str | Message | None,
 ) -> list[Message]:
     """(1) system, (2) developer, (3) retrieved memory, (4) history, (6) the user's message.
 
     (5) tool definitions travel as API parameters and (7) this turn's tool results are appended
-    by the loop, so both keep their place in the order without being text here.
+    by the loop, so both keep their place in the order without being text here. With no user
+    message, the prompt resumes a paused turn whose history already ends where it stopped.
     """
     if any(m.role == "system" for m in history):
         msg = "history must not contain system messages; pass instructions as system/developer"
@@ -38,7 +39,13 @@ def compose_prompt(
     if memory:
         prompt.append(Message.system(render_memory(memory)))
     prompt.extend(history)
-    prompt.append(Message.user(user_message))
+    if isinstance(user_message, str):
+        prompt.append(Message.user(user_message))
+    elif user_message is not None:
+        if user_message.role != "user":
+            msg = "the new message must come from the user"
+            raise ValueError(msg)
+        prompt.append(user_message)
     return prompt
 
 

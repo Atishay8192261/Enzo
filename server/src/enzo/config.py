@@ -1,7 +1,9 @@
 """Runtime configuration, loaded from environment variables prefixed with ``ENZO_``."""
 
-from typing import Literal
+from pathlib import Path
+from typing import Literal, Self
 
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,3 +17,14 @@ class Settings(BaseSettings):
     port: int = 8787
     #: Local development default. Real deployments set ENZO_DATABASE_URL.
     database_url: str = "postgresql+asyncpg://enzo:enzo@localhost:5432/enzo"
+    #: Bearer token every client must send. Required in prod; optional for local dev and tests.
+    api_token: SecretStr | None = None
+    #: Brains and routing file; None uses the default shipped with Enzo.
+    brains_config: Path | None = None
+
+    @model_validator(mode="after")
+    def _prod_requires_a_token(self) -> Self:
+        if self.env == "prod" and self.api_token is None:
+            msg = "ENZO_API_TOKEN must be set when ENZO_ENV=prod"
+            raise ValueError(msg)
+        return self
