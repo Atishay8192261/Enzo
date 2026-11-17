@@ -107,3 +107,44 @@ input {
 small {
   color: var(--muted);
 }
+.accounts-toggle summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+.accounts {
+  border: 1px solid var(--user);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+}
+.accounts h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+}
+.accounts ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.accounts li small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.accounts form {
+  position: static;
+  padding-block: 0;
+  background: none;
+  margin-top: 0.25rem;
+}
+.accounts form input {
+  flex: 1;
+  min-width: 0;
+}
+.accounts [role="alert"] {
+  color: var(--accent);
+}
+.accounts li button {
+  margin-left: 0.25rem;
+}

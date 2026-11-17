@@ -1,4 +1,4 @@
-import type { ChatClient } from "@enzo/chat";
+import type { AccountsClient, ChatClient } from "@enzo/chat";
 import type { AgentEvent, Brain, Conversation, StoredMessage } from "@enzo/sdk";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { StrictMode } from "react";
@@ -20,8 +20,14 @@ async function* events(...list: AgentEvent[]): AsyncGenerator<AgentEvent> {
   for (const e of list) yield e;
 }
 
-function fakeClient(overrides: Partial<ChatClient> = {}): ChatClient {
+function fakeClient(
+  overrides: Partial<ChatClient & AccountsClient> = {},
+): ChatClient & AccountsClient {
   return {
+    connections: async () => [],
+    connect: vi.fn(async () => {}),
+    disconnect: vi.fn(async () => {}),
+    checkConnection: async () => ({ ok: true, detail: null }),
     health: async () => ({ status: "ok", version: "1", env: "test" }),
     brains: async () => BRAINS,
     createConversation: async () => CONVERSATION,

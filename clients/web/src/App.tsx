@@ -1,5 +1,12 @@
-import { type ChatClient, type ConversationMemory, formatCost, useChat } from "@enzo/chat";
+import {
+  type AccountsClient,
+  type ChatClient,
+  type ConversationMemory,
+  formatCost,
+  useChat,
+} from "@enzo/chat";
 import { type FormEvent, useState } from "react";
+import { Accounts } from "./Accounts.tsx";
 
 const KEY = "enzo.conversation";
 
@@ -21,7 +28,7 @@ const browserMemory: ConversationMemory = {
   },
 };
 
-export function App({ client }: { client: ChatClient }) {
+export function App({ client }: { client: ChatClient & AccountsClient }) {
   const { state, send, decide, chooseBrain } = useChat(client, browserMemory, "web");
   const [text, setText] = useState("");
   const busy = state.status !== "ready";
@@ -56,6 +63,11 @@ export function App({ client }: { client: ChatClient }) {
           </select>
         </label>
       </header>
+
+      <details className="accounts-toggle">
+        <summary>Accounts</summary>
+        <Accounts client={client} />
+      </details>
 
       {state.status === "connecting" && <p role="status">Connecting…</p>}
       {state.status === "offline" && <p role="alert">Gateway unreachable: {state.error}</p>}
