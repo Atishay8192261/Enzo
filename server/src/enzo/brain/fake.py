@@ -40,11 +40,11 @@ def estimate_tokens(text: str) -> int:
 
 
 class ScriptedBrain:
-    """Replays scripted assistant messages (or raises scripted errors) in order; records calls."""
+    """Replays scripted replies (messages, full responses or errors) in order; records calls."""
 
     def __init__(
         self,
-        script: Iterable[Message | BrainError],
+        script: Iterable[Message | BrainResponse | BrainError],
         *,
         provider: str = "fake",
         model: str = "scripted-1",
@@ -89,6 +89,8 @@ class ScriptedBrain:
         step = self._script.popleft()
         if isinstance(step, BrainError):
             raise step
+        if isinstance(step, BrainResponse):
+            return step
         if step.role != "assistant":
             msg = "scripted steps must be assistant messages"
             raise ValueError(msg)

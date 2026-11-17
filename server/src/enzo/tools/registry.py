@@ -19,7 +19,9 @@ from enzo.brain.toolcall import ToolCallRejection, ValidatedCall, validate_call
 
 DEFAULT_TIMEOUT_S = 60.0
 
-type FailureKind = Literal["invalid_arguments", "unknown_tool", "failed", "timeout", "bad_result"]
+type FailureKind = Literal[
+    "invalid_arguments", "unknown_tool", "failed", "timeout", "bad_result", "declined", "not_run"
+]
 
 type Handler[P: BaseModel, R: BaseModel] = Callable[[P], Awaitable[R]]
 
@@ -148,6 +150,11 @@ class ToolRegistry:
         async with asyncio.TaskGroup() as group:
             tasks = [group.create_task(self.execute(c)) for c in calls]
         return [t.result() for t in tasks]
+
+    @staticmethod
+    def not_executed(call: ToolCall, kind: FailureKind, message: str) -> ToolOutcome:
+        """Result for a call that was deliberately not run (declined, truncated input)."""
+        return ToolRegistry._failed(call, kind, message, time.perf_counter())
 
     @staticmethod
     def _failed(
