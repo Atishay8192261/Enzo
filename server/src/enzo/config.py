@@ -13,3 +13,5 @@ class Settings(BaseSettings):
     env: Literal["dev", "test", "prod"] = "dev"
     host: str = "127.0.0.1"
     port: int = 8787
+    #: Local development default. Real deployments set ENZO_DATABASE_URL.
+    database_url: str = "postgresql+asyncpg://enzo:enzo@localhost:5432/enzo"
