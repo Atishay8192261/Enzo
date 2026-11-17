@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     api_token: SecretStr | None = None
     #: Brains and routing file; None uses the default shipped with Enzo.
     brains_config: Path | None = None
+    #: Where Enzo keeps its local state (connection index, encrypted vault).
+    config_dir: Path = Path.home() / ".config" / "enzo"
+    #: Key for the encrypted credential vault on machines without an OS keychain (§11.2).
+    vault_key: SecretStr | None = None
 
     @model_validator(mode="after")
     def _prod_requires_a_token(self) -> Self:
