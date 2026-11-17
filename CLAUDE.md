@@ -65,6 +65,9 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
 
 - Browsers throw "Illegal invocation" when `fetch` is called as a method of another object; the SDK wraps it.
 - `EventSource` cannot POST: the SDK parses SSE from `fetch` (tested at every byte split).
+- Ink delivers several keys typed at once as one `input` string (an Enter inside it is not `key.return`):
+  handle chunks key by key. Use one app-level `useInput` reading state from a ref; toggling listeners
+  per render drops keys. Real-terminal check: `clients/cli/scripts/tty-smoke.py`.
 - React StrictMode runs effects twice in dev: one-time startup work must be shared (see `connect()` in
   `clients/web/src/useChat.ts`), or it runs twice.
 - Starlette's `TestClient` needs `httpx2`, not `httpx`.
@@ -115,7 +118,7 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
 - [x] Spec §11 persistence base: Postgres store for transcripts, brain/tool call ledgers, approvals (ADR 0005)
 - [x] Gateway: conversations, SSE turns, approvals, brain choice, auth (`enzo.gateway`, `enzo.agent.service`, ADR 0006)
 - [x] Web chat: streaming, approval cards with exact arguments, brain picker, history (`clients/web`)
-- [ ] Terminal chat (`clients/cli`)
+- [x] Terminal chat (`clients/cli`), sharing chat state with web via `@enzo/chat`
 - [ ] Release automation (release PRs, CHANGELOG, tags)
 - [ ] GitHub connector: issue #2
 - Then continue in the order of the spec §17 checklist.
