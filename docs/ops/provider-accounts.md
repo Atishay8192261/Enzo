@@ -23,6 +23,13 @@ cd server && uv run enzo-server --new-vault-key
 
 Set it as `ENZO_VAULT_KEY` in the server's environment (a secret manager, not a committed file).
 
+## Connect from the apps
+
+- **Terminal:** `/login <provider>` opens a hidden prompt: paste the key (only dots are drawn),
+  Enter saves, Esc cancels. `/connections` lists providers, `/check <provider>` tests a saved key,
+  `/logout <provider>` deletes it. A key typed on the command line itself is refused.
+- **Web:** open **Accounts**: one password field per provider, plus Check and Disconnect.
+
 ## Operations
 
 | Task | API |
