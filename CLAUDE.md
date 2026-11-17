@@ -109,6 +109,10 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
 - Anthropic SDK 2.9 sends API keys as `Authorization: Bearer`, not `x-api-key` (check the installed source).
 - Cloud sessions: the proxy blocks api.x.ai, api.moonshot.ai and api.openai.com (403). Key checks there
   report "could not check", which is correct; live tests need those hosts allowed.
+- OpenTUI 0.9.2 has no password input: `clients/cli/src/KeyPrompt.tsx` reads keys via `useKeyboard` +
+  `usePaste` into a ref and draws dots. Tests paste with `mockInput.pasteBracketedText`.
+- GitGuardian flags realistic fake keys: tests use `tests/fakes.py` `fake_key()` (low entropy). Force-push
+  is blocked here: to drop a flagged commit, push a new branch, open a new PR, close the old one.
 - Secrets: `enzo.accounts` vault (keychain or AES-GCM file with `ENZO_VAULT_KEY`), never plaintext (ADR 0009).
 
 ## Brain providers and auth (verified 2026-11-17, details in ADR 0001)
@@ -140,7 +144,7 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
 - [ ] Bring your own account (decision 2026-11-17):
   1. [x] Server: vault, connections index, live key check, `/connections` endpoints (ADR 0009,
      `docs/ops/provider-accounts.md`)
-  2. [ ] Clients: SDK + `/login`, `/logout`, `/connections` in terminal and web
+  2. [x] Clients: SDK + `/login` (hidden prompt), `/logout`, `/connections`, `/check`; web Accounts panel
   3. [ ] Model catalog tiers (fast / balanced / powerful), `/models`, `/model`, provider-neutral routing
   4. [ ] Sign in with ChatGPT (`enzo login chatgpt`, runs on the user's machine)
 - [ ] Release automation (release PRs, CHANGELOG, tags)
