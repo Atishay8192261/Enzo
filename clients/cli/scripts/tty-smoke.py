@@ -33,6 +33,10 @@ import termios  # noqa: E402
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
 
 
+KEY = "fake-smoke-000000000000"  # never a real key; must never be drawn
+leaks: list[str] = []
+
+
 def screen_text() -> str:
     return "\n".join(term.display)
 
@@ -45,6 +49,8 @@ def pump(timeout: float = 0.2) -> None:
         except OSError:
             return
         stream.feed(data)
+        if KEY in screen_text() or KEY.encode() in data:
+            leaks.append(screen_text())
         if b"\x1b[6n" in data:  # cursor position request: answer like a real terminal
             os.write(fd, f"\x1b[{term.cursor.y + 1};{term.cursor.x + 1}R".encode())
 
@@ -62,8 +68,25 @@ results = {"prompt shown": wait_for("Message Enzo")}
 for ch in "hello enzo":  # fast, like a paste-happy human
     os.write(fd, ch.encode())
 os.write(fd, b"\r")
-results["honest failure shown"] = wait_for("no API key: set ANTHROPIC_API_KEY")
+results["honest failure shown"] = wait_for("is not connected: run /login")
 results["typed line kept"] = "you: hello enzo" in screen_text()
+for ch in "/login anthropic":
+    os.write(fd, ch.encode())
+os.write(fd, b"\r")
+results["hidden key prompt"] = wait_for("Paste your anthropic API key (hidden)")
+os.write(fd, b"\x1b[200~" + KEY.encode() + b"\n\x1b[201~")  # bracketed paste, as terminals send
+results["paste counted"] = wait_for(f"{len(KEY)} characters")
+os.write(fd, b"\r")
+# A real provider rejects the fake key; offline, the gateway says it could not check it.
+end = time.time() + 30
+while time.time() < end and not any(
+    t in screen_text() for t in ("rejected this key", "could not check the key")
+):
+    pump()
+results["provider answered, nothing saved"] = "rejected this key" in screen_text() or (
+    "could not check the key" in screen_text()
+)
+results["key never on screen"] = not leaks
 os.write(fd, b"/quit\r")
 end = time.time() + 5
 exited = False

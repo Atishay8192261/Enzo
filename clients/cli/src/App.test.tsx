@@ -2,8 +2,8 @@ import { describe, expect, it, mock } from "bun:test";
 import { mkdtempSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ChatClient, ConversationMemory } from "@enzo/chat";
-import type { AgentEvent, Brain, Conversation } from "@enzo/sdk";
+import type { AccountsClient, ChatClient, ConversationMemory } from "@enzo/chat";
+import type { AgentEvent, Brain, Conversation, ProviderConnection } from "@enzo/sdk";
 import { testRender } from "@opentui/react/test-utils";
 import type React from "react";
 import { act } from "react";
@@ -30,8 +30,33 @@ function memory(start: string | null = null): ConversationMemory {
   };
 }
 
-function fakeClient(overrides: Partial<ChatClient> = {}): ChatClient {
+const CONNECTIONS: ProviderConnection[] = [
+  {
+    provider: "anthropic",
+    connected: true,
+    method: "api_key",
+    connected_at: "2026-11-17T20:00:00Z",
+    methods: ["api_key"],
+    models: ["claude-opus-5-5"],
+  },
+  {
+    provider: "xai",
+    connected: false,
+    method: null,
+    connected_at: null,
+    methods: ["api_key"],
+    models: ["grok-4.7"],
+  },
+];
+
+type Client = ChatClient & AccountsClient;
+
+function fakeClient(overrides: Partial<Client> = {}): Client {
   return {
+    connections: async () => CONNECTIONS,
+    connect: mock(async () => {}),
+    disconnect: mock(async () => {}),
+    checkConnection: async () => ({ ok: true, detail: null }),
     health: async () => ({ status: "ok", version: "1", env: "test" }),
     brains: async () => BRAINS,
     createConversation: async () => CONVERSATION,
@@ -45,7 +70,7 @@ function fakeClient(overrides: Partial<ChatClient> = {}): ChatClient {
   };
 }
 
-async function screen(client: ChatClient, onQuit = () => {}) {
+async function screen(client: Client, onQuit = () => {}) {
   return mount(<App client={client} memory={memory()} onQuit={onQuit} />, 30, "Message Enzo");
 }
 
@@ -180,6 +205,103 @@ describe("terminal chat (OpenTUI)", () => {
       10,
       "Gateway unreachable: ECONNREFUSED",
     );
+  });
+});
+
+describe("provider accounts", () => {
+  const KEY = "fake-xai-000000000000";
+
+  it("logs in at a hidden prompt: the key is never drawn", async () => {
+    const connect = mock(async () => {});
+    await using s = await screen(fakeClient({ connect }));
+    await enter(s, "/login xai");
+    await until(s, "Paste your xai API key (hidden)");
+    let frames = "";
+    await act(async () => {
+      await s.mockInput.typeText(KEY);
+    });
+    frames += await until(s, `${KEY.length} characters`);
+    await act(async () => {
+      s.mockInput.pressEnter();
+    });
+    frames += await until(s, "Connected xai.");
+    expect(connect).toHaveBeenCalledWith("xai", KEY);
+    expect(frames).not.toContain(KEY);
+    expect(frames).not.toContain("fake-xai");
+    await until(s, "Message Enzo"); // back to chat
+  });
+
+  it("takes a bracketed paste and trims the newline", async () => {
+    const connect = mock(async () => {});
+    await using s = await screen(fakeClient({ connect }));
+    await enter(s, "/login xai");
+    await until(s, "(hidden)");
+    await act(async () => {
+      await s.mockInput.pasteBracketedText(`${KEY}\n`);
+    });
+    const frame = await until(s, `${KEY.length} characters`);
+    expect(frame).not.toContain(KEY);
+    await act(async () => {
+      s.mockInput.pressEnter();
+    });
+    await until(s, "Connected xai.");
+    expect(connect).toHaveBeenCalledWith("xai", KEY);
+  });
+
+  it("Esc cancels without saving", async () => {
+    const connect = mock(async () => {});
+    await using s = await screen(fakeClient({ connect }));
+    await enter(s, "/login xai");
+    await until(s, "(hidden)");
+    await act(async () => {
+      await s.mockInput.typeText("abc");
+    });
+    await until(s, "3 characters");
+    await press(s, "ESCAPE");
+    await until(s, "Login cancelled. Nothing was saved.");
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it("shows the provider's refusal and never the key", async () => {
+    const connect = mock(() =>
+      Promise.reject(new Error("/connections/xai failed: HTTP 422: xai rejected this key")),
+    );
+    await using s = await screen(fakeClient({ connect }));
+    await enter(s, "/login xai");
+    await until(s, "(hidden)");
+    await act(async () => {
+      await s.mockInput.typeText(KEY);
+      s.mockInput.pressEnter();
+    });
+    const frame = await until(s, "xai rejected this key");
+    expect(frame).not.toContain(KEY);
+  });
+
+  it("refuses keys typed on the command line and unknown providers", async () => {
+    const connect = mock(async () => {});
+    await using s = await screen(fakeClient({ connect }));
+    await enter(s, `/login xai ${KEY}`);
+    const frame = await until(s, "Never type a key on the command line");
+    expect(frame).not.toContain(KEY);
+    await enter(s, "/login ghost");
+    await until(s, "Unknown provider: ghost. Providers: anthropic, xai");
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it("lists, checks and disconnects", async () => {
+    const disconnect = mock(async () => {});
+    const checkConnection = mock(async () => ({ ok: false, detail: "xai rejected this key" }));
+    await using s = await screen(fakeClient({ disconnect, checkConnection }));
+    await enter(s, "/connections");
+    await until(s, "anthropic: connected (API key, since 2026-11-17) · claude-opus-5-5");
+    await until(s, "xai: not connected: /login xai · grok-4.7");
+    await enter(s, "/check xai");
+    await until(s, "xai: xai rejected this key");
+    await enter(s, "/logout xai");
+    await until(s, "Disconnected xai. Its key was deleted.");
+    expect(disconnect).toHaveBeenCalledWith("xai");
+    await enter(s, "/logout");
+    await until(s, "Usage: /logout <provider>");
   });
 });
 
