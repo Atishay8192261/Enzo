@@ -81,6 +81,59 @@ describe("GatewayClient", () => {
     expect(seen[0]?.url).toBe("http://enzo/conversations/c%2F..%2Fx/approvals/a%20b");
   });
 
+  it("connects, checks and disconnects provider accounts", async () => {
+    const seen: Seen[] = [];
+    const client = new GatewayClient({
+      baseUrl: "http://enzo",
+      fetch: fakeFetch(
+        (url) =>
+          url.endsWith("/check")
+            ? Response.json({ ok: false, detail: "xai rejected this key" })
+            : new Response(null, { status: 204 }),
+        seen,
+      ),
+    });
+    await client.connect("xai", "fake-key-000000");
+    await expect(client.checkConnection("xai")).resolves.toEqual({
+      ok: false,
+      detail: "xai rejected this key",
+    });
+    await client.disconnect("x/y");
+    expect(seen.map((s) => `${s.init.method} ${s.url}`)).toEqual([
+      "PUT http://enzo/connections/xai",
+      "POST http://enzo/connections/xai/check",
+      "DELETE http://enzo/connections/x%2Fy",
+    ]);
+    expect(JSON.parse(String(seen[0]?.init.body))).toEqual({ api_key: "fake-key-000000" });
+  });
+
+  it("reports a rejected key with the server's reason and never the key", async () => {
+    const client = new GatewayClient({
+      baseUrl: "http://enzo",
+      fetch: fakeFetch(() =>
+        Response.json({ detail: "anthropic rejected this key" }, { status: 422 }),
+      ),
+    });
+    const error = await client.connect("anthropic", "fake-key-000000").catch((e: unknown) => e);
+    expect(error).toMatchObject({ status: 422 });
+    expect(String((error as Error).message)).toContain("anthropic rejected this key");
+    expect(String((error as Error).message)).not.toContain("fake-key");
+  });
+
+  it("turns validation errors into field: reason", async () => {
+    const detail = [
+      { type: "string_too_short", loc: ["body", "api_key"], msg: "too short" },
+      { type: "missing", loc: ["body"], msg: "Field required" },
+    ];
+    const client = new GatewayClient({
+      baseUrl: "http://enzo",
+      fetch: fakeFetch(() => Response.json({ detail }, { status: 422 })),
+    });
+    await expect(client.connect("xai", "x")).rejects.toThrow(
+      "/connections/xai failed: HTTP 422: api_key: too short; Field required",
+    );
+  });
+
   it("keeps GatewayError exported for callers", () => {
     expect(new GatewayError("x", 500).status).toBe(500);
   });

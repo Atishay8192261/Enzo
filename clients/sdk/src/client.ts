@@ -26,6 +26,21 @@ export interface StoredMessage {
   parts: Array<{ type: string; text?: string; name?: string; content?: string }>;
 }
 
+/** A provider account the user can connect. Never carries the secret. */
+export interface ProviderConnection {
+  provider: string;
+  connected: boolean;
+  method: string | null;
+  connected_at: string | null;
+  methods: string[];
+  models: string[];
+}
+
+export interface ConnectionCheck {
+  ok: boolean;
+  detail: string | null;
+}
+
 export interface TurnContext {
   timezone?: string;
   device?: string;
@@ -97,6 +112,23 @@ export class GatewayClient {
     });
   }
 
+  connections(): Promise<ProviderConnection[]> {
+    return this.#json("GET", "/connections") as Promise<ProviderConnection[]>;
+  }
+
+  /** Checks the key with the provider, then saves it in the gateway's vault. */
+  async connect(provider: string, apiKey: string): Promise<void> {
+    await this.#json("PUT", `/connections/${enc(provider)}`, { api_key: apiKey });
+  }
+
+  async disconnect(provider: string): Promise<void> {
+    await this.#json("DELETE", `/connections/${enc(provider)}`);
+  }
+
+  checkConnection(provider: string): Promise<ConnectionCheck> {
+    return this.#json("POST", `/connections/${enc(provider)}/check`) as Promise<ConnectionCheck>;
+  }
+
   send(
     id: string,
     message: string,
@@ -151,11 +183,20 @@ async function describe(res: Response, path: string): Promise<string> {
   let detail = "";
   try {
     const body = (await res.json()) as { detail?: unknown };
-    detail = typeof body.detail === "string" ? `: ${body.detail}` : "";
+    if (typeof body.detail === "string") detail = `: ${body.detail}`;
+    else if (Array.isArray(body.detail)) detail = `: ${body.detail.map(fieldError).join("; ")}`;
   } catch {
     // non-JSON error body: status alone is still a useful message
   }
   return `${path.startsWith("/healthz") ? "healthz" : path} failed: HTTP ${res.status}${detail}`;
+}
+
+/** A validation error as "field: reason". The gateway never includes the submitted value. */
+function fieldError(e: unknown): string {
+  const o = (typeof e === "object" && e !== null ? e : {}) as { loc?: unknown; msg?: unknown };
+  const loc = Array.isArray(o.loc) ? o.loc.filter((x) => x !== "body").join(".") : "";
+  const msg = typeof o.msg === "string" ? o.msg : "invalid";
+  return loc ? `${loc}: ${msg}` : msg;
 }
 
 function enc(segment: string): string {
