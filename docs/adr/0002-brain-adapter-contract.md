@@ -21,6 +21,9 @@ provider behaviour the canonical layer must absorb.
 | 6 | `BrainResponse.model` is the model that actually served the reply. | A provider-side swap must never be silent (§1.3.3). |
 | 7 | Connection failures get their own error kind and are fallback-eligible. | An unreachable provider is a server-side failure in the sense of §1.3.4, but logs must say what really happened. |
 | 8 | Provider-side refusal fallbacks are not enabled in the adapter. | They swap the serving model inside one call. Any brain swap must go through the router so it is configured and logged (§1.3.3). Revisit in the router slice. |
+| 9 | OpenAI runs on the Responses API with `store=False`, reading raw stream events. | Enzo owns history (privacy, replay). The SDK's `responses.stream()` helper adds `parsed` fields the API never sent, breaking exact replay, and its `get_final_response()` raises on a normal max-token stop. Both reproduced in tests. |
+| 10 | OpenAI function tools are sent with `strict: false`. | Pydantic schemas with optional fields are not strict-mode compatible; Responses would silently fall back anyway. Enzo validates every call itself (spec §4.2). |
+| 11 | One Responses adapter serves OpenAI-compatible providers (xAI, Moonshot) via `base_url` and a `provider` name. | Both document an OpenAI-compatible Responses endpoint. To be proven live per provider before it is listed as supported (§1.4, §16). |
 
 ## Consequences
 
