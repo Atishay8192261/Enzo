@@ -1,0 +1,38 @@
+import type { ProviderConnection } from "@enzo/sdk";
+import { describe, expect, it } from "vitest";
+import { describeConnection, parseLogin } from "./accounts.ts";
+
+const base: ProviderConnection = {
+  provider: "anthropic",
+  connected: false,
+  method: null,
+  connected_at: null,
+  methods: ["api_key"],
+  models: ["claude-opus-5-5", "claude-sonnet-5-5"],
+};
+
+describe("accounts", () => {
+  it("describes connected and unconnected providers", () => {
+    expect(describeConnection(base)).toBe(
+      "anthropic: not connected: /login anthropic · claude-opus-5-5, claude-sonnet-5-5",
+    );
+    const on = {
+      ...base,
+      connected: true,
+      method: "api_key",
+      connected_at: "2026-11-17T21:00:00Z",
+    };
+    expect(describeConnection(on)).toBe(
+      "anthropic: connected (API key, since 2026-11-17) · claude-opus-5-5, claude-sonnet-5-5",
+    );
+  });
+
+  it("parses /login and refuses keys typed on the command line", () => {
+    expect(parseLogin("/brains")).toBeNull();
+    expect(parseLogin("/login")).toEqual({ error: expect.stringContaining("Usage") });
+    expect(parseLogin(" /login  xai ")).toEqual({ provider: "xai" });
+    const inline = parseLogin("/login xai fake-key-000000");
+    expect(inline).toEqual({ error: expect.stringContaining("Never type a key") });
+    expect(JSON.stringify(inline)).not.toContain("fake-key");
+  });
+});
