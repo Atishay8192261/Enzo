@@ -55,6 +55,9 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
 - FastAPI has native SSE (`fastapi.sse`); no extra streaming library needed.
 - Pydantic `model_validate_json(..., strict=True)` with `extra="forbid"` rejects coerced types and unknown
   fields: use it to validate tool-call arguments from the brain.
+- Never name a module after a stdlib module (e.g. `types.py`): scripts run from that folder break.
+- Tests: shared helpers live in normal modules (`tests/brain/schemas.py`), never imported from `conftest.py`.
+- Prove a test has teeth: break the code on purpose, watch it fail, restore.
 
 ## Brain providers and auth (verified 2026-11-17, details in ADR 0001)
 
@@ -68,8 +71,8 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
 
 - [x] Scaffold: gateway, SDK, web and terminal UIs, CI (PR #1)
 - [ ] Spec §1 brain layer, one PR per slice:
-  1. Canonical types (messages, tool definitions, tool calls, usage), `BrainProvider` protocol,
-     tool-argument validation, scripted `FakeBrain` for tests
+  1. [x] Canonical types (`enzo.brain.models`), `BrainProvider` protocol + `tool_call()`, strict
+     tool-argument validation, `ScriptedBrain` for tests
   2. Anthropic adapter
   3. OpenAI Responses adapter (Sign in with ChatGPT later)
   4. OpenAI-compatible adapter for Kimi (Moonshot) and xAI
