@@ -212,6 +212,7 @@ async def test_stream_yields_text_then_a_canonical_response() -> None:
         "output_tokens": 20,
         "cached_input_tokens": 300,
         "cache_write_input_tokens": 50,
+        "cache_write_breakdown": {},
     }
 
 
@@ -383,3 +384,13 @@ async def test_explicit_nulls_survive_replay_exactly_like_the_sdk() -> None:
     )
     assert payload.payload["content"] == sdk_seen[0]["messages"][1]["content"]
     assert payload.payload["content"][0] == {"type": "text", "text": "hi", "citations": None}
+
+
+async def test_cache_writes_are_broken_down_by_retention() -> None:
+    message = wire_message([{"type": "text", "text": "x"}])
+    message["usage"]["cache_creation"] = {
+        "ephemeral_5m_input_tokens": 30,
+        "ephemeral_1h_input_tokens": 20,
+    }
+    r = await brain(streaming(message)).chat([Message.user("x")], max_output_tokens=10)
+    assert r.usage.cache_write_breakdown == {"5m": 30, "1h": 20}

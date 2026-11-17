@@ -132,11 +132,18 @@ class Usage(_Frozen):
     output_tokens: int = Field(ge=0)
     cached_input_tokens: int = Field(default=0, ge=0)
     cache_write_input_tokens: int = Field(default=0, ge=0)
+    #: Cache writes by retention ("5m", "1h", "30m", "12h"): each retention has its own price.
+    cache_write_breakdown: dict[str, int] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _cache_is_part_of_input(self) -> Self:
         if self.cached_input_tokens + self.cache_write_input_tokens > self.input_tokens:
             msg = "cache token counts must be subsets of input_tokens"
+            raise ValueError(msg)
+        if self.cache_write_breakdown and (
+            sum(self.cache_write_breakdown.values()) != self.cache_write_input_tokens
+        ):
+            msg = "cache_write_breakdown must add up to cache_write_input_tokens"
             raise ValueError(msg)
         return self
 
