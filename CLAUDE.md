@@ -58,6 +58,11 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
 - Never name a module after a stdlib module (e.g. `types.py`): scripts run from that folder break.
 - Tests: shared helpers live in normal modules (`tests/brain/schemas.py`), never imported from `conftest.py`.
 - Prove a test has teeth: break the code on purpose, watch it fail, restore.
+- Provider SDKs retry on their own (Anthropic: 2 retries). Adapters must set `max_retries=0` (ADR 0002).
+- Current Claude models (Opus 5.5, Sonnet 5.5) reject forced `tool_choice` with a 400.
+- Claude thinking blocks must be replayed unchanged: `model_dump(mode="json", exclude_unset=True)`.
+- Cloud sessions: `api.anthropic.com` bypasses the egress proxy, so a key saved as a network secret is
+  not injected there. Live Claude tests need another route.
 
 ## Brain providers and auth (verified 2026-11-17, details in ADR 0001)
 
@@ -73,7 +78,7 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
 - [ ] Spec §1 brain layer, one PR per slice:
   1. [x] Canonical types (`enzo.brain.models`), `BrainProvider` protocol + `tool_call()`, strict
      tool-argument validation, `ScriptedBrain` for tests
-  2. Anthropic adapter
+  2. [x] Anthropic adapter (`AnthropicBrain`, ADR 0002); live conformance pending an API key
   3. OpenAI Responses adapter (Sign in with ChatGPT later)
   4. OpenAI-compatible adapter for Kimi (Moonshot) and xAI
   5. Router, single fallback, token and cost accounting (cost "unknown" when unpublished, never 0)
