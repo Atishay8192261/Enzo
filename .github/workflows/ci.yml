@@ -28,7 +28,16 @@ jobs:
           working-directory: server
           enable-cache: true
           cache-dependency-glob: server/uv.lock
+      - name: Start Postgres 16 with pgvector
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-16 postgresql-16-pgvector
+          sudo pg_ctlcluster 16 main status || sudo pg_ctlcluster 16 main start
+          sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE ROLE enzo LOGIN SUPERUSER PASSWORD 'enzo'"
+          sudo -u postgres createdb -O enzo enzo
       - run: uv sync --locked
+      - name: Migrations apply cleanly
+        run: uv run alembic upgrade head
       - run: uv run ruff format --check .
       - run: uv run ruff check .
       - run: uv run mypy src tests
