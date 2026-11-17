@@ -1,20 +1,15 @@
-"""Real Postgres for store tests: one fresh database per session, migrated with Alembic."""
+"""Real Postgres helpers for tests: fresh databases migrated with Alembic. Never mocked."""
 
 import asyncio
 import os
 import uuid
-from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import asyncpg
-import pytest
-from alembic import command
 from alembic.config import Config
 
-from enzo.store.repository import Store
-
 ADMIN_URL = os.environ.get("ENZO_TEST_ADMIN_URL", "postgresql://enzo:enzo@localhost:5432/postgres")
-ALEMBIC_INI = Path(__file__).resolve().parents[2] / "alembic.ini"
+ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 TABLES = "approvals, tool_calls, brain_calls, messages, conversations"
 
 
@@ -45,24 +40,3 @@ def create_database() -> tuple[str, str]:
 
 def drop_database(name: str) -> None:
     asyncio.run(_admin(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
-
-
-@pytest.fixture(scope="session")
-def database_url() -> Iterator[str]:
-    name, url = create_database()
-    try:
-        command.upgrade(alembic_config(url), "head")
-        yield url
-    finally:
-        drop_database(name)
-
-
-@pytest.fixture
-async def store(database_url: str) -> AsyncIterator[Store]:
-    s = Store.from_url(database_url)
-    try:
-        yield s
-    finally:
-        async with s.engine.begin() as conn:
-            await conn.exec_driver_sql(f"TRUNCATE {TABLES} RESTART IDENTITY CASCADE")
-        await s.close()

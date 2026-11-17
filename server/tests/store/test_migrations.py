@@ -7,7 +7,7 @@ from sqlalchemy import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from enzo.store.schema import Base
-from tests.store.conftest import alembic_config, create_database, drop_database
+from tests.pg import alembic_config, create_database, drop_database
 
 
 def test_migrations_upgrade_downgrade_and_upgrade_again() -> None:

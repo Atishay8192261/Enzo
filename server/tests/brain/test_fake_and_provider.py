@@ -102,7 +102,7 @@ async def test_tool_call_refuses_a_brain_without_tool_calling() -> None:
                 tool_calling="unsupported",
                 forced_tool_choice=False,
                 streaming=False,
-                token_counting="estimate",  # noqa: S106
+                token_counting="estimate",
                 embeddings=False,
             )
 
