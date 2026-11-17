@@ -92,7 +92,7 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
   6. Live conformance (§1.4) on every configured brain: needs API keys
 - [ ] Spec §7 tools: [x] typed registry (`enzo.tools`, `@tool`), validation before execution, errors as data,
   timeouts, parallel batches; [ ] real tools and connectors
-- [ ] Spec §4 agent loop
+- [x] Spec §4 agent loop (`enzo.agent`: `run_turn`, approvals, prompt order; ADR 0004)
 - [ ] Release automation (release PRs, CHANGELOG, tags)
 - [ ] GitHub connector: issue #2
 - Then continue in the order of the spec §17 checklist.
