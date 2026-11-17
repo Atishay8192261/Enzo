@@ -16,6 +16,16 @@ Read this first in every session. It carries the context from earlier sessions.
 - **Modern and optimal:** before implementing, double-check it is how a strong engineer would build it today.
 - **Blockers:** find a reasonable way around small ones. On a hard blocker, stop and ask. Fail loudly.
 
+## Decisions from Atishay (2026-11-17)
+
+- Memory rides inside the new user message, after the history (ADR 0007): cheaper, cache-friendly.
+- Terminal app moves from Ink to OpenTUI (what OpenCode uses); pin the version, users need Bun.
+- Bring your own account: Enzo ships no models. Users connect their own provider accounts (`/login`,
+  `/models`, `/model`). ChatGPT via Sign in with ChatGPT (plan pays); Claude only via the user's own API
+  key (Anthropic forbids app logins); Grok API key first, subscription login experimental; Kimi API key.
+- Model catalog grouped fast / balanced / powerful with recommendations; defaults balanced (Claude
+  Sonnet 5.5, GPT-6.2 Sol); smart routing per task, spread across the providers the user connected.
+
 ## Git and GitHub
 
 - Branch from `main`: `feat/…`, `fix/…`, `chore/…`, `docs/…`.
