@@ -205,6 +205,7 @@ describe("terminal chat (OpenTUI)", () => {
             id: "appr_1",
             tool: "send_email",
             summary: "Email bob@example.com",
+            detail: Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join("\n"),
             arguments: { to: "bob@example.com" },
           },
           {
@@ -235,6 +236,9 @@ describe("terminal chat (OpenTUI)", () => {
     const card = await until(s, "Approve this action? (y / n)");
     expect(card).toContain("Email bob@example.com"); // plain words, not the tool name (§10.3)
     expect(card).not.toContain("send_email");
+    expect(card).toContain("line 12"); // the detail, clipped so the card stays readable
+    expect(card).not.toContain("line 13");
+    expect(card).toContain("28 more lines");
     expect(card).toContain('"to": "bob@example.com"'); // and the exact action (§12.3)
     await press(s, "y");
     await until(s, "enzo: Sent.");
