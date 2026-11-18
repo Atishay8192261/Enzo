@@ -51,6 +51,33 @@ from enzo.brain.models import (
 )
 
 PROVIDER = "openai"
+#: A ChatGPT plan sign-in takes function tools only inside a namespace (OpenAI's SIWC docs).
+NAMESPACE = "enzo"
+USAGE_URL = "https://chatgpt.com/settings/usage"
+#: ChatGPT plan errors, in words a user can act on (developers.openai.com/siwc, read 2026-11-18).
+PLAN_LIMIT = (
+    "Your ChatGPT plan's usage limit for Enzo is reached. Review or raise it at " + USAGE_URL
+)
+_PLAN_ERRORS: dict[str, tuple[type[BrainError], str]] = {
+    "subscription_sharing_usage_limit_exceeded": (RateLimitError, PLAN_LIMIT),
+    "subscription_sharing_usage_unavailable": (
+        ProviderServerError,
+        "ChatGPT could not check your plan's usage right now. Try again shortly.",
+    ),
+    "subscription_sharing_user_unavailable": (
+        ProviderServerError,
+        "ChatGPT could not look up your account right now. Try again shortly.",
+    ),
+    "subscription_sharing_user_not_eligible": (
+        AuthError,
+        "This ChatGPT account or workspace can't use its plan in Enzo. "
+        "Use an API key instead: /login openai",
+    ),
+    "subscription_sharing_invalid_user": (
+        AuthError,
+        "ChatGPT did not accept your sign-in. Sign in again: /login chatgpt",
+    ),
+}
 
 
 class OpenAIBrain:
@@ -65,6 +92,7 @@ class OpenAIBrain:
         embedding_model: str | None = None,
         forced_tool_choice: bool = True,
         provider: str = PROVIDER,
+        plan: bool = False,
     ) -> None:
         # The SDK retries 429/5xx by default; Enzo never retries around a failure (ADR 0002).
         self._client = (client or openai.AsyncOpenAI()).with_options(max_retries=0)
@@ -73,6 +101,8 @@ class OpenAIBrain:
         self._embedding_model = embedding_model
         self._forced_tool_choice = forced_tool_choice
         self._provider = provider
+        #: Signed in with ChatGPT: the plan pays, and OpenAI's plan-route rules apply (ADR 0013).
+        self._plan = plan
 
     @property
     def provider(self) -> str:
@@ -88,7 +118,7 @@ class OpenAIBrain:
             tool_calling="native",
             forced_tool_choice=self._forced_tool_choice,
             streaming=True,
-            token_counting="exact",  # noqa: S106 - a capability label, not a secret
+            token_counting="unsupported" if self._plan else "exact",
             embeddings=self._embedding_model is not None,
         )
 
@@ -126,7 +156,7 @@ class OpenAIBrain:
         # Raw events, not the ``responses.stream()`` helper: the helper wraps items in "parsed"
         # types that add fields the API never sent (breaking exact replay), and its
         # get_final_response() raises on a normal max-token stop ("incomplete"). Both verified.
-        with mapped_errors(self._provider, self._model):
+        with mapped_errors(self._provider, self._model, plan=self._plan):
             wire = await self._client.responses.create(**request, stream=True)
             async with wire:
                 async for event in wire:
@@ -150,15 +180,25 @@ class OpenAIBrain:
             final = final.model_copy(update={"output": [done_items[i] for i in sorted(done_items)]})
         if final.status == "failed":
             error = final.error
+            known = _PLAN_ERRORS.get(str(error.code)) if self._plan and error else None
+            if known is not None:  # e.g. the plan's limit, reached after streaming began
+                kind, message = known
+                raise kind(message, provider=self._provider, model=self._model)
             detail = f"{error.code}: {error.message}" if error else "no error details"
             msg = f"response failed ({detail})"
             raise ProviderServerError(msg, provider=self._provider, model=self._model)
         latency_ms = (time.perf_counter() - started) * 1000
-        yield StreamDone(response=from_wire(final, latency_ms, self._provider))
+        response = from_wire(final, latency_ms, self._provider)
+        if self._plan:
+            response = response.model_copy(update={"billing": "plan"})
+        yield StreamDone(response=response)
 
     async def count_tokens(
         self, messages: Sequence[Message], *, tools: Sequence[ToolSpec] = ()
     ) -> int:
+        if self._plan:
+            msg = "a ChatGPT plan sign-in has no token-counting endpoint"
+            raise UnsupportedCapabilityError(msg, provider=self._provider, model=self._model)
         kwargs: dict[str, Any] = {
             "model": self._model,
             "input": to_wire_input(messages, self._provider),
@@ -189,12 +229,27 @@ class OpenAIBrain:
         """Canonical request → Responses API parameters. Pure, so it is tested without a network."""
         request: dict[str, Any] = {
             "model": self._model,
-            "input": to_wire_input(messages, self._provider),
-            "max_output_tokens": max_output_tokens,
+            "input": to_wire_input(
+                messages, self._provider, namespace=NAMESPACE if self._plan else None
+            ),
             "store": False,
         }
+        if not self._plan:  # the plan route rejects max_output_tokens (SIWC preview limits)
+            request["max_output_tokens"] = max_output_tokens
         if tools:
-            request["tools"] = [to_wire_tool(t) for t in tools]
+            wire_tools = [to_wire_tool(t) for t in tools]
+            request["tools"] = (
+                [
+                    {
+                        "type": "namespace",
+                        "name": NAMESPACE,
+                        "description": "Enzo's tools",
+                        "tools": wire_tools,
+                    }
+                ]
+                if self._plan
+                else wire_tools
+            )
             if tool_choice == "required" and not self._forced_tool_choice:
                 msg = f"{self._model} is not configured to accept a forced tool call"
                 raise UnsupportedCapabilityError(msg, provider=self._provider, model=self._model)
@@ -207,7 +262,10 @@ class OpenAIBrain:
         return request
 
 
-def to_wire_input(messages: Sequence[Message], provider: str) -> list[dict[str, Any]]:
+def to_wire_input(
+    messages: Sequence[Message], provider: str, *, namespace: str | None = None
+) -> list[dict[str, Any]]:
+    """``namespace``: the tool namespace calls belong to, when tools are grouped in one."""
     items: list[dict[str, Any]] = []
     for message in messages:
         if message.role == "system":
@@ -226,7 +284,7 @@ def to_wire_input(messages: Sequence[Message], provider: str) -> list[dict[str, 
                 }
             )
         elif message.role == "assistant":
-            items.extend(_assistant_items(message, provider))
+            items.extend(_assistant_items(message, provider, namespace))
         else:
             items.extend(
                 {
@@ -241,7 +299,9 @@ def to_wire_input(messages: Sequence[Message], provider: str) -> list[dict[str, 
     return items
 
 
-def _assistant_items(message: Message, provider: str) -> list[dict[str, Any]]:
+def _assistant_items(
+    message: Message, provider: str, namespace: str | None
+) -> list[dict[str, Any]]:
     native = message.native(provider)
     if native is not None:
         # Every output item, in order: reasoning (encrypted), messages with their phase, calls.
@@ -254,14 +314,13 @@ def _assistant_items(message: Message, provider: str) -> list[dict[str, Any]]:
                 {"role": "assistant", "content": [{"type": "output_text", "text": part.text}]}
             )
         elif isinstance(part, ToolCall):
-            items.append(
-                {
-                    "type": "function_call",
-                    "call_id": part.id,
-                    "name": part.name,
-                    "arguments": part.arguments_json,
-                }
-            )
+            call = {
+                "type": "function_call",
+                "call_id": part.id,
+                "name": part.name,
+                "arguments": part.arguments_json,
+            }
+            items.append(call if namespace is None else {**call, "namespace": namespace})
     return items
 
 
@@ -348,7 +407,7 @@ def _stop_reason(response: WireResponse, *, refused: bool, called: bool) -> Stop
 
 
 @contextmanager
-def mapped_errors(provider: str, model: str) -> Iterator[None]:
+def mapped_errors(provider: str, model: str, *, plan: bool = False) -> Iterator[None]:
     """Map every SDK failure onto one canonical error. Most specific first."""
     ctx = {"provider": provider, "model": model}
     try:
@@ -357,15 +416,36 @@ def mapped_errors(provider: str, model: str) -> Iterator[None]:
         raise ProviderTimeoutError(str(exc), **ctx) from exc
     except openai.APIConnectionError as exc:
         raise ProviderConnectionError(str(exc), **ctx) from exc
-    except openai.RateLimitError as exc:
-        raise RateLimitError(str(exc), **ctx) from exc
-    except (openai.AuthenticationError, openai.PermissionDeniedError) as exc:
-        raise AuthError(str(exc), **ctx) from exc
     except openai.APIStatusError as exc:
-        if exc.status_code >= 500:
-            raise ProviderServerError(str(exc), **ctx) from exc
-        if exc.status_code == 402:  # billing problem: the account cannot use it
-            raise AuthError(str(exc), **ctx) from exc
-        raise BadRequestError(str(exc), **ctx) from exc
+        raise status_error(exc, ctx, plan=plan) from exc
     except openai.APIError as exc:
         raise BrainError(str(exc), **ctx) from exc
+
+
+def status_error(exc: openai.APIStatusError, ctx: dict[str, str], *, plan: bool) -> BrainError:
+    """An HTTP refusal as a canonical error. On a ChatGPT plan, OpenAI's plan error codes and its
+    admission refusals (401/403 with only a ``detail``) get words a user can act on."""
+    if plan and (worded := _plan_error(exc, ctx)) is not None:
+        return worded
+    if isinstance(exc, openai.RateLimitError):
+        return RateLimitError(str(exc), **ctx)
+    if isinstance(exc, openai.AuthenticationError | openai.PermissionDeniedError):
+        return AuthError(str(exc), **ctx)
+    if exc.status_code >= 500:
+        return ProviderServerError(str(exc), **ctx)
+    if exc.status_code == 402:  # billing problem: the account cannot use it
+        return AuthError(str(exc), **ctx)
+    return BadRequestError(str(exc), **ctx)
+
+
+def _plan_error(exc: openai.APIStatusError, ctx: dict[str, str]) -> BrainError | None:
+    known = _PLAN_ERRORS.get(str(exc.code))
+    if known is not None:
+        kind, message = known
+        return kind(message, **ctx)
+    if exc.status_code == 401:
+        return AuthError(_PLAN_ERRORS["subscription_sharing_invalid_user"][1], **ctx)
+    if exc.status_code == 403:
+        msg = f"ChatGPT refused this request for your plan (policy or region): {exc.message}"
+        return AuthError(msg, **ctx)
+    return None

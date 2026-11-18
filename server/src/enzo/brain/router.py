@@ -18,7 +18,7 @@ import time
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Literal, Protocol
 
 from enzo.brain.config import TIERS, BrainConfig, BrainsConfig, TaskKind, Tier
 from enzo.brain.errors import BrainError, ProviderServerError
@@ -57,6 +57,8 @@ class CallRecord:
     cost_usd: float | None = None  # None means the provider publishes no price: unknown, not free
     error: str | None = None
     fallback_from: str | None = None
+    #: "plan": paid by the user's subscription (a ChatGPT sign-in), so no per-token cost exists.
+    billing: Literal["usage", "plan"] = "usage"
 
 
 class Ledger(Protocol):
@@ -392,8 +394,13 @@ class Router:
             output_tokens=usage.output_tokens,
             cached_input_tokens=usage.cached_input_tokens,
             cache_write_input_tokens=usage.cache_write_input_tokens,
-            cost_usd=cost_usd(usage, self._config.brains[attempt.brain].pricing),
+            cost_usd=(
+                None
+                if response.billing == "plan"
+                else cost_usd(usage, self._config.brains[attempt.brain].pricing)
+            ),
             fallback_from=attempt.fallback_from,
+            billing=response.billing,
         )
         self._emit(record)
         return record

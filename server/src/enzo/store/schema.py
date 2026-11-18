@@ -98,6 +98,8 @@ class BrainCallRow(Base):
     cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(14, 8))
     error: Mapped[str | None] = mapped_column(Text)
     fallback_from: Mapped[str | None] = mapped_column(Text)
+    #: "usage" (per-token, on a key) or "plan" (the user's subscription: no per-token cost).
+    billing: Mapped[str] = mapped_column(Text, server_default="usage")
 
 
 class ToolCallRow(Base):

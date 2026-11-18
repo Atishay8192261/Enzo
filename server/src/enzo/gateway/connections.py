@@ -6,7 +6,7 @@ Secrets go in and never come out: responses, errors and logs carry no key.
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, params
 from pydantic import BaseModel, ConfigDict, Field
@@ -53,6 +53,14 @@ class ConnectionOut(BaseModel):
     #: Services (not model providers) list the tools they unlock instead of models.
     tools: list[str]
     purpose: str | None
+    #: Tells accounts apart, e.g. the signed-in ChatGPT account's email.
+    label: str | None
+
+
+class DisconnectOut(BaseModel):
+    #: For a sign-in (not a key): whether the provider confirmed the session ended. When it did
+    #: not, Enzo forgot the tokens anyway and the user can end it in the provider's settings.
+    remote_sign_out: Literal["confirmed", "not_confirmed"] | None
 
 
 class CheckOut(BaseModel):
@@ -109,6 +117,7 @@ def connection_routes(auth: params.Depends) -> APIRouter:
                 models=list(s.models),
                 tools=list(s.tools),
                 purpose=s.purpose,
+                label=s.label,
             )
             for s in a.status()
         ]
@@ -118,10 +127,14 @@ def connection_routes(auth: params.Depends) -> APIRouter:
         with account_errors(provider):
             await a.connect_api_key(provider, body.api_key)
 
-    @router.delete("/{provider}", status_code=204)
-    def disconnect(provider: str, a: AccountsDep) -> None:
+    @router.delete("/{provider}")
+    async def disconnect(provider: str, a: AccountsDep) -> DisconnectOut:
         with account_errors(provider):
-            a.disconnect(provider)
+            signed_in = any(s.provider == provider and s.method == "chatgpt" for s in a.status())
+            confirmed = await a.sign_out(provider)
+        if not signed_in:
+            return DisconnectOut(remote_sign_out=None)
+        return DisconnectOut(remote_sign_out="confirmed" if confirmed else "not_confirmed")
 
     @router.post("/{provider}/check")
     async def check(provider: str, a: AccountsDep) -> CheckOut:

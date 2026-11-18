@@ -1,6 +1,7 @@
 """Build a live adapter from config. Keys come from the vault or the environment, never files."""
 
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from typing import cast
 
 import anthropic
@@ -12,7 +13,17 @@ from enzo.brain.config import BrainConfig
 from enzo.brain.errors import AuthError
 from enzo.brain.provider import BrainProvider
 
-type KeyLookup = Callable[[str], str | None]
+
+@dataclass(frozen=True, slots=True)
+class PlanLogin:
+    """Signed in with ChatGPT: the user's plan pays, and each request gets a fresh token."""
+
+    access_token: Callable[[], Awaitable[str]]
+
+
+#: How a provider is paid for: an API key, or a plan sign-in.
+type Auth = str | PlanLogin
+type KeyLookup = Callable[[str], Auth | None]
 
 
 def build_brain(
@@ -25,6 +36,19 @@ def build_brain(
         hint = f" (or set {cfg.api_key_env} with ENZO_USE_ENV_KEYS=1)" if env is not None else ""
         msg = f"{cfg.provider_name} is not connected: run /login {cfg.provider_name}{hint}"
         raise AuthError(msg, provider=cfg.provider_name, model=cfg.model)
+    if isinstance(key, PlanLogin):
+        if cfg.api != "openai-responses" or cfg.provider_name != "openai" or cfg.base_url:
+            msg = f"{cfg.provider_name} cannot use a ChatGPT sign-in"
+            raise AuthError(msg, provider=cfg.provider_name, model=cfg.model)
+        return OpenAIBrain(
+            model=cfg.model,
+            # The SDK asks for the token before every request, so a renewed one is always used.
+            client=openai.AsyncOpenAI(api_key=key.access_token),
+            reasoning_effort=cfg.effort,
+            forced_tool_choice=cfg.forced_tool_choice is not False,
+            provider=cfg.provider_name,
+            plan=True,
+        )
     if cfg.api == "anthropic":
         return AnthropicBrain(
             model=cfg.model,
@@ -49,6 +73,6 @@ def has_key(
     return bool(_key(cfg, env, keys))
 
 
-def _key(cfg: BrainConfig, env: Mapping[str, str] | None, keys: KeyLookup | None) -> str | None:
+def _key(cfg: BrainConfig, env: Mapping[str, str] | None, keys: KeyLookup | None) -> Auth | None:
     vault = keys(cfg.provider_name) if keys else None
     return vault or (env.get(cfg.api_key_env) if env is not None else None)

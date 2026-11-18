@@ -10,11 +10,15 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
+import httpx2
 from pydantic import SecretStr
 
+from enzo.accounts.chatgpt import PROVIDER as CHATGPT_PROVIDER
+from enzo.accounts.chatgpt import ChatGPTSignIn
 from enzo.accounts.store import ApiKeyCredential, Connection, CredentialStore
 from enzo.accounts.vault import VaultUnavailableError
 from enzo.brain.config import BrainConfig, BrainsConfig
+from enzo.brain.factory import Auth, PlanLogin
 
 type KeyChecker = Callable[[BrainConfig, str], Awaitable[None]]
 
@@ -53,6 +57,8 @@ class ProviderStatus:
     models: tuple[str, ...]
     tools: tuple[str, ...] = ()
     purpose: str | None = None
+    #: Tells accounts apart, e.g. the email of the ChatGPT account that is signed in.
+    label: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +92,17 @@ class AccountsService:
         #: connected with method "environment", so the app shows what it really uses (#24).
         self._env = env
         self._accounts = _accounts(config, checker, services or {})
+        #: Sign in with ChatGPT, once the gateway enables it (it needs an HTTP client).
+        self.chatgpt: ChatGPTSignIn | None = None
+
+    def enable_chatgpt(self, host: str, http: httpx2.AsyncClient) -> ChatGPTSignIn | None:
+        """Turn on Sign in with ChatGPT for the OpenAI account. None without a vault."""
+        if self._store is None or CHATGPT_PROVIDER not in self._accounts:
+            return None
+        self.chatgpt = ChatGPTSignIn(
+            self._store, host, http, on_change=lambda: self._changed(CHATGPT_PROVIDER)
+        )
+        return self.chatgpt
 
     def on_change(self, listener: Callable[[str], None]) -> None:
         """Called with the provider name whenever its connection changes."""
@@ -107,10 +124,11 @@ class AccountsService:
                     connected=c is not None or from_env,
                     method=c.method if c else ("environment" if from_env else None),
                     connected_at=c.connected_at if c else None,
-                    methods=("api_key",),
+                    methods=self._methods(name),
                     models=account.models,
                     tools=account.tools,
                     purpose=account.purpose,
+                    label=c.label if c else None,
                 )
             )
         return out
@@ -121,9 +139,20 @@ class AccountsService:
         store = self._require_store()
         credential = ApiKeyCredential(api_key=SecretStr(api_key.strip()))
         await account.check(credential.api_key.get_secret_value())
+        if self._signed_in_with_chatgpt(provider) and self.chatgpt is not None:
+            await self.chatgpt.sign_out()  # the key replaces the sign-in: end its session too
         connection = store.connect(provider, credential)
         self._changed(provider)
         return connection
+
+    async def sign_out(self, provider: str) -> bool:
+        """Disconnect; a ChatGPT sign-in is also ended with OpenAI first. False when OpenAI did
+        not confirm that (the tokens are forgotten here anyway)."""
+        confirmed = True
+        if self._signed_in_with_chatgpt(provider) and self.chatgpt is not None:
+            confirmed = await self.chatgpt.sign_out()
+        self.disconnect(provider)
+        return confirmed
 
     def disconnect(self, provider: str) -> None:
         account = self._account(provider)
@@ -137,6 +166,15 @@ class AccountsService:
     async def check(self, provider: str) -> None:
         """Re-check a saved connection, e.g. after the key was revoked (spec §8.4)."""
         account = self._account(provider)
+        if self._signed_in_with_chatgpt(provider) and self.chatgpt is not None:
+            # Renews the token if it is due (a refused renewal raises AuthError), then re-reads
+            # which models the plan includes.
+            token = await self.chatgpt.access_token()
+            models = await self.chatgpt.plan_models(token)
+            if models is not None:
+                self._require_store().set_models(provider, models)
+                self._changed(provider)
+            return
         key = self._require_store().api_key(provider) or self._env_key(account)
         if key is None:
             msg = f"{provider} is not connected"
@@ -146,6 +184,32 @@ class AccountsService:
     def connected(self, provider: str) -> bool:
         """From the non-secret index: routing asks often, and must not read the vault for it."""
         return self._store is not None and provider in self._store.connections()
+
+    def usable(self, cfg: BrainConfig) -> bool:
+        """Connected, and the model is one the account may use (a plan lists its models)."""
+        if self._store is None:
+            return False
+        connection = self._store.connections().get(cfg.provider_name)
+        if connection is None:
+            return False
+        return connection.models is None or cfg.model in connection.models
+
+    def auth(self, provider: str) -> Auth | None:
+        """How this provider is paid for: the ChatGPT plan when signed in, else an API key."""
+        if self._signed_in_with_chatgpt(provider) and self.chatgpt is not None:
+            return PlanLogin(self.chatgpt.access_token)
+        return self.api_key(provider)
+
+    def _signed_in_with_chatgpt(self, provider: str) -> bool:
+        if self._store is None:
+            return False
+        connection = self._store.connections().get(provider)
+        return connection is not None and connection.method == "chatgpt"
+
+    def _methods(self, provider: str) -> tuple[str, ...]:
+        if provider == CHATGPT_PROVIDER and self.chatgpt is not None:
+            return ("chatgpt", "api_key")
+        return ("api_key",)
 
     def api_key(self, provider: str) -> str | None:
         """The connected account's key, else (opted in only) the environment's."""

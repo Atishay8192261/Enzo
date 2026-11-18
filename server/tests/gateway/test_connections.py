@@ -81,12 +81,15 @@ async def test_connect_list_check_and_disconnect(
         "models",
         "tools",
         "purpose",
+        "label",
     }
+    assert row["label"] is None
 
     r = await c.post("/connections/anthropic/check")
     assert r.json() == {"ok": True, "detail": None}
 
-    assert (await c.delete("/connections/anthropic")).status_code == 204
+    r = await c.delete("/connections/anthropic")
+    assert (r.status_code, r.json()) == (200, {"remote_sign_out": None})  # a key: nothing remote
     assert not (await status(c))["anthropic"]["connected"]
     assert KEY not in caplog.text
 
