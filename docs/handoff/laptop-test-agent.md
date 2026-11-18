@@ -58,8 +58,12 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
   - Each conversation is assigned to one connected provider. Different conversations spread
     across providers.
   - On a rate limit or outage, Enzo tries one other provider at the same tier.
-- **Choosing a model.** Terminal: `/brains`, `/brain <name|auto>`. Web: the Brain menu. A
-  conversation can also be pinned to a tier through the API: `fast`, `balanced` or `powerful`.
+- **Choosing a model.** Terminal: `/models` lists the catalog by tier (★ = recommended, plus what
+  each model needs). `/model <name|fast|balanced|powerful|auto>` picks a model, any model of a tier,
+  or smart routing. Web: the Model menu, grouped by tier. Models without a connected account are
+  shown but cannot be picked.
+- **Which model answered.** Every live reply shows the model that wrote it (terminal: `· name` after
+  the reply; web: small text under it). Replies loaded from history don't show it yet.
 - **Approvals.** A risky action waits for an approval showing the exact arguments. No real tool
   exists yet, so you cannot trigger one in normal use.
 - **Cost.** Shown after each reply, or "cost unknown" when a provider publishes no price.
@@ -68,9 +72,6 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
 
 - **No real tools:** no web search, files, email, calendar or anything else. Enzo can only talk.
 - **No memory** across conversations (spec §6). No context compaction for very long chats (§5).
-- **The UI doesn't show which model answered each reply.** The server already sends it; the
-  clients will show it soon. For now, use the database query below.
-- **Commands to come:** `/models` and `/model` (the catalog by tier) will replace `/brains` and `/brain`.
 - **Sign in with ChatGPT** (use the ChatGPT plan instead of an API key) is not built. It will need
   this Mac, because the login runs in the local browser. You will help test it.
 - **Not yet verified against the real APIs:** Grok, Kimi, and switching models inside one
@@ -143,8 +144,9 @@ For each journey:
 5. **Long input.** Paste a long document (over 20,000 characters) and ask about it.
    - Expect the powerful tier.
    - Mind the cost: tell Atishay first.
-6. **Choose a model.** Try `/brains` and `/brain <name>` (or the web menu), then `/brain auto`.
-   - Is the choice obvious? Is the current model always visible?
+6. **Choose a model.** Try `/models`, then `/model <name>`, `/model powerful` and `/model auto`
+   (or the web Model menu).
+   - Is the choice obvious? Is the current choice always visible? Does each reply name its model?
 7. **Restart.** Stop and start the gateway and both apps.
    - The conversation and its history must still be there.
 8. **Failures.**
@@ -198,8 +200,6 @@ curl -s http://127.0.0.1:8787/brains
 
 ## What is coming
 
-- Clients will show the answering model under each reply, plus `/models` and `/model` with the
-  tiered catalog. Retest journey 6 when they land.
 - **Sign in with ChatGPT.** You will run the login on this Mac and help check that his ChatGPT plan
   pays for replies.
 - **Tools and connectors** come next (spec §7, §8). Atishay picks the order. After each one lands,

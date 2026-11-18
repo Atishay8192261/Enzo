@@ -13,7 +13,14 @@ const failure = (e: unknown): Notice => ({
 });
 
 /** Connect your own provider accounts. Keys go straight to the gateway's vault, never back. */
-export function Accounts({ client }: { client: AccountsClient }) {
+export function Accounts({
+  client,
+  onChange,
+}: {
+  client: AccountsClient;
+  /** Called after an account action succeeds, so the app can reload which models are usable. */
+  onChange?: () => void;
+}) {
   const [rows, setRows] = useState<ProviderConnection[] | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -34,6 +41,7 @@ export function Accounts({ client }: { client: AccountsClient }) {
     setBusy(provider);
     try {
       setNotice(await action());
+      onChange?.();
     } catch (e: unknown) {
       setNotice(failure(e));
     } finally {

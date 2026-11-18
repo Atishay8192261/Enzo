@@ -7,11 +7,20 @@ export interface Health {
   env: string;
 }
 
+export type Tier = "fast" | "balanced" | "powerful";
+export const TIERS: readonly Tier[] = ["fast", "balanced", "powerful"];
+
 export interface Brain {
   name: string;
   provider: string;
   model: string;
   priced: boolean;
+  tier: Tier;
+  /** Enzo's pick for this provider in this tier. */
+  recommended: boolean;
+  note: string | null;
+  /** The provider is connected, so this model can answer now. */
+  available: boolean;
 }
 
 export interface Conversation {
@@ -98,6 +107,7 @@ export class GatewayClient {
     return this.#json("GET", `/conversations/${enc(id)}`) as Promise<Conversation>;
   }
 
+  /** Pin a model or a tier (`fast`, `balanced`, `powerful`); `null` is automatic routing. */
   async chooseBrain(id: string, brain: string | null): Promise<void> {
     await this.#json("PUT", `/conversations/${enc(id)}/brain`, { brain });
   }

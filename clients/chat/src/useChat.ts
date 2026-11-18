@@ -118,10 +118,16 @@ export function useChat(client: ChatClient, memory: ConversationMemory, device: 
     [client, state.conversationId],
   );
 
-  return { state, send, decide, chooseBrain } satisfies {
+  /** Reload the catalog, e.g. after an account was connected and more models became available. */
+  const refreshBrains = useCallback(async () => {
+    dispatch({ type: "brains_loaded", brains: await client.brains() });
+  }, [client]);
+
+  return { state, send, decide, chooseBrain, refreshBrains } satisfies {
     state: ChatState;
     send: (text: string) => Promise<void>;
     decide: (id: string, approved: boolean) => Promise<void>;
     chooseBrain: (brain: string | null) => Promise<void>;
+    refreshBrains: () => Promise<void>;
   };
 }
