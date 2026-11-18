@@ -27,11 +27,19 @@ describe("chat reducer", () => {
     expect(s.draft).toBe("Hello there");
     s = reduce(s, {
       type: "event",
-      event: { type: "done", stop: "final_answer", text: "hello there", steps: 1, cost_usd: 0.002 },
+      event: {
+        type: "done",
+        stop: "final_answer",
+        text: "hello there",
+        steps: 1,
+        cost_usd: 0.002,
+        brain: "claude-sonnet",
+        model: "claude-sonnet-5-5",
+      },
     });
     expect(s.items).toEqual([
       { role: "user", text: "hi" },
-      { role: "assistant", text: "hello there" },
+      { role: "assistant", text: "hello there", by: "claude-sonnet" },
     ]);
     expect([s.draft, s.lastCost]).toEqual(["", 0.002]);
     expect(s.status).toBe("ready");
@@ -63,7 +71,15 @@ describe("chat reducer", () => {
     });
     s = reduce(s, {
       type: "event",
-      event: { type: "done", stop: "approval_pending", text: "Waiting", steps: 1, cost_usd: null },
+      event: {
+        type: "done",
+        stop: "approval_pending",
+        text: "Waiting",
+        steps: 1,
+        cost_usd: null,
+        brain: null,
+        model: null,
+      },
     });
     expect(s.approvals).toEqual([{ id: "appr_1", tool: "send_email", arguments: { to: "bob" } }]);
     expect(s.items.at(-1)).toEqual({ role: "notice", text: "Waiting for your approval." });
@@ -80,6 +96,8 @@ describe("chat reducer", () => {
         text: "I could not get an answer: no API key",
         steps: 0,
         cost_usd: null,
+        brain: null,
+        model: null,
       },
     });
     expect(s.items).toEqual([{ role: "notice", text: "I could not get an answer: no API key" }]);

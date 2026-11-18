@@ -87,6 +87,10 @@ results["provider answered, nothing saved"] = "rejected this key" in screen_text
     "could not check the key" in screen_text()
 )
 results["key never on screen"] = not leaks
+for ch in "/models":
+    os.write(fd, ch.encode())
+os.write(fd, b"\r")
+results["catalog by tier"] = wait_for("balanced (everyday default):")
 os.write(fd, b"/quit\r")
 end = time.time() + 5
 exited = False

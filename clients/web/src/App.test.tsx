@@ -11,8 +11,26 @@ afterEach(() => {
 });
 
 const BRAINS: Brain[] = [
-  { name: "claude-opus", provider: "anthropic", model: "claude-opus-5-5", priced: true },
-  { name: "grok", provider: "xai", model: "grok-4.7", priced: false },
+  {
+    name: "claude-opus",
+    provider: "anthropic",
+    model: "claude-opus-5-5",
+    priced: true,
+    tier: "powerful",
+    recommended: true,
+    note: null,
+    available: true,
+  },
+  {
+    name: "grok",
+    provider: "xai",
+    model: "grok-4.7",
+    priced: false,
+    tier: "powerful",
+    recommended: true,
+    note: null,
+    available: false,
+  },
 ];
 const CONVERSATION: Conversation = { id: "c1", kind: "main", title: null, brain: null };
 
@@ -59,17 +77,34 @@ describe("App", () => {
       send: () =>
         events(
           { type: "text", text: "Paris" },
-          { type: "done", stop: "final_answer", text: "Paris", steps: 1, cost_usd: 0.0021 },
+          {
+            type: "done",
+            stop: "final_answer",
+            text: "Paris",
+            steps: 1,
+            cost_usd: 0.0021,
+            brain: "claude-opus",
+            model: "claude-opus-5-5",
+          },
         ),
     });
     render(<App client={client} />);
     const input = await screen.findByLabelText("Message");
-    expect(screen.getByRole("option", { name: /grok · grok-4.7 \(cost unknown\)/ })).toBeDefined();
+    // grouped by tier; a model without a connected account is listed but cannot be picked
+    const grok = screen.getByRole<HTMLOptionElement>("option", {
+      name: "★ grok · grok-4.7 · cost unknown · connect xai",
+    });
+    expect(grok.disabled).toBe(true);
+    expect(grok.parentElement?.getAttribute("label")).toBe("powerful: hardest tasks");
+    expect(screen.getByRole<HTMLOptionElement>("option", { name: "Any fast model" }).disabled).toBe(
+      true,
+    );
     fireEvent.change(input, { target: { value: "Capital of France?" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     expect(await screen.findByText("Paris")).toBeDefined();
     expect(screen.getByText("Capital of France?")).toBeDefined();
     expect(screen.getByText("cost $0.0021")).toBeDefined();
+    expect(screen.getByText("claude-opus")).toBeDefined(); // which model wrote the reply
   });
 
   it("shows the exact action for approval and resumes after a yes", async () => {
@@ -84,10 +119,26 @@ describe("App", () => {
             tool: "send_email",
             arguments: { to: "bob@example.com", body: "hi" },
           },
-          { type: "done", stop: "approval_pending", text: "Waiting", steps: 1, cost_usd: null },
+          {
+            type: "done",
+            stop: "approval_pending",
+            text: "Waiting",
+            steps: 1,
+            cost_usd: null,
+            brain: null,
+            model: null,
+          },
         ),
       resume: () =>
-        events({ type: "done", stop: "final_answer", text: "Sent.", steps: 2, cost_usd: null }),
+        events({
+          type: "done",
+          stop: "final_answer",
+          text: "Sent.",
+          steps: 2,
+          cost_usd: null,
+          brain: null,
+          model: null,
+        }),
     });
     render(<App client={client} />);
     fireEvent.change(await screen.findByLabelText("Message"), { target: { value: "email bob" } });
@@ -119,12 +170,37 @@ describe("App", () => {
     expect(screen.queryByText("[ctx]")).toBeNull();
   });
 
-  it("stores the brain the user picks", async () => {
+  it("stores the model or tier the user picks", async () => {
     const chooseBrain = vi.fn(async () => {});
     render(<App client={fakeClient({ chooseBrain })} />);
     await screen.findByLabelText("Message");
-    fireEvent.change(screen.getByLabelText("Brain"), { target: { value: "grok" } });
-    await waitFor(() => expect(chooseBrain).toHaveBeenCalledWith("c1", "grok"));
+    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "claude-opus" } });
+    await waitFor(() => expect(chooseBrain).toHaveBeenCalledWith("c1", "claude-opus"));
+    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "powerful" } });
+    await waitFor(() => expect(chooseBrain).toHaveBeenCalledWith("c1", "powerful"));
+    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "" } });
+    await waitFor(() => expect(chooseBrain).toHaveBeenLastCalledWith("c1", null));
+  });
+
+  it("reloads the models after an account is connected", async () => {
+    const brains = vi.fn(async () => BRAINS);
+    const connections = async () => [
+      {
+        provider: "xai",
+        connected: false,
+        method: null,
+        connected_at: null,
+        methods: ["api_key"],
+        models: ["grok-4.7"],
+      },
+    ];
+    render(<App client={fakeClient({ brains, connections })} />);
+    fireEvent.change(await screen.findByLabelText("xai API key"), {
+      target: { value: "fake-xai-000000000000" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await screen.findByText("Connected xai.");
+    await waitFor(() => expect(brains).toHaveBeenCalledTimes(2)); // startup + after connecting
   });
 
   it("says plainly when the gateway is down", async () => {

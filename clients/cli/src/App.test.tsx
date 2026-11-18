@@ -11,8 +11,26 @@ import { App } from "./App.tsx";
 import { fileMemory } from "./memory.ts";
 
 const BRAINS: Brain[] = [
-  { name: "claude-opus", provider: "anthropic", model: "claude-opus-5-5", priced: true },
-  { name: "grok", provider: "xai", model: "grok-4.7", priced: false },
+  {
+    name: "claude-sonnet",
+    provider: "anthropic",
+    model: "claude-sonnet-5-5",
+    priced: true,
+    tier: "balanced",
+    recommended: true,
+    note: null,
+    available: true,
+  },
+  {
+    name: "grok",
+    provider: "xai",
+    model: "grok-4.7",
+    priced: false,
+    tier: "powerful",
+    recommended: true,
+    note: null,
+    available: false,
+  },
 ];
 const CONVERSATION: Conversation = { id: "c1", kind: "main", title: null, brain: null };
 
@@ -125,7 +143,15 @@ describe("terminal chat (OpenTUI)", () => {
       send: () =>
         events(
           { type: "text", text: "Paris" },
-          { type: "done", stop: "final_answer", text: "Paris", steps: 1, cost_usd: 0.0021 },
+          {
+            type: "done",
+            stop: "final_answer",
+            text: "Paris",
+            steps: 1,
+            cost_usd: 0.0021,
+            brain: null,
+            model: null,
+          },
         ),
     });
     await using s = await screen(client);
@@ -137,7 +163,15 @@ describe("terminal chat (OpenTUI)", () => {
 
   it("keeps the first keystroke and clears the input after sending", async () => {
     const send = mock(() =>
-      events({ type: "done", stop: "final_answer", text: "ok", steps: 1, cost_usd: null }),
+      events({
+        type: "done",
+        stop: "final_answer",
+        text: "ok",
+        steps: 1,
+        cost_usd: null,
+        brain: null,
+        model: null,
+      }),
     );
     await using s = await screen(fakeClient({ send }));
     await enter(s, "hello enzo");
@@ -166,10 +200,26 @@ describe("terminal chat (OpenTUI)", () => {
             tool: "send_email",
             arguments: { to: "bob@example.com" },
           },
-          { type: "done", stop: "approval_pending", text: "Waiting", steps: 1, cost_usd: null },
+          {
+            type: "done",
+            stop: "approval_pending",
+            text: "Waiting",
+            steps: 1,
+            cost_usd: null,
+            brain: null,
+            model: null,
+          },
         ),
       resume: () =>
-        events({ type: "done", stop: "final_answer", text: "Sent.", steps: 2, cost_usd: null }),
+        events({
+          type: "done",
+          stop: "final_answer",
+          text: "Sent.",
+          steps: 2,
+          cost_usd: null,
+          brain: null,
+          model: null,
+        }),
     });
     await using s = await screen(client);
     await enter(s, "email bob");
@@ -180,14 +230,51 @@ describe("terminal chat (OpenTUI)", () => {
     expect(decide).toHaveBeenCalledWith("c1", "appr_1", true);
   });
 
-  it("switches brains with a command and rejects unknown ones", async () => {
-    const chooseBrain = mock(async () => {});
+  it("lists models by tier and chooses a model, a tier or auto", async () => {
+    const chooseBrain = mock(async (_id: string, _choice: string | null) => {});
     await using s = await screen(fakeClient({ chooseBrain }));
-    await enter(s, "/brain ghost");
-    await until(s, "Unknown brain: ghost");
-    await enter(s, "/brain grok");
-    await until(s, "Brain: grok");
-    expect(chooseBrain).toHaveBeenCalledWith("c1", "grok");
+    await enter(s, "/models");
+    const catalog = await until(s, "balanced (everyday default):");
+    expect(catalog).toContain("★ claude-sonnet (claude-sonnet-5-5)");
+    expect(catalog).toContain("grok (grok-4.7) · cost unknown · needs /login xai");
+    await enter(s, "/model ghost");
+    await until(s, "Unknown model: ghost. See /models.");
+    await enter(s, "/model grok");
+    await until(s, "grok needs your xai account: /login xai");
+    await enter(s, "/model claude-sonnet");
+    await until(s, "Model: claude-sonnet (claude-sonnet-5-5)");
+    await until(s, "model: claude-sonnet"); // the header follows the choice
+    await enter(s, "/model balanced");
+    await until(s, "Model: any balanced model");
+    await enter(s, "/model auto");
+    await until(s, "Model: auto (smart routing");
+    expect(chooseBrain.mock.calls).toEqual([
+      ["c1", "claude-sonnet"],
+      ["c1", "balanced"],
+      ["c1", null],
+    ]);
+    await enter(s, "/model");
+    await until(s, "Usage: /model <name|tier|auto>");
+    await enter(s, "/brains");
+    await until(s, "Unknown command: /brains");
+  });
+
+  it("shows which model wrote each reply", async () => {
+    const client = fakeClient({
+      send: () =>
+        events({
+          type: "done",
+          stop: "final_answer",
+          text: "Paris",
+          steps: 1,
+          cost_usd: null,
+          brain: "claude-sonnet",
+          model: "claude-sonnet-5-5",
+        }),
+    });
+    await using s = await screen(client);
+    await enter(s, "Capital of France?");
+    await until(s, "enzo: Paris · claude-sonnet");
   });
 
   it("quits on /quit", async () => {

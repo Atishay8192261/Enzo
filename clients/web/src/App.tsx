@@ -7,6 +7,7 @@ import {
 } from "@enzo/chat";
 import { type FormEvent, useState } from "react";
 import { Accounts } from "./Accounts.tsx";
+import { ModelPicker } from "./ModelPicker.tsx";
 
 const KEY = "enzo.conversation";
 
@@ -29,7 +30,7 @@ const browserMemory: ConversationMemory = {
 };
 
 export function App({ client }: { client: ChatClient & AccountsClient }) {
-  const { state, send, decide, chooseBrain } = useChat(client, browserMemory, "web");
+  const { state, send, decide, chooseBrain, refreshBrains } = useChat(client, browserMemory, "web");
   const [text, setText] = useState("");
   const busy = state.status !== "ready";
 
@@ -45,28 +46,17 @@ export function App({ client }: { client: ChatClient & AccountsClient }) {
     <main className="chat">
       <header>
         <h1>Enzo</h1>
-        <label>
-          Brain{" "}
-          <select
-            aria-label="Brain"
-            value={state.brain ?? ""}
-            disabled={busy}
-            onChange={(e) => void chooseBrain(e.target.value || null)}
-          >
-            <option value="">Auto (routing)</option>
-            {state.brains.map((b) => (
-              <option key={b.name} value={b.name}>
-                {b.name} · {b.model}
-                {b.priced ? "" : " (cost unknown)"}
-              </option>
-            ))}
-          </select>
-        </label>
+        <ModelPicker
+          brains={state.brains}
+          value={state.brain}
+          disabled={busy}
+          onChange={(choice) => void chooseBrain(choice)}
+        />
       </header>
 
       <details className="accounts-toggle">
         <summary>Accounts</summary>
-        <Accounts client={client} />
+        <Accounts client={client} onChange={() => void refreshBrains()} />
       </details>
 
       {state.status === "connecting" && <p role="status">Connecting…</p>}
@@ -77,6 +67,7 @@ export function App({ client }: { client: ChatClient & AccountsClient }) {
           // biome-ignore lint/suspicious/noArrayIndexKey: the transcript only ever appends
           <li key={i} className={item.role}>
             {item.text}
+            {item.by && <small className="by">{item.by}</small>}
           </li>
         ))}
         {state.draft && <li className="assistant draft">{state.draft}</li>}

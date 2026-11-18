@@ -2,4 +2,5 @@
 
 export * from "./accounts.ts";
 export * from "./chat.ts";
+export * from "./models.ts";
 export * from "./useChat.ts";

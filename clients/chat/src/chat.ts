@@ -17,6 +17,8 @@ export type ChatClient = Pick<
 export interface ChatItem {
   role: "user" | "assistant" | "notice";
   text: string;
+  /** The brain that wrote this reply (live replies; stored history does not record it). */
+  by?: string;
 }
 
 export interface PendingApproval {
@@ -63,6 +65,7 @@ export type ChatAction =
   | { type: "user_sent"; text: string }
   | { type: "resuming" }
   | { type: "brain_chosen"; brain: string | null }
+  | { type: "brains_loaded"; brains: Brain[] }
   | { type: "approval_decided"; id: string }
   | { type: "event"; event: AgentEvent };
 
@@ -96,6 +99,8 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
       return { ...state, status: "streaming", error: null };
     case "brain_chosen":
       return { ...state, brain: action.brain };
+    case "brains_loaded":
+      return { ...state, brains: action.brains };
     case "approval_decided":
       return { ...state, approvals: state.approvals.filter((a) => a.id !== action.id) };
     case "event":
@@ -125,11 +130,14 @@ function onEvent(state: ChatState, event: AgentEvent): ChatState {
     case "done": {
       const items = [...state.items];
       const notice = STOP_NOTICES[event.stop];
-      if (event.text && !notice)
+      if (event.text && !notice) {
+        const answer = event.stop === "final_answer";
         items.push({
-          role: event.stop === "final_answer" ? "assistant" : "notice",
+          role: answer ? "assistant" : "notice",
           text: event.text,
+          ...(answer && event.brain ? { by: event.brain } : {}),
         });
+      }
       if (notice) items.push({ role: "notice", text: notice });
       return { ...state, status: "ready", items, draft: "", working: 0, lastCost: event.cost_usd };
     }

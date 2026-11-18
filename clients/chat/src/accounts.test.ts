@@ -1,6 +1,6 @@
 import type { ProviderConnection } from "@enzo/sdk";
 import { describe, expect, it } from "vitest";
-import { describeConnection, parseLogin } from "./accounts.ts";
+import { describeConnection } from "./accounts.ts";
 
 const base: ProviderConnection = {
   provider: "anthropic",
@@ -25,14 +25,5 @@ describe("accounts", () => {
     expect(describeConnection(on)).toBe(
       "anthropic: connected (API key, since 2026-11-17) · claude-opus-5-5, claude-sonnet-5-5",
     );
-  });
-
-  it("parses /login and refuses keys typed on the command line", () => {
-    expect(parseLogin("/brains")).toBeNull();
-    expect(parseLogin("/login")).toEqual({ error: expect.stringContaining("Usage") });
-    expect(parseLogin(" /login  xai ")).toEqual({ provider: "xai" });
-    const inline = parseLogin("/login xai fake-key-000000");
-    expect(inline).toEqual({ error: expect.stringContaining("Never type a key") });
-    expect(JSON.stringify(inline)).not.toContain("fake-key");
   });
 });

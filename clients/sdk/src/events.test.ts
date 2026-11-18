@@ -16,11 +16,15 @@ describe("toAgentEvent", () => {
       arguments: { to: "bob" },
     });
     expect(
+      toAgentEvent(
+        "done",
+        '{"stop":"final_answer","text":"ok","steps":1,"cost_usd":null,"brain":"gpt-sol","model":"gpt-6.2-sol"}',
+      ),
+    ).toMatchObject({ type: "done", cost_usd: null, brain: "gpt-sol", model: "gpt-6.2-sol" });
+    // a done event from an older gateway (no brain/model) is malformed, not silently partial
+    expect(() =>
       toAgentEvent("done", '{"stop":"final_answer","text":"ok","steps":1,"cost_usd":null}'),
-    ).toMatchObject({
-      type: "done",
-      cost_usd: null,
-    });
+    ).toThrow("malformed done event");
   });
 
   it("skips events this client does not know (forward compatible)", () => {
