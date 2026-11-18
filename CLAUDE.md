@@ -113,6 +113,8 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
   `usePaste` into a ref and draws dots. Tests paste with `mockInput.pasteBracketedText`.
 - GitGuardian flags realistic fake keys: tests use `tests/fakes.py` `fake_key()` (low entropy). Force-push
   is blocked here: to drop a flagged commit, push a new branch, open a new PR, close the old one.
+- Routing never switches brains mid-turn: native reasoning parts are keyed by provider, not model,
+  and replay across models is unverified (ADR 0010). The `done` event's `model` is the served model.
 - Secrets: `enzo.accounts` vault (keychain or AES-GCM file with `ENZO_VAULT_KEY`), never plaintext (ADR 0009).
 
 ## Brain providers and auth (verified 2026-11-17, details in ADR 0001)
@@ -145,7 +147,9 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
   1. [x] Server: vault, connections index, live key check, `/connections` endpoints (ADR 0009,
      `docs/ops/provider-accounts.md`)
   2. [x] Clients: SDK + `/login` (hidden prompt), `/logout`, `/connections`, `/check`; web Accounts panel
-  3. [ ] Model catalog tiers (fast / balanced / powerful), `/models`, `/model`, provider-neutral routing
+  3. Model catalog and routing (ADR 0010): [x] server: tiers in `brains.toml`, task → tier, spread by
+     conversation hash over connected providers, same-tier cross-provider fallback, rules classifier,
+     tier pins, `done` names the answering brain; [ ] clients: `/models`, `/model`, show the brain per reply
   4. [ ] Sign in with ChatGPT (`enzo login chatgpt`, runs on the user's machine)
 - [ ] Release automation (release PRs, CHANGELOG, tags)
 - [ ] GitHub connector: issue #2
