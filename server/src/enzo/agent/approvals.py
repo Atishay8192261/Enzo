@@ -21,10 +21,17 @@ class ApprovalRequest:
     call: ToolCall
     tool: str
     arguments: dict[str, Any]
+    #: The exact action in plain words, for the approval card. Not part of the approval id: the
+    #: id covers the tool and its exact arguments, which are what gets approved.
+    summary: str | None = None
 
 
-def approval_request(call: ToolCall, args: BaseModel) -> ApprovalRequest:
+def approval_request(
+    call: ToolCall, args: BaseModel, summary: str | None = None
+) -> ApprovalRequest:
     arguments = args.model_dump(mode="json")
     canonical = json.dumps({"tool": call.name, "arguments": arguments}, sort_keys=True)
     digest = hashlib.sha256(canonical.encode()).hexdigest()[:32]
-    return ApprovalRequest(id=f"appr_{digest}", call=call, tool=call.name, arguments=arguments)
+    return ApprovalRequest(
+        id=f"appr_{digest}", call=call, tool=call.name, arguments=arguments, summary=summary
+    )

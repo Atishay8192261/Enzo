@@ -5,8 +5,13 @@ from collections.abc import Callable
 import httpx2
 import pytest
 
-from enzo.accounts.check import check_api_key
-from enzo.brain import AuthError, ProviderConnectionError, ProviderServerError
+from enzo.accounts.check import check_api_key, check_tavily_key
+from enzo.brain import (
+    AuthError,
+    ProviderConnectionError,
+    ProviderServerError,
+    RateLimitError,
+)
 from enzo.brain.config import BrainConfig, load_config
 from tests.fakes import fake_key
 
@@ -89,3 +94,22 @@ async def test_unreachable_provider_is_a_connection_error() -> None:
 
     with pytest.raises(ProviderConnectionError):
         await check(CFG.brains["claude-opus"], down)
+
+
+@pytest.mark.parametrize(
+    ("status", "error"),
+    [(200, None), (401, AuthError), (429, RateLimitError), (500, ProviderServerError)],
+)
+async def test_tavily_key_check_reads_usage_without_spending_credits(
+    status: int, error: type[Exception] | None
+) -> None:
+    rec = Recorder(status, {"key": {"usage": 0}})
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(rec)) as http:
+        if error is None:
+            await check_tavily_key(KEY, http_client=http)
+        else:
+            with pytest.raises(error):
+                await check_tavily_key(KEY, http_client=http)
+    (req,) = rec.requests
+    assert (req.method, str(req.url)) == ("GET", "https://api.tavily.com/usage")
+    assert req.headers["authorization"] == f"Bearer {KEY}"

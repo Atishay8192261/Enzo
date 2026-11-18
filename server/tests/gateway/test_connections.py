@@ -72,7 +72,16 @@ async def test_connect_list_check_and_disconnect(
     row = (await status(c))["anthropic"]
     assert (row["connected"], row["method"], row["methods"]) == (True, "api_key", ["api_key"])
     assert row["connected_at"]
-    assert set(row) == {"provider", "connected", "method", "connected_at", "methods", "models"}
+    assert set(row) == {
+        "provider",
+        "connected",
+        "method",
+        "connected_at",
+        "methods",
+        "models",
+        "tools",
+        "purpose",
+    }
 
     r = await c.post("/connections/anthropic/check")
     assert r.json() == {"ok": True, "detail": None}

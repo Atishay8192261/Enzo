@@ -8,6 +8,7 @@ from enzo.accounts.service import (
     AccountsService,
     EnvironmentKeyError,
     NotConnectedError,
+    Service,
     UnknownProviderError,
 )
 from enzo.accounts.vault import VaultUnavailableError
@@ -126,3 +127,37 @@ async def test_environment_keys_show_as_connected_only_when_opted_in(tmp_path: P
     assert xai.method == "api_key"
     shown.disconnect("xai")  # disconnects the account; the env key then shows again
     assert next(s for s in shown.status() if s.provider == "xai").method == "environment"
+
+
+async def test_services_are_accounts_too(tmp_path: Path) -> None:
+    checked: list[str] = []
+
+    async def check(key: str) -> None:
+        checked.append(key)
+
+    search = Service("tavily", "raises search limits", ("web_search",), "TAVILY_API_KEY", check)
+    service = AccountsService(
+        load_config(), file_store(tmp_path), Checker(), services={"tavily": search}
+    )
+    tavily = next(s for s in service.status() if s.provider == "tavily")
+    assert (tavily.connected, tavily.models, tavily.tools, tavily.purpose) == (
+        False,
+        (),
+        ("web_search",),
+        "raises search limits",
+    )
+    await service.connect_api_key("tavily", fake_key("tavily"))  # the service's own check
+    assert checked == [fake_key("tavily")]
+    assert service.api_key("tavily") == fake_key("tavily")
+    providers = [s.provider for s in service.status()]
+    assert providers[-1] == "tavily"  # after the model providers, which keep catalog order
+    assert providers[:2] == ["anthropic", "openai"]
+
+
+def test_a_service_cannot_shadow_a_model_provider(tmp_path: Path) -> None:
+    async def check(_key: str) -> None:
+        return None
+
+    clash = Service("openai", "x", (), "X_KEY", check)
+    with pytest.raises(ValueError, match="clashes with a model provider"):
+        AccountsService(load_config(), file_store(tmp_path), Checker(), services={"openai": clash})

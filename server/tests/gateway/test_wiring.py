@@ -79,3 +79,27 @@ async def test_opted_in_shell_keys_are_used_and_shown(
         status = {s.provider: s for s in app.state.accounts.status()}
         assert (status["openai"].connected, status["openai"].method) == (True, "environment")
         assert not status["anthropic"].connected  # what the app says matches what it uses
+
+
+async def test_the_app_registers_the_core_tools(
+    database_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    accounts = AccountsService(load_config(), file_store(tmp_path), accept)
+    settings = Settings(env="test", database_url=database_url, workspace_dir=tmp_path / "Enzo")
+    app = create_app(settings, accounts=accounts)
+    async with app.router.lifespan_context(app):
+        registry = app.state.service.registry
+        names = [s.name for s in registry.specs()]
+        assert names == [
+            "web_search",
+            "read_page",
+            "list_files",
+            "read_file",
+            "create_file",
+            "edit_file",
+            "delete_file",
+        ]
+        gated = [n for n in names if registry.get(n).requires_approval]
+        fenced = [n for n in names if registry.get(n).untrusted_output]
+    assert gated == ["delete_file"]
+    assert fenced == ["web_search", "read_page", "read_file"]

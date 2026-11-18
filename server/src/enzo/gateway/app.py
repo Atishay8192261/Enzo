@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 
+import httpx2
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -22,7 +23,9 @@ from enzo.config import Settings
 from enzo.gateway.connections import build_accounts, connection_routes
 from enzo.gateway.conversations import ServiceDep, conversation_routes
 from enzo.store.repository import Store
+from enzo.tools.files import file_tools
 from enzo.tools.registry import ToolRegistry
+from enzo.tools.web import web_tools
 
 
 class Health(BaseModel):
@@ -71,10 +74,19 @@ def create_app(
         )
         acct.on_change(router.forget)
         app.state.accounts = acct
-        app.state.service = ConversationService(store, router, ToolRegistry())
+        # One client for the web tools: no automatic redirects (read_page checks every hop).
+        http = httpx2.AsyncClient(timeout=httpx2.Timeout(20.0), follow_redirects=False)
+        tools = ToolRegistry(
+            [
+                *web_tools(tavily_key=lambda: acct.api_key("tavily"), http=http),
+                *file_tools(cfg.workspace_dir),
+            ]
+        )
+        app.state.service = ConversationService(store, router, tools)
         try:
             yield
         finally:
+            await http.aclose()
             await store.close()
 
     app = FastAPI(title="Enzo Gateway", version=__version__, lifespan=lifespan)
