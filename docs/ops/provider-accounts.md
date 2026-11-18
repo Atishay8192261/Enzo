@@ -12,6 +12,15 @@ for. Design: ADR 0009.
 | xAI (Grok) | API key |
 | Moonshot (Kimi) | API key |
 
+## Service accounts (used by tools)
+
+| Service | What connecting it does | Without it |
+| --- | --- | --- |
+| Tavily | Raises web search limits (1,000 free searches a month, no card) | Search still works, keyless and rate-limited |
+
+Connect with `/login tavily` or the web Accounts panel, like a model provider. The key is checked
+with Tavily's usage endpoint (no credits spent), then kept in the vault.
+
 ## Setup
 
 - **Laptop:** nothing to do. Keys go to the OS keychain.
