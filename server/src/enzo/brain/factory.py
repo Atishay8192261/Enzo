@@ -1,6 +1,5 @@
 """Build a live adapter from config. Keys come from the vault or the environment, never files."""
 
-import os
 from collections.abc import Callable, Mapping
 from typing import cast
 
@@ -19,13 +18,12 @@ type KeyLookup = Callable[[str], str | None]
 def build_brain(
     cfg: BrainConfig, env: Mapping[str, str] | None = None, *, keys: KeyLookup | None = None
 ) -> BrainProvider:
-    """The user's connected account comes first; an environment variable is the fallback."""
+    """The user's connected account is the source of keys. ``env`` (opt-in, ``ENZO_USE_ENV_KEYS``)
+    adds keys from environment variables; it is never read implicitly (issue #24)."""
     key = _key(cfg, env, keys)
     if not key:
-        msg = (
-            f"{cfg.provider_name} is not connected: run /login {cfg.provider_name} "
-            f"(or set {cfg.api_key_env})"
-        )
+        hint = f" (or set {cfg.api_key_env} with ENZO_USE_ENV_KEYS=1)" if env is not None else ""
+        msg = f"{cfg.provider_name} is not connected: run /login {cfg.provider_name}{hint}"
         raise AuthError(msg, provider=cfg.provider_name, model=cfg.model)
     if cfg.api == "anthropic":
         return AnthropicBrain(
@@ -52,5 +50,5 @@ def has_key(
 
 
 def _key(cfg: BrainConfig, env: Mapping[str, str] | None, keys: KeyLookup | None) -> str | None:
-    source = os.environ if env is None else env
-    return (keys(cfg.provider_name) if keys else None) or source.get(cfg.api_key_env)
+    vault = keys(cfg.provider_name) if keys else None
+    return vault or (env.get(cfg.api_key_env) if env is not None else None)

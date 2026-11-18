@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     config_dir: Path = Path.home() / ".config" / "enzo"
     #: Key for the encrypted credential vault on machines without an OS keychain (§11.2).
     vault_key: SecretStr | None = None
+    #: Also use provider keys from environment variables (OPENAI_API_KEY, …). Off by default: a key
+    #: in the shell must never be used, and billed, while the app says "not connected" (#24).
+    use_env_keys: bool = False
 
     @model_validator(mode="after")
     def _prod_requires_a_token(self) -> Self:

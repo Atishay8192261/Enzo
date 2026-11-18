@@ -50,6 +50,14 @@ Set it as `ENZO_VAULT_KEY` in the server's environment (a secret manager, not a 
 | 503 | No keychain and no `ENZO_VAULT_KEY` | Set `ENZO_VAULT_KEY` (see Setup) |
 | 500 "cannot decrypt vault entry" | Wrong `ENZO_VAULT_KEY` or a modified `vault.json` | Restore the right key, or delete `vault.json` and reconnect |
 
+## Keys from environment variables (developers only)
+
+Enzo ignores provider keys exported in the shell (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …) unless
+the gateway runs with `ENZO_USE_ENV_KEYS=1`. Otherwise a key in your shell would be used, and
+billed, while the app says "not connected" (issue #24). When opted in, those providers show as
+connected with method `environment`; a connected account still takes precedence, and the app
+cannot disconnect an environment key (unset the variable instead).
+
 ## Where things live
 
 - Keys: the OS keychain (service `enzo`), or `$ENZO_CONFIG_DIR/vault.json` encrypted (0600).

@@ -3,6 +3,7 @@
 Secrets go in and never come out: responses, errors and logs carry no key.
 """
 
+import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Annotated
@@ -11,7 +12,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, params
 from pydantic import BaseModel, ConfigDict, Field
 
 from enzo.accounts.check import check_api_key
-from enzo.accounts.service import AccountsService, NotConnectedError, UnknownProviderError
+from enzo.accounts.service import (
+    AccountsService,
+    EnvironmentKeyError,
+    NotConnectedError,
+    UnknownProviderError,
+)
 from enzo.accounts.store import CredentialStore
 from enzo.accounts.vault import VaultCorruptError, VaultUnavailableError, open_vault
 from enzo.brain.config import BrainsConfig
@@ -52,12 +58,13 @@ class CheckOut(BaseModel):
 def build_accounts(cfg: Settings, config: BrainsConfig) -> AccountsService:
     """Accounts on the real vault; without one, connection endpoints explain how to get one."""
     key = cfg.vault_key.get_secret_value() if cfg.vault_key else None
+    env = os.environ if cfg.use_env_keys else None
     try:
         vault = open_vault(cfg.config_dir, key)
     except VaultUnavailableError as exc:
-        return AccountsService(config, None, check_api_key, unavailable=str(exc))
+        return AccountsService(config, None, check_api_key, unavailable=str(exc), env=env)
     store = CredentialStore(vault, cfg.config_dir / "connections.json")
-    return AccountsService(config, store, check_api_key)
+    return AccountsService(config, store, check_api_key, env=env)
 
 
 def connection_routes(auth: params.Depends) -> APIRouter:
@@ -111,6 +118,8 @@ def account_errors(provider: str) -> Iterator[None]:
         raise HTTPException(404, f"unknown provider {provider!r}") from exc
     except NotConnectedError as exc:
         raise HTTPException(409, f"{provider} is not connected: run /login {provider}") from exc
+    except EnvironmentKeyError as exc:
+        raise HTTPException(409, str(exc)) from exc
     except VaultUnavailableError as exc:
         raise HTTPException(503, str(exc)) from exc
     except VaultCorruptError as exc:

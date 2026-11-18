@@ -126,6 +126,8 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
 - `pnpm -s typecheck` hides failing packages' errors: run plain `pnpm typecheck` and read the output.
 - Live streaming replies without real keys: a mock OpenAI-compatible server that streams
   `response.output_text.delta` then `response.completed` drives `OpenAIBrain` end to end.
+- Provider keys come only from connected accounts. Environment keys are opt-in (`ENZO_USE_ENV_KEYS=1`) and
+  then shown as method `environment` (#24): `build_brain`/`has_key` never read `os.environ` on their own.
 - Secrets: `enzo.accounts` vault (keychain or AES-GCM file with `ENZO_VAULT_KEY`), never plaintext (ADR 0009).
 
 ## Brain providers and auth (verified 2026-11-17, details in ADR 0001)

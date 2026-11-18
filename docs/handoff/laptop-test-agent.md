@@ -100,6 +100,10 @@ git pull && scripts/dev.sh
 - Before testing a new version, also run both check commands in `CLAUDE.md`; a failure there is the
   first issue to file.
 
+**Shell keys are ignored.** Provider keys exported in your shell (`OPENAI_API_KEY`, …) are not used
+unless the gateway runs with `ENZO_USE_ENV_KEYS=1`; then they show as "environment variable" in
+`/connections`. Test with connected accounts, as a normal user would.
+
 **Keychain.** Enzo saves keys through the `keyring` library into the login Keychain.
 
 - macOS may ask whether Python can use the Keychain. That prompt is expected: allow it for this
