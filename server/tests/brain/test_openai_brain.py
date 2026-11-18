@@ -493,3 +493,127 @@ async def test_cache_writes_are_counted_with_their_retention() -> None:
     r = await brain(streaming(final)).chat([Message.user("x")], max_output_tokens=10)
     assert r.usage.cache_write_input_tokens == 50
     assert r.usage.cache_write_breakdown == {"30m": 40, "12h": 10}
+
+
+# ---------- Signed in with ChatGPT: the plan route's rules (ADR 0013, SIWC limits) ----------
+
+
+def plan_brain(handler: Handler, tokens: list[str] | None = None) -> OpenAIBrain:
+    """A plan-mode brain whose token source hands out the next token on each request."""
+    issued = iter(tokens or ["tok-1", "tok-2", "tok-3"])
+
+    async def access_token() -> str:
+        return next(issued)
+
+    http = openai.DefaultAsyncHttpxClient(transport=httpx2.MockTransport(handler))
+    return OpenAIBrain(
+        model=MODEL,
+        client=openai.AsyncOpenAI(api_key=access_token, http_client=http),
+        plan=True,
+    )
+
+
+def test_plan_requests_follow_the_plan_route_rules() -> None:
+    foreign = Message(
+        role="assistant",
+        parts=(ToolCall(id="c", name="search_web", arguments_json="{}"),),
+    )
+    request = plan_brain(streaming(response([]))).build_request(
+        [Message.system("be brief"), Message.user("x"), foreign], [SPEC], "auto", 10
+    )
+    assert "max_output_tokens" not in request  # rejected on this route
+    assert request["store"] is False
+    assert request["input"][0] == {"role": "developer", "content": "be brief"}  # never "system"
+    (namespace,) = request["tools"]  # function tools only inside a namespace
+    assert (namespace["type"], namespace["name"]) == ("namespace", "enzo")
+    assert [t["name"] for t in namespace["tools"]] == ["search_web"]
+    assert request["input"][2]["namespace"] == "enzo"  # replayed calls name their namespace
+    # An API key keeps the plain request.
+    plain = brain(streaming(response([]))).build_request([Message.user("x")], [SPEC], "auto", 10)
+    assert plain["max_output_tokens"] == 10
+    assert plain["tools"][0]["type"] == "function"
+
+
+async def test_each_plan_request_asks_for_a_fresh_token_and_is_paid_by_the_plan() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request.headers["authorization"])
+        body = json.loads(request.content)
+        assert body["stream"] is True
+        assert body["store"] is False
+        return streaming(response([TEXT]))(request)
+
+    b = plan_brain(handler)
+    assert b._client.max_retries == 0
+    first = await b.chat([Message.user("x")], max_output_tokens=10)
+    await b.chat([Message.user("y")], max_output_tokens=10)
+    assert seen == ["Bearer tok-1", "Bearer tok-2"]  # a renewed token is used at once
+    assert first.billing == "plan"
+    assert (
+        await brain(streaming(response([TEXT]))).chat([Message.user("x")], max_output_tokens=5)
+    ).billing == "usage"
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "expected", "words"),
+    [
+        (
+            429,
+            "subscription_sharing_usage_limit_exceeded",
+            RateLimitError,
+            "chatgpt.com/settings/usage",
+        ),
+        (403, "subscription_sharing_user_not_eligible", AuthError, "/login openai"),
+        (401, "subscription_sharing_invalid_user", AuthError, "/login chatgpt"),
+        (503, "subscription_sharing_usage_unavailable", ProviderServerError, "Try again shortly"),
+    ],
+)
+async def test_plan_errors_say_what_to_do(
+    status: int, code: str, expected: type[BrainError], words: str
+) -> None:
+    with pytest.raises(expected) as exc:
+        await plan_brain(error(status, code)).chat([Message.user("x")], max_output_tokens=10)
+    assert words in str(exc.value)
+
+
+async def test_a_plan_admission_refusal_without_a_code_is_explained() -> None:
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(401, json={"detail": "signed identity not accepted"})
+
+    with pytest.raises(AuthError, match="Sign in again: /login chatgpt"):
+        await plan_brain(handler).chat([Message.user("x")], max_output_tokens=10)
+
+
+async def test_a_plan_limit_reached_mid_stream_is_a_rate_limit() -> None:
+    failed = response(
+        [], "failed", error={"code": "subscription_sharing_usage_limit_exceeded", "message": "x"}
+    )
+    with pytest.raises(RateLimitError, match="usage limit for Enzo is reached"):
+        await plan_brain(streaming(failed)).chat([Message.user("x")], max_output_tokens=5)
+
+
+async def test_a_plan_has_no_token_counting() -> None:
+    b = plan_brain(streaming(response([])))
+    assert b.capabilities.token_counting == "unsupported"
+    with pytest.raises(UnsupportedCapabilityError):
+        await b.count_tokens([Message.user("x")])
+
+
+async def test_a_failing_token_source_stops_the_request() -> None:
+    async def ended() -> str:
+        raise AuthError("Your ChatGPT sign-in has ended.", provider="openai", model="")
+
+    calls: list[int] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        calls.append(1)
+        return streaming(response([TEXT]))(request)
+
+    http = openai.DefaultAsyncHttpxClient(transport=httpx2.MockTransport(handler))
+    b = OpenAIBrain(
+        model=MODEL, client=openai.AsyncOpenAI(api_key=ended, http_client=http), plan=True
+    )
+    with pytest.raises(AuthError, match="sign-in has ended"):
+        await b.chat([Message.user("x")], max_output_tokens=5)
+    assert calls == []  # nothing was sent without a token

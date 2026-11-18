@@ -178,7 +178,8 @@ def _sse(event: ServiceEvent) -> ServerSentEvent:
             }
             return ServerSentEvent(event="approval_needed", data=data)
         case TurnDone(outcome=o):
-            costs = [c.cost_usd for c in o.brain_calls]
+            # Calls the user's plan paid for have no per-token cost; the rest are summed.
+            costs = [c.cost_usd for c in o.brain_calls if c.billing != "plan"]
             # No call made: nothing was spent (#25). Any unpriced call: unknown, never 0 (§1.3.5).
             cost = None if any(c is None for c in costs) else sum(c or 0 for c in costs)
             answered = next((c for c in reversed(o.brain_calls) if c.outcome == "ok"), None)
@@ -191,6 +192,8 @@ def _sse(event: ServiceEvent) -> ServerSentEvent:
                 "brain": answered.brain if answered else None,
                 "model": answered.model if answered else None,
                 "failure": o.failure,
+                # A ChatGPT plan paid for (part of) this reply: apps say so instead of a price.
+                "plan": any(c.billing == "plan" for c in o.brain_calls),
             }
             return ServerSentEvent(event="done", data=data)
         case TurnFailed(message=message):

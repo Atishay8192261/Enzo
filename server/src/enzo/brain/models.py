@@ -159,6 +159,8 @@ class BrainResponse(_Frozen):
     stop_reason: StopReason
     usage: Usage
     latency_ms: float = Field(ge=0)
+    #: Who pays: per-token usage on an API key, or the user's subscription plan (no token price).
+    billing: Literal["usage", "plan"] = "usage"
 
     @model_validator(mode="after")
     def _is_assistant(self) -> Self:
@@ -198,5 +200,6 @@ class Capabilities(_Frozen):
     #: Can the brain be forced to call a tool? Some current models reject forcing with a 400.
     forced_tool_choice: bool
     streaming: bool
-    token_counting: Literal["exact", "estimate"]
+    #: "unsupported": the route has no counting endpoint (a ChatGPT plan sign-in).
+    token_counting: Literal["exact", "estimate", "unsupported"]
     embeddings: bool

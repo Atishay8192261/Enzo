@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from enzo import __version__
+from enzo.accounts.chatgpt import host_id
 from enzo.accounts.service import AccountsService
 from enzo.agent.service import ConversationService
 from enzo.brain.config import Tier, load_config
@@ -23,6 +24,7 @@ from enzo.brain.factory import build_brain, has_key
 from enzo.brain.router import Router
 from enzo.config import Settings
 from enzo.connectors.github import github_tools
+from enzo.gateway.chatgpt import RedactAuthQuery, chatgpt_routes
 from enzo.gateway.connections import build_accounts, connection_routes
 from enzo.gateway.conversations import ServiceDep, conversation_routes
 from enzo.store.repository import Store
@@ -71,16 +73,18 @@ def create_app(
         store = Store.from_url(cfg.database_url)
         config = load_config(cfg.brains_config)
         acct = accounts or build_accounts(cfg, config)
+        # One client for tools and sign-in: no automatic redirects (read_page checks every hop).
+        http = httpx2.AsyncClient(timeout=httpx2.Timeout(20.0), follow_redirects=False)
+        if acct.chatgpt is None:
+            acct.enable_chatgpt(host_id(cfg.config_dir), http)
         env = os.environ if cfg.use_env_keys else None  # opt-in only (#24)
         router = Router(
             config,
-            build=lambda c: build_brain(c, env, keys=acct.api_key),
-            available=lambda c: acct.connected(c.provider_name) or has_key(c, env),
+            build=lambda c: build_brain(c, env, keys=acct.auth),
+            available=lambda c: acct.usable(c) or has_key(c, env),
         )
         acct.on_change(router.forget)
         app.state.accounts = acct
-        # One client for the web tools: no automatic redirects (read_page checks every hop).
-        http = httpx2.AsyncClient(timeout=httpx2.Timeout(20.0), follow_redirects=False)
         tools = ToolRegistry(
             [
                 *web_tools(tavily_key=lambda: acct.api_key("tavily"), http=http),
@@ -137,6 +141,10 @@ def create_app(
 
     app.include_router(conversation_routes(auth))
     app.include_router(connection_routes(auth))
+    app.include_router(chatgpt_routes(auth, cfg.port))
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, RedactAuthQuery) for f in access.filters):
+        access.addFilter(RedactAuthQuery())
     return app
 
 

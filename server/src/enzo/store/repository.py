@@ -209,4 +209,5 @@ def _brain_call_row(conversation_id: uuid.UUID, c: CallRecord) -> BrainCallRow:
         cost_usd=None if c.cost_usd is None else Decimal(repr(c.cost_usd)),
         error=c.error,
         fallback_from=c.fallback_from,
+        billing=c.billing,
     )

@@ -12,6 +12,7 @@ from enzo.brain import (
     Message,
     ProviderServerError,
     RateLimitError,
+    StreamDone,
     TextDelta,
     TextPart,
     ToolChoice,
@@ -137,6 +138,26 @@ async def test_unpriced_brain_records_unknown_cost() -> None:
     r = router({"m-backup": ok()})
     routed = await r.chat("hard", [Message.user("x")], max_output_tokens=10, override="backup")
     assert routed.attempts[0].cost_usd is None
+
+
+class PaidByPlan(ScriptedBrain):
+    """Replies like a ChatGPT plan sign-in: billed to the plan, not per token."""
+
+    async def stream(self, *args: Any, **kwargs: Any) -> AsyncIterator[StreamEvent]:
+        async for event in super().stream(*args, **kwargs):
+            if isinstance(event, StreamDone):
+                billed = event.response.model_copy(update={"billing": "plan"})
+                yield StreamDone(response=billed)
+            else:
+                yield event
+
+
+async def test_a_plan_paid_reply_has_no_per_token_cost() -> None:
+    r = router({"m-main": PaidByPlan([Message.assistant("hi")])})
+    routed = await r.chat("hard", [Message.user("x")], max_output_tokens=10)
+    (rec,) = routed.attempts
+    assert (rec.billing, rec.cost_usd) == ("plan", None)  # priced brain, yet the plan pays
+    assert rec.input_tokens > 0  # usage is still recorded
 
 
 async def test_transient_failure_falls_back_exactly_once_and_is_recorded() -> None:
