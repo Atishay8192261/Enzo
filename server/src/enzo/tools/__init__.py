@@ -1,6 +1,8 @@
 """Typed tools (spec §7): canonical definitions, validation before execution, errors as data."""
 
 from enzo.tools.registry import (
+    JsonArgs,
+    Prepared,
     Tool,
     ToolError,
     ToolOutcome,
@@ -8,4 +10,4 @@ from enzo.tools.registry import (
     tool,
 )
 
-__all__ = ["Tool", "ToolError", "ToolOutcome", "ToolRegistry", "tool"]
+__all__ = ["JsonArgs", "Prepared", "Tool", "ToolError", "ToolOutcome", "ToolRegistry", "tool"]

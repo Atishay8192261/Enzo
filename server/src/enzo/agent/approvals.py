@@ -24,14 +24,21 @@ class ApprovalRequest:
     #: The exact action in plain words, for the approval card. Not part of the approval id: the
     #: id covers the tool and its exact arguments, which are what gets approved.
     summary: str | None = None
+    #: What the action will change, shown with it (e.g. the diff a merge would land).
+    detail: str | None = None
 
 
 def approval_request(
-    call: ToolCall, args: BaseModel, summary: str | None = None
+    call: ToolCall, args: BaseModel, summary: str | None = None, detail: str | None = None
 ) -> ApprovalRequest:
     arguments = args.model_dump(mode="json")
     canonical = json.dumps({"tool": call.name, "arguments": arguments}, sort_keys=True)
     digest = hashlib.sha256(canonical.encode()).hexdigest()[:32]
     return ApprovalRequest(
-        id=f"appr_{digest}", call=call, tool=call.name, arguments=arguments, summary=summary
+        id=f"appr_{digest}",
+        call=call,
+        tool=call.name,
+        arguments=arguments,
+        summary=summary,
+        detail=detail,
     )

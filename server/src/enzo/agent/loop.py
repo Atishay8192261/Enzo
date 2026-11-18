@@ -138,14 +138,23 @@ async def run_turn(  # noqa: PLR0913 - keyword-only turn settings
     while True:
         unanswered = _unanswered_calls(turn.messages)
         if unanswered:
-            pending = _pending_approvals(registry, unanswered, decided)
+            gates = dict(
+                zip(
+                    (c.id for c in unanswered),
+                    await asyncio.gather(*(_gate(registry, c) for c in unanswered)),
+                    strict=True,
+                )
+            )
+            pending = [
+                g.request for g in gates.values() if g.request and g.request.id not in decided
+            ]
             if pending:
                 for request in pending:
                     yield ApprovalNeeded(request)
                 names = ", ".join(r.tool for r in pending)
                 yield turn.done("approval_pending", f"Waiting for your approval: {names}.", pending)
                 return
-            async for event in _execute(registry, unanswered, decided, turn):
+            async for event in _execute(registry, unanswered, gates, decided, turn):
                 yield event
             continue
         if (halt := _halt(turn, stop, max_steps)) is not None:
@@ -242,41 +251,66 @@ def _unanswered_calls(messages: Sequence[Message]) -> tuple[ToolCall, ...]:
     return messages[-1].tool_calls
 
 
-def _pending_approvals(
-    registry: ToolRegistry, calls: Sequence[ToolCall], decided: Mapping[str, bool]
-) -> list[ApprovalRequest]:
-    gates = [_gate(registry, call) for call in calls]
-    return [g for g in gates if g is not None and g.id not in decided]
+@dataclass(frozen=True, slots=True)
+class _Gate:
+    """What a call needs before it runs, and the exact call that will run."""
+
+    #: The approval to ask for; None when the tool needs none (or the call is invalid).
+    request: ApprovalRequest | None
+    #: The call to execute: the brain's call, or the prepared one the user approved.
+    run: ToolCall
+    #: Preparing the call failed: it does not run, and the brain is told why.
+    error: str | None = None
 
 
-def _gate(registry: ToolRegistry, call: ToolCall) -> ApprovalRequest | None:
-    """The approval this exact call needs, if any. Invalid calls need none: they will not run."""
+async def _gate(registry: ToolRegistry, call: ToolCall) -> _Gate:
+    """The approval this exact call needs, if any. Invalid calls need none: they will not run.
+
+    A tool with a ``prepare`` step is made exact first (e.g. a merge pinned to the PR's current
+    head commit). The approval id covers the prepared arguments, so when the target has changed
+    since the user was asked, the id differs and the user is asked again (§12.3).
+    """
     tool = registry.get(call.name)
     if tool is None or not tool.requires_approval:
-        return None
+        return _Gate(None, call)
     checked = registry.validate(call)
     if not isinstance(checked, ValidatedCall):
-        return None
-    summary = tool.summary(checked.args) if tool.summary else None
-    return approval_request(call, checked.args, summary)
+        return _Gate(None, call)
+    args, detail = checked.args, None
+    if tool.prepare is not None:
+        try:
+            async with asyncio.timeout(tool.timeout_s):
+                prepared = await tool.prepare(args)
+        except Exception as exc:  # a lookup failed: nothing is asked and nothing runs
+            return _Gate(None, call, error=f"{type(exc).__name__}: {exc}")
+        args, detail = prepared.args, prepared.detail
+        call = ToolCall(id=call.id, name=call.name, arguments_json=args.model_dump_json())
+    summary = tool.summary(args) if tool.summary else None
+    return _Gate(approval_request(call, args, summary, detail), call)
 
 
 async def _execute(
     registry: ToolRegistry,
     calls: Sequence[ToolCall],
+    gates: Mapping[str, _Gate],
     decided: Mapping[str, bool],
     turn: _Turn,
 ) -> AsyncIterator[AgentEvent]:
     runnable: list[ToolCall] = []
     declined: dict[str, ToolOutcome] = {}
     for call in calls:
-        gate = _gate(registry, call)
-        if gate is not None and not decided[gate.id]:
+        gate = gates[call.id]
+        if gate.error is not None:
+            declined[call.id] = registry.not_executed(
+                call, "failed", f"Could not check this action, so it was not run: {gate.error}"
+            )
+            continue
+        if gate.request is not None and not decided[gate.request.id]:
             declined[call.id] = registry.not_executed(
                 call, "declined", "The user declined this action. Do not retry it unasked."
             )
             continue
-        runnable.append(call)
+        runnable.append(gate.run)
     for call in runnable:
         yield ToolStarted(call)
     ran = {o.call.id: o for o in await registry.execute_all(runnable)}
