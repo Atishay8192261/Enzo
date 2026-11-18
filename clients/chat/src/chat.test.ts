@@ -10,11 +10,21 @@ const ready = reduce(initialState, {
 });
 
 describe("chat reducer", () => {
+  it("separates text from different steps of one turn", () => {
+    let s = reduce(ready, { type: "user_sent", text: "hi" });
+    s = reduce(s, { type: "event", event: { type: "text", text: "Let me check." } });
+    s = reduce(s, { type: "event", event: { type: "tool_started", id: "c1", tool: "search" } });
+    s = reduce(s, { type: "event", event: { type: "text", text: "Found it." } });
+    expect(s.draft).toBe("Let me check.\nFound it.");
+  });
+
   it("streams text into a draft, then commits the final answer", () => {
     let s = reduce(ready, { type: "user_sent", text: "hi" });
-    s = reduce(s, { type: "event", event: { type: "text", text: "hello" } });
-    s = reduce(s, { type: "event", event: { type: "text", text: "there" } });
-    expect(s.draft).toBe("hello there");
+    // Providers stream raw chunks that carry their own spacing, even mid-word.
+    for (const text of ["Hel", "lo", " there"]) {
+      s = reduce(s, { type: "event", event: { type: "text", text } });
+    }
+    expect(s.draft).toBe("Hello there");
     s = reduce(s, {
       type: "event",
       event: { type: "done", stop: "final_answer", text: "hello there", steps: 1, cost_usd: 0.002 },

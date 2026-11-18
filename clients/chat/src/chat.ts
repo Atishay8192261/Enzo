@@ -106,9 +106,13 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
 function onEvent(state: ChatState, event: AgentEvent): ChatState {
   switch (event.type) {
     case "text":
-      return { ...state, draft: state.draft + (state.draft ? " " : "") + event.text };
-    case "tool_started":
-      return { ...state, working: state.working + 1 };
+      // Chunks carry their own spacing (even mid-word): join them exactly as they arrive.
+      return { ...state, draft: state.draft + event.text };
+    case "tool_started": {
+      // The next text comes from a new step of the turn: start it on its own line.
+      const draft = state.draft && !state.draft.endsWith("\n") ? `${state.draft}\n` : state.draft;
+      return { ...state, draft, working: state.working + 1 };
+    }
     case "tool_finished":
       return { ...state, working: Math.max(0, state.working - 1) };
     case "approval_needed": {
