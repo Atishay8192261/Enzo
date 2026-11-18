@@ -24,6 +24,7 @@ from enzo.accounts.vault import VaultCorruptError, VaultUnavailableError, open_v
 from enzo.brain.config import BrainsConfig
 from enzo.brain.errors import AuthError, BrainError
 from enzo.config import Settings
+from enzo.connectors.github import check_github_token
 
 
 def get_accounts(request: Request) -> AccountsService:
@@ -67,6 +68,13 @@ SERVICES = {
         tools=("web_search",),
         env_var="TAVILY_API_KEY",
         check=check_tavily_key,
+    ),
+    "github": Service(
+        name="github",
+        purpose="issues, pull requests, CI and releases on your repos (a fine-grained token)",
+        tools=("github",),
+        env_var="GITHUB_TOKEN",
+        check=check_github_token,
     ),
 }
 

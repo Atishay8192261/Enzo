@@ -1,5 +1,7 @@
 """The agent gateway: auth, health, brains, and the route groups (spec §2.3, §3)."""
 
+import asyncio
+import logging
 import os
 import secrets
 from collections.abc import AsyncIterator
@@ -20,12 +22,15 @@ from enzo.brain.config import Tier, load_config
 from enzo.brain.factory import build_brain, has_key
 from enzo.brain.router import Router
 from enzo.config import Settings
+from enzo.connectors.github import github_tools
 from enzo.gateway.connections import build_accounts, connection_routes
 from enzo.gateway.conversations import ServiceDep, conversation_routes
 from enzo.store.repository import Store
 from enzo.tools.files import file_tools
 from enzo.tools.registry import ToolRegistry
 from enzo.tools.web import web_tools
+
+log = logging.getLogger("enzo.gateway")
 
 
 class Health(BaseModel):
@@ -83,9 +88,13 @@ def create_app(
             ]
         )
         app.state.service = ConversationService(store, router, tools)
+        connectors = Connectors(tools, acct, http)
+        await connectors.refresh("github")
+        acct.on_change(connectors.changed)
         try:
             yield
         finally:
+            await connectors.close()
             await http.aclose()
             await store.close()
 
@@ -135,3 +144,36 @@ async def _invalid_request(_request: Request, exc: RequestValidationError) -> JS
     """Say which field is wrong and why, never echo what was sent: it may be a secret (§11.2)."""
     errors = [{k: v for k, v in e.items() if k != "input"} for e in exc.errors()]
     return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
+
+
+class Connectors:
+    """Keeps each connector's tools in step with its account: they appear when it connects and
+    go away when it disconnects. A connector that cannot be reached is logged, never fatal."""
+
+    def __init__(
+        self, registry: ToolRegistry, accounts: AccountsService, http: httpx2.AsyncClient
+    ) -> None:
+        self._registry = registry
+        self._accounts = accounts
+        self._http = http
+        self._tasks: set[asyncio.Task[None]] = set()
+
+    async def refresh(self, name: str) -> None:
+        if name != "github":
+            return
+        try:
+            loaded = await github_tools(lambda: self._accounts.api_key("github"), self._http)
+        except Exception as exc:  # unreachable or rejected: keep running without these tools
+            log.warning("connector unavailable", extra={"connector": name, "error": str(exc)})
+            loaded = []
+        self._registry.replace_group(name, loaded)
+
+    def changed(self, name: str) -> None:
+        task = asyncio.get_running_loop().create_task(self.refresh(name))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def close(self) -> None:
+        for task in list(self._tasks):
+            task.cancel()
+        await asyncio.gather(*self._tasks, return_exceptions=True)
