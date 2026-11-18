@@ -25,5 +25,9 @@ describe("accounts", () => {
     expect(describeConnection(on)).toBe(
       "anthropic: connected (API key, since 2026-11-17) · claude-opus-5-5, claude-sonnet-5-5",
     );
+    const env = { ...base, connected: true, method: "environment" };
+    expect(describeConnection(env)).toBe(
+      "anthropic: connected (environment variable) · claude-opus-5-5, claude-sonnet-5-5",
+    );
   });
 });

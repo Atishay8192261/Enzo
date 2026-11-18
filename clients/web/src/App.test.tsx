@@ -85,6 +85,7 @@ describe("App", () => {
             cost_usd: 0.0021,
             brain: "claude-opus",
             model: "claude-opus-5-5",
+            failure: null,
           },
         ),
     });
@@ -127,6 +128,7 @@ describe("App", () => {
             cost_usd: null,
             brain: null,
             model: null,
+            failure: null,
           },
         ),
       resume: () =>
@@ -138,6 +140,7 @@ describe("App", () => {
           cost_usd: null,
           brain: null,
           model: null,
+          failure: null,
         }),
     });
     render(<App client={client} />);
@@ -201,6 +204,32 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
     await screen.findByText("Connected xai.");
     await waitFor(() => expect(brains).toHaveBeenCalledTimes(2)); // startup + after connecting
+  });
+
+  it("tells web users to open Accounts, not to type /login (#25)", async () => {
+    const client = fakeClient({
+      send: () =>
+        events({
+          type: "done",
+          stop: "brain_failure",
+          text: "I could not get an answer: no model account is connected. Connect one: /login anthropic",
+          steps: 0,
+          cost_usd: 0,
+          brain: null,
+          model: null,
+          failure: "not_connected",
+        }),
+    });
+    render(<App client={client} />);
+    fireEvent.change(await screen.findByLabelText("Message"), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await screen.findByText(/No model account is connected yet/);
+    expect(screen.queryByText(/\/login/)).toBeNull();
+    expect(screen.getByText("no charge")).toBeDefined();
+    const accounts = screen.getByText("Accounts", { selector: "summary" }).closest("details");
+    expect(accounts?.open).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Open Accounts" }));
+    expect(accounts?.open).toBe(true);
   });
 
   it("says plainly when the gateway is down", async () => {

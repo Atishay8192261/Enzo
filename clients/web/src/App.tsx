@@ -32,6 +32,7 @@ const browserMemory: ConversationMemory = {
 export function App({ client }: { client: ChatClient & AccountsClient }) {
   const { state, send, decide, chooseBrain, refreshBrains } = useChat(client, browserMemory, "web");
   const [text, setText] = useState("");
+  const [accountsOpen, setAccountsOpen] = useState(false);
   const busy = state.status !== "ready";
 
   const submit = (e: FormEvent) => {
@@ -54,7 +55,11 @@ export function App({ client }: { client: ChatClient & AccountsClient }) {
         />
       </header>
 
-      <details className="accounts-toggle">
+      <details
+        className="accounts-toggle"
+        open={accountsOpen}
+        onToggle={(e) => setAccountsOpen(e.currentTarget.open)}
+      >
         <summary>Accounts</summary>
         <Accounts client={client} onChange={() => void refreshBrains()} />
       </details>
@@ -66,7 +71,17 @@ export function App({ client }: { client: ChatClient & AccountsClient }) {
         {state.items.map((item, i) => (
           // biome-ignore lint/suspicious/noArrayIndexKey: the transcript only ever appends
           <li key={i} className={item.role}>
-            {item.text}
+            {item.failure === "not_connected" ? (
+              <>
+                No model account is connected yet.{" "}
+                <button type="button" onClick={() => setAccountsOpen(true)}>
+                  Open Accounts
+                </button>{" "}
+                to connect Anthropic, OpenAI, xAI or Moonshot.
+              </>
+            ) : (
+              item.text
+            )}
             {item.by && <small className="by">{item.by}</small>}
           </li>
         ))}

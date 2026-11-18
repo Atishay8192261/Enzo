@@ -14,6 +14,8 @@ export type AgentEvent =
       /** The brain and served model that answered (spec §1.3.6); null when none did. */
       brain: string | null;
       model: string | null;
+      /** Why a brain_failure happened, e.g. "not_connected", so each client can word it. */
+      failure: string | null;
     }
   | { type: "error"; message: string };
 
@@ -41,6 +43,7 @@ const SHAPES: Record<AgentEvent["type"], Shape> = {
     cost_usd: "number|null",
     brain: "string|null",
     model: "string|null",
+    failure: "string|null",
   },
   error: { message: "string" },
 };
