@@ -143,7 +143,8 @@ async def test_a_merge_is_pinned_to_the_head_and_shows_the_diff() -> None:
     assert asked.arguments["expectedHeadSha"] == state.head  # pinned before asking
     assert asked.detail is not None
     assert f"at commit {state.head[:12]}" in asked.detail
-    assert "+hello from" in asked.detail  # the diff is on the card
+    assert "\n+hello from" in asked.detail  # the diff is on the card, as real lines
+    assert '{"diff"' not in asked.detail  # not GitHub's JSON wrapper
     assert asked.summary == "GitHub: Merge pull request (octo/site #12)"
     assert state.merged == []  # nothing merged without approval
 

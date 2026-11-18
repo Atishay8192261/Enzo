@@ -100,7 +100,7 @@ async def pin_merge(args: dict[str, Any], call: CallFn) -> tuple[dict[str, Any],
     if asked and asked != head:
         msg = f"the pull request changed (head is now {head[:12]}, not {str(asked)[:12]})"
         raise ConnectorError(msg)
-    diff = await call("pull_request_read", {"method": "get_diff", **where})
+    diff = _unwrap_diff(await call("pull_request_read", {"method": "get_diff", **where}))
     cut = len(diff) > MAX_DIFF_CHARS
     detail = (
         f'Merging "{title}" at commit {head[:12]} into its base.\n\n'
@@ -112,6 +112,16 @@ async def pin_merge(args: dict[str, Any], call: CallFn) -> tuple[dict[str, Any],
         )
     )
     return {**args, "expectedHeadSha": head}, detail
+
+
+def _unwrap_diff(raw: str) -> str:
+    """GitHub's server sends ``{"diff": "..."}`` (seen live 2026-11-18); plain text works too."""
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return raw
+    diff = data.get("diff") if isinstance(data, dict) else None
+    return diff if isinstance(diff, str) else raw
 
 
 def github_server() -> McpServer:
