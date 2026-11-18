@@ -129,6 +129,10 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
 - Provider keys come only from connected accounts. Environment keys are opt-in (`ENZO_USE_ENV_KEYS=1`) and
   then shown as method `environment` (#24): `build_brain`/`has_key` never read `os.environ` on their own.
 - `done` events carry `failure` (e.g. `not_connected`) so each client words failures for its surface (#25).
+- Tools that return outside content set `untrusted_output=True` (fenced by the registry); gated tools give a
+  plain `summary` for the approval card. Never show tool names to users (§10.3).
+- Tavily keyless search runs out fast under testing: tests mock it; connect a free key for real use.
+- trafilatura warns about urllib3 SOCKS on import: `enzo.tools.web` silences exactly that warning.
 - Secrets: `enzo.accounts` vault (keychain or AES-GCM file with `ENZO_VAULT_KEY`), never plaintext (ADR 0009).
 
 ## Brain providers and auth (verified 2026-11-17, details in ADR 0001)
@@ -157,7 +161,10 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
   5. [x] Router, single fallback, budget check, cost accounting (`enzo.brain.router`, `brains.toml`, ADR 0003)
   6. Live conformance (§1.4) on every configured brain: needs API keys
 - [ ] Spec §7 tools: [x] typed registry (`enzo.tools`, `@tool`), validation before execution, errors as data,
-  timeouts, parallel batches; [ ] real tools and connectors
+  timeouts, parallel batches; [x] batch 1 core tools (ADR 0011): `web_search` (Tavily, keyless or key),
+  `read_page` (own fetch + SSRF guard), workspace files (list/read/create/edit/delete with approval),
+  untrusted-output fence, plain-language approval summaries; [ ] batch 2 MCP client + GitHub (issue #2);
+  [ ] batch 3 Gmail + Calendar via MCP; [ ] batch 4 reminders/scheduling and memory tools
 - [x] Spec §4 agent loop (`enzo.agent`: `run_turn`, approvals, prompt order; ADR 0004)
 - [x] Spec §11 persistence base: Postgres store for transcripts, brain/tool call ledgers, approvals (ADR 0005)
 - [x] Gateway: conversations, SSE turns, approvals, brain choice, auth (`enzo.gateway`, `enzo.agent.service`, ADR 0006)
