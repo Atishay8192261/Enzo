@@ -68,6 +68,7 @@ describe("chat reducer", () => {
         id: "appr_1",
         tool: "send_email",
         summary: null,
+        detail: null,
         arguments: { to: "bob" },
       },
     });
@@ -85,7 +86,7 @@ describe("chat reducer", () => {
       },
     });
     expect(s.approvals).toEqual([
-      { id: "appr_1", tool: "send_email", arguments: { to: "bob" }, summary: null },
+      { id: "appr_1", tool: "send_email", arguments: { to: "bob" }, summary: null, detail: null },
     ]);
     expect(s.items.at(-1)).toEqual({ role: "notice", text: "Waiting for your approval." });
     s = reduce(s, { type: "approval_decided", id: "appr_1" });
@@ -152,7 +153,7 @@ describe("formatCost", () => {
 
 describe("describeApproval", () => {
   it("uses the tool's plain words, and never shows a bare tool name", () => {
-    const base = { id: "a", tool: "delete_file", arguments: { path: "x" } };
+    const base = { id: "a", tool: "delete_file", arguments: { path: "x" }, detail: null };
     expect(describeApproval({ ...base, summary: "Delete x from your Enzo folder" })).toBe(
       "Delete x from your Enzo folder",
     );

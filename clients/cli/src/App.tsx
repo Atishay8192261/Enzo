@@ -110,6 +110,7 @@ export function App({
           <text>
             {describeApproval(approval)}
             {"\n"}Exact details: {JSON.stringify(approval.arguments, null, 2)}
+            {approval.detail ? `\n${clip(approval.detail, 12)}` : ""}
           </text>
         </box>
       ) : null}
@@ -136,4 +137,12 @@ export function App({
       {state.lastCost !== undefined ? <text fg={DIM}>{formatCost(state.lastCost)}</text> : null}
     </box>
   );
+}
+
+/** The first lines of a long detail (a diff): the exact action above it stays on screen. */
+function clip(text: string, lines: number): string {
+  const all = text.split("\n");
+  return all.length <= lines
+    ? text
+    : `${all.slice(0, lines).join("\n")}\n… ${all.length - lines} more lines`;
 }

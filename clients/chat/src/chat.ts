@@ -28,6 +28,7 @@ export interface PendingApproval {
   tool: string;
   arguments: Record<string, unknown>;
   summary: string | null;
+  detail: string | null;
 }
 
 /** What the approval card says: the tool's plain description, never a bare tool name (§10.3). */
@@ -129,10 +130,10 @@ function onEvent(state: ChatState, event: AgentEvent): ChatState {
     case "tool_finished":
       return { ...state, working: Math.max(0, state.working - 1) };
     case "approval_needed": {
-      const { id, tool, summary } = event;
+      const { id, tool, summary, detail } = event;
       return {
         ...state,
-        approvals: [...state.approvals, { id, tool, arguments: event.arguments, summary }],
+        approvals: [...state.approvals, { id, tool, arguments: event.arguments, summary, detail }],
       };
     }
     case "done": {

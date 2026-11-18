@@ -102,6 +102,12 @@ export function App({ client }: { client: ChatClient & AccountsClient }) {
           </p>
           <p>Exact details:</p>
           <pre>{JSON.stringify(a.arguments, null, 2)}</pre>
+          {a.detail && (
+            <details open className="approval-detail">
+              <summary>What it changes</summary>
+              <pre>{a.detail}</pre>
+            </details>
+          )}
           <button type="button" onClick={() => void decide(a.id, true)}>
             Approve
           </button>

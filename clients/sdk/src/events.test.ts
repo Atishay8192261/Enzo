@@ -7,7 +7,7 @@ describe("toAgentEvent", () => {
     expect(
       toAgentEvent(
         "approval_needed",
-        '{"id":"appr_1","tool":"send_email","arguments":{"to":"bob"},"summary":"Email bob"}',
+        '{"id":"appr_1","tool":"send_email","arguments":{"to":"bob"},"summary":"Email bob","detail":null}',
       ),
     ).toEqual({
       type: "approval_needed",
@@ -15,6 +15,7 @@ describe("toAgentEvent", () => {
       tool: "send_email",
       arguments: { to: "bob" },
       summary: "Email bob",
+      detail: null,
     });
     expect(
       toAgentEvent(

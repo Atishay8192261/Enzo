@@ -11,6 +11,8 @@ export type AgentEvent =
       arguments: Record<string, unknown>;
       /** The exact action in plain words, for the approval card; null when the tool has none. */
       summary: string | null;
+      /** What the action will change (e.g. the diff a merge lands); null when there is nothing. */
+      detail: string | null;
     }
   | {
       type: "done";
@@ -42,7 +44,13 @@ const SHAPES: Record<AgentEvent["type"], Shape> = {
   text: { text: "string" },
   tool_started: { id: "string", tool: "string" },
   tool_finished: { id: "string", tool: "string", status: "string", latency_ms: "number" },
-  approval_needed: { id: "string", tool: "string", arguments: "object", summary: "string|null" },
+  approval_needed: {
+    id: "string",
+    tool: "string",
+    arguments: "object",
+    summary: "string|null",
+    detail: "string|null",
+  },
   done: {
     stop: "string",
     text: "string",

@@ -119,6 +119,7 @@ describe("App", () => {
             id: "appr_1",
             tool: "send_email",
             summary: "Email bob@example.com",
+            detail: "To: bob@example.com\nhi",
             arguments: { to: "bob@example.com", body: "hi" },
           },
           {
@@ -150,6 +151,8 @@ describe("App", () => {
     const card = await screen.findByRole("region", { name: "Approval needed" });
     expect(card.textContent).toContain("Email bob@example.com"); // plain words (§10.3)
     expect(card.textContent).not.toContain("send_email");
+    expect(card.textContent).toContain("What it changes"); // the detail, e.g. a merge's diff
+    expect(card.textContent).toContain("To: bob@example.com");
     expect(card.textContent).toContain('"to": "bob@example.com"'); // the exact action (§12.3)
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
     expect(await screen.findByText("Sent.")).toBeDefined();
