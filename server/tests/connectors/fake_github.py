@@ -45,7 +45,10 @@ def fake_github() -> tuple[MCPServer, State]:
             return json.dumps(
                 {"number": pullNumber, "title": "Add greeting", "head": {"sha": state.head}}
             )
-        return f"diff --git a/hello.txt b/hello.txt\n+hello from {state.head[:6]}\n"
+        # GitHub's server wraps the diff in JSON (checked live, 2026-11-18): {"diff": "..."}
+        return json.dumps(
+            {"diff": f"diff --git a/hello.txt b/hello.txt\n+hello from {state.head[:6]}\n"}
+        )
 
     @server.tool(annotations=ToolAnnotations(title="Merge pull request"))
     def merge_pull_request(

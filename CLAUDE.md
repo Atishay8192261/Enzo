@@ -149,6 +149,8 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
 - MCP tools: `enzo.connectors.mcp`. Approval unless the server marks `readOnlyHint`; outputs fenced; rate limit
   stops the connector 15 min, a rejected token until reconnect. Test servers: in-process `MCPServer`, and
   raise `mcp.server.mcpserver.exceptions.ToolError` (other exceptions reach clients as a generic message).
+- GitHub MCP (checked live 2026-11-18): all 25 allowlisted tools exist; reads carry `readOnlyHint`;
+  `pull_request_read` `get` returns REST-shaped JSON (`head.sha`), `get_diff` returns `{"diff": "..."}`.
 - GitHub MCP is hosted (`api.githubcopilot.com/mcp/`, blocked in cloud sessions unless allowed). The cloud
   proxy only allows repo-scoped `api.github.com` paths (`/user`, `/versions` are refused here).
 - Secrets: `enzo.accounts` vault (keychain or AES-GCM file with `ENZO_VAULT_KEY`), never plaintext (ADR 0009).
