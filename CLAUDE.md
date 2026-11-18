@@ -125,6 +125,12 @@ Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter 
 - Kimi K3 / K3.1: Moonshot API (OpenAI-compatible). Not self-hosted (~1.4 TB weights).
 - SDKs checked: `anthropic` 2.9.0, `openai` 3.53.0.
 
+## User testing on Atishay's laptop
+
+- A Claude Code agent on his Mac follows `docs/handoff/laptop-test-agent.md`: it runs Enzo as a user and
+  files GitHub issues labelled `user-testing` (bugs) and `idea`. Check those issues at the start of each
+  session and fix them through normal PRs. Keep that doc current when features land.
+
 ## Status and next steps
 
 - [x] Scaffold: gateway, SDK, web and terminal UIs, CI (PR #1)

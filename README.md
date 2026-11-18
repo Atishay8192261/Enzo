@@ -14,6 +14,8 @@ a background runtime and a safety layer with approval gating. The LLM is a repla
 
 - [Specification](docs/spec/ENZO_SPEC.md) — the source of truth
 - [ADR 0001 — stack and architecture](docs/adr/0001-stack-and-architecture.md)
+- [Provider accounts: setup and operations](docs/ops/provider-accounts.md)
+- [Testing Enzo on your own computer](docs/handoff/laptop-test-agent.md)
 
 ## Layout
 
@@ -28,8 +30,8 @@ docs/          Spec and architecture decision records
 
 ## Quickstart
 
-Requires Python 3.13+ with [uv](https://docs.astral.sh/uv/), Node 22.12+, pnpm 10, [Bun](https://bun.sh) 1.3.14+
-(the terminal app) and Postgres 16 with pgvector (see `CLAUDE.md`).
+Requires Python 3.13+ with [uv](https://docs.astral.sh/uv/), Node 22.12+, pnpm 10, [Bun](https://bun.sh) 1.4.4
+(the terminal app, pinned like CI) and Postgres 16 (see `CLAUDE.md`).
 
 ```bash
 pnpm install
