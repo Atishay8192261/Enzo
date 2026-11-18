@@ -7,11 +7,14 @@ comes back as an error result the brain can read and fix. A tool failure never c
 """
 
 import asyncio
+import dataclasses
+import json
 import time
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, cast, get_type_hints
 
+import jsonschema
 from pydantic import BaseModel, ConfigDict
 
 from enzo.brain.models import ToolCall, ToolResult, ToolSpec
@@ -36,6 +39,24 @@ class ToolError(BaseModel):
     message: str
 
 
+class JsonArgs(BaseModel):
+    """Arguments of a tool defined by a JSON Schema (an MCP tool), checked with ``jsonschema``."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    def as_dict(self) -> dict[str, Any]:
+        return dict(self.model_extra or {})
+
+
+@dataclass(frozen=True, slots=True)
+class Prepared[P: BaseModel]:
+    """A gated call made exact before the user is asked (e.g. pinned to a commit)."""
+
+    args: P
+    #: Shown on the approval card with the exact arguments, e.g. the diff about to be merged.
+    detail: str | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class Tool[P: BaseModel, R: BaseModel]:
     name: str
@@ -51,8 +72,18 @@ class Tool[P: BaseModel, R: BaseModel]:
     #: For approval-gated tools: the exact action in plain words, shown on the approval card
     #: (§10.3: no tool names in user-facing text; §12.3: approve the exact action).
     summary: Callable[[P], str] | None = None
+    #: For approval-gated tools: look up what the call will really do and pin it before asking.
+    #: The approval covers the prepared arguments, so if the target changes, the user is asked
+    #: again (§12.3 "if the content changes after approval, ask again").
+    prepare: Callable[[P], Awaitable[Prepared[P]]] | None = None
+    #: A JSON Schema for the arguments instead of a Pydantic model (tools from MCP servers).
+    schema: dict[str, Any] | None = None
+    #: Tools that come and go together, e.g. a connector's tools when its account connects.
+    group: str | None = None
 
     def spec(self) -> ToolSpec:
+        if self.schema is not None:
+            return ToolSpec(name=self.name, description=self.description, parameters=self.schema)
         return ToolSpec.from_model(self.name, self.description, self.params)
 
 
@@ -64,6 +95,7 @@ def tool[P: BaseModel, R: BaseModel](
     timeout_s: float = DEFAULT_TIMEOUT_S,
     untrusted_output: bool = False,
     summary: Callable[[P], str] | None = None,
+    prepare: Callable[[P], Awaitable[Prepared[P]]] | None = None,
 ) -> Callable[[Handler[P, R]], Tool[P, R]]:
     """Declare a tool from an async function; parameter and result models come from its hints."""
 
@@ -84,6 +116,7 @@ def tool[P: BaseModel, R: BaseModel](
             timeout_s=timeout_s,
             untrusted_output=untrusted_output,
             summary=summary,
+            prepare=prepare,
         )
 
     return wrap
@@ -114,7 +147,22 @@ class ToolRegistry:
             msg = f"tool {t.name!r} is already registered"
             raise ValueError(msg)
         t.spec()  # validates name and schema now, not mid-conversation
+        if t.schema is not None:
+            jsonschema.validators.validator_for(t.schema).check_schema(t.schema)
         self._tools[t.name] = t
+
+    def replace_group(self, group: str, tools: Iterable[Tool[Any, Any]]) -> None:
+        """Swap a group's tools at once (a connector connected, reconnected or disconnected)."""
+        incoming = [dataclasses.replace(t, group=group) for t in tools]
+        kept = {n: t for n, t in self._tools.items() if t.group != group}
+        clash = sorted(t.name for t in incoming if t.name in kept)
+        if clash:
+            msg = f"{group} tools clash with existing tools: {', '.join(clash)}"
+            raise ValueError(msg)
+        staged = ToolRegistry(kept.values())
+        for t in incoming:
+            staged.register(t)
+        self._tools = staged._tools
 
     def get(self, name: str) -> Tool[Any, Any] | None:
         return self._tools.get(name)
@@ -125,6 +173,9 @@ class ToolRegistry:
         return [t.spec() for t in chosen.values()]
 
     def validate(self, call: ToolCall) -> ValidatedCall | ToolCallRejection:
+        t = self._tools.get(call.name)
+        if t is not None and t.schema is not None:
+            return _validate_schema(call, t.schema)
         return validate_call(call, {name: t.params for name, t in self._tools.items()})
 
     async def execute(self, call: ToolCall) -> ToolOutcome:
@@ -179,6 +230,24 @@ class ToolRegistry:
         content = ToolError(error=kind, message=message).model_dump_json()
         result = ToolResult(call_id=call.id, name=call.name, content=content, is_error=True)
         return ToolOutcome(call=call, result=result, status=kind, latency_ms=_since(started))
+
+
+def _validate_schema(call: ToolCall, schema: dict[str, Any]) -> ValidatedCall | ToolCallRejection:
+    """JSON-Schema tools get the same guarantee as typed ones: nothing runs unless it validates."""
+    try:
+        data = json.loads(call.arguments_json or "{}")
+    except json.JSONDecodeError as exc:
+        return ToolCallRejection(call, f"Invalid arguments for {call.name}: not JSON ({exc.msg}).")
+    if not isinstance(data, dict):
+        return ToolCallRejection(call, f"Invalid arguments for {call.name}: expected an object.")
+    validator = jsonschema.validators.validator_for(schema)(schema)
+    errors = sorted(validator.iter_errors(data), key=lambda e: list(e.absolute_path))
+    if errors:
+        problems = "; ".join(
+            f"{'.'.join(str(p) for p in e.absolute_path) or '(root)'}: {e.message}" for e in errors
+        )
+        return ToolCallRejection(call, f"Invalid arguments for {call.name}: {problems}.")
+    return ValidatedCall(call, JsonArgs(**data))
 
 
 def _since(started: float) -> float:

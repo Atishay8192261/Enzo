@@ -169,7 +169,13 @@ def _sse(event: ServiceEvent) -> ServerSentEvent:
             }
             return ServerSentEvent(event="tool_finished", data=data)
         case ApprovalNeeded(request=r):
-            data = {"id": r.id, "tool": r.tool, "arguments": r.arguments, "summary": r.summary}
+            data = {
+                "id": r.id,
+                "tool": r.tool,
+                "arguments": r.arguments,
+                "summary": r.summary,
+                "detail": r.detail,
+            }
             return ServerSentEvent(event="approval_needed", data=data)
         case TurnDone(outcome=o):
             costs = [c.cost_usd for c in o.brain_calls]
