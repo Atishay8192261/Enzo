@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from enzo.accounts.service import AccountsService, NotConnectedError, UnknownProviderError
+from enzo.accounts.service import (
+    AccountsService,
+    EnvironmentKeyError,
+    NotConnectedError,
+    UnknownProviderError,
+)
 from enzo.accounts.vault import VaultUnavailableError
 from enzo.brain import AuthError
 from enzo.brain.config import BrainConfig, load_config
@@ -102,3 +107,22 @@ async def test_without_a_vault_nothing_can_be_saved_and_the_reason_is_given() ->
     assert service.api_key("anthropic") is None
     with pytest.raises(VaultUnavailableError, match="set ENZO_VAULT_KEY"):
         await service.connect_api_key("anthropic", KEY)
+
+
+async def test_environment_keys_show_as_connected_only_when_opted_in(tmp_path: Path) -> None:
+    env = {"XAI_API_KEY": fake_key("env")}
+    checker = Checker()
+    hidden = AccountsService(load_config(), file_store(tmp_path / "a"), checker)
+    assert not connected(hidden)["xai"]  # not opted in: not used, not shown
+    shown = AccountsService(load_config(), file_store(tmp_path / "b"), checker, env=env)
+    xai = next(s for s in shown.status() if s.provider == "xai")
+    assert (xai.connected, xai.method, xai.connected_at) == (True, "environment", None)
+    await shown.check("xai")  # checks the environment key
+    assert checker.calls == [("xai", fake_key("env"))]
+    with pytest.raises(EnvironmentKeyError, match="comes from XAI_API_KEY: unset it"):
+        shown.disconnect("xai")
+    await shown.connect_api_key("xai", fake_key("vault"))  # a connected account wins
+    xai = next(s for s in shown.status() if s.provider == "xai")
+    assert xai.method == "api_key"
+    shown.disconnect("xai")  # disconnects the account; the env key then shows again
+    assert next(s for s in shown.status() if s.provider == "xai").method == "environment"

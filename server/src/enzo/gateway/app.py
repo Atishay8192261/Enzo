@@ -1,5 +1,6 @@
 """The agent gateway: auth, health, brains, and the route groups (spec §2.3, §3)."""
 
+import os
 import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -62,10 +63,11 @@ def create_app(
         store = Store.from_url(cfg.database_url)
         config = load_config(cfg.brains_config)
         acct = accounts or build_accounts(cfg, config)
+        env = os.environ if cfg.use_env_keys else None  # opt-in only (#24)
         router = Router(
             config,
-            build=lambda c: build_brain(c, keys=acct.api_key),
-            available=lambda c: acct.connected(c.provider_name) or has_key(c),
+            build=lambda c: build_brain(c, env, keys=acct.api_key),
+            available=lambda c: acct.connected(c.provider_name) or has_key(c, env),
         )
         acct.on_change(router.forget)
         app.state.accounts = acct

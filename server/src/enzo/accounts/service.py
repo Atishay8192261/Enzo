@@ -1,6 +1,6 @@
 """Connect, list, check and disconnect provider accounts."""
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -19,6 +19,10 @@ class UnknownProviderError(KeyError):
 
 class NotConnectedError(LookupError):
     pass
+
+
+class EnvironmentKeyError(LookupError):
+    """The key comes from an environment variable: only unsetting it disconnects."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,12 +44,16 @@ class AccountsService:
         *,
         on_change: Callable[[str], None] = lambda _provider: None,
         unavailable: str | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> None:
         self._config = config
         self._store = store
         self._checker = checker
         self._listeners = [on_change]
         self._unavailable = unavailable or "no credential vault"
+        #: Environment keys, only when the user opted in (ENZO_USE_ENV_KEYS): then reported as
+        #: connected with method "environment", so the app shows what it really uses (#24).
+        self._env = env
 
     def on_change(self, listener: Callable[[str], None]) -> None:
         """Called with the provider name whenever its connection changes."""
@@ -65,16 +73,18 @@ class AccountsService:
     def status(self) -> list[ProviderStatus]:
         connections = self._store.connections() if self._store else {}
         out = []
-        for provider in self.providers():
+        for provider, cfg in self.providers().items():
             c = connections.get(provider)
+            from_env = c is None and self._env_key(cfg) is not None
             models = tuple(
                 b.model for b in self._config.brains.values() if b.provider_name == provider
             )
+            method = c.method if c else ("environment" if from_env else None)
             out.append(
                 ProviderStatus(
                     provider=provider,
-                    connected=c is not None,
-                    method=c.method if c else None,
+                    connected=c is not None or from_env,
+                    method=method,
                     connected_at=c.connected_at if c else None,
                     methods=("api_key",),
                     models=models,
@@ -93,14 +103,18 @@ class AccountsService:
         return connection
 
     def disconnect(self, provider: str) -> None:
-        self._provider(provider)
-        self._require_store().disconnect(provider)
+        cfg = self._provider(provider)
+        store = self._require_store()
+        if provider not in store.connections() and self._env_key(cfg) is not None:
+            msg = f"{provider}'s key comes from {cfg.api_key_env}: unset it to disconnect"
+            raise EnvironmentKeyError(msg)
+        store.disconnect(provider)
         self._changed(provider)
 
     async def check(self, provider: str) -> None:
         """Re-check a saved connection, e.g. after the key was revoked (spec §8.4)."""
         cfg = self._provider(provider)
-        key = self._require_store().api_key(provider)
+        key = self._require_store().api_key(provider) or self._env_key(cfg)
         if key is None:
             msg = f"{provider} is not connected"
             raise NotConnectedError(msg)
@@ -109,6 +123,11 @@ class AccountsService:
     def connected(self, provider: str) -> bool:
         """From the non-secret index: routing asks often, and must not read the vault for it."""
         return self._store is not None and provider in self._store.connections()
+
+    def _env_key(self, cfg: BrainConfig) -> str | None:
+        if self._env is None:
+            return None
+        return self._env.get(cfg.api_key_env) or None
 
     def api_key(self, provider: str) -> str | None:
         return self._store.api_key(provider) if self._store else None
