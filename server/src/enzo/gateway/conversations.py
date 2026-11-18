@@ -17,6 +17,7 @@ from enzo.agent.service import (
     TurnInProgressError,
     TurnMeta,
 )
+from enzo.brain.config import TIERS
 from enzo.brain.models import TextDelta
 from enzo.store.repository import ApprovalError, ConversationInfo, ConversationKind
 
@@ -75,8 +76,8 @@ def conversation_routes(auth: params.Depends) -> APIRouter:
 
     @router.put("/{conversation_id}/brain", status_code=204)
     async def choose_brain(conversation_id: uuid.UUID, body: BrainChoice, s: ServiceDep) -> None:
-        if body.brain is not None and body.brain not in s.router.config.brains:
-            raise HTTPException(422, f"unknown brain {body.brain!r}")
+        if body.brain is not None and body.brain not in (*s.router.config.brains, *TIERS):
+            raise HTTPException(422, f"unknown model or tier {body.brain!r}")
         await _require(s, conversation_id)
         await s.store.set_brain(conversation_id, body.brain)
 
@@ -175,7 +176,16 @@ def _sse(event: ServiceEvent) -> ServerSentEvent:
             cost = (
                 None if not costs or any(c is None for c in costs) else sum(c or 0 for c in costs)
             )
-            data = {"stop": o.stop, "text": o.text, "steps": o.steps, "cost_usd": cost}
+            answered = next((c for c in reversed(o.brain_calls) if c.outcome == "ok"), None)
+            data = {
+                "stop": o.stop,
+                "text": o.text,
+                "steps": o.steps,
+                "cost_usd": cost,
+                # Which brain replied, shown where the reply appears (spec §1.3.6).
+                "brain": answered.brain if answered else None,
+                "model": answered.model if answered else None,
+            }
             return ServerSentEvent(event="done", data=data)
         case TurnFailed(message=message):
             return ServerSentEvent(event="error", data={"message": message})

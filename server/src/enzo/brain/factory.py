@@ -20,8 +20,7 @@ def build_brain(
     cfg: BrainConfig, env: Mapping[str, str] | None = None, *, keys: KeyLookup | None = None
 ) -> BrainProvider:
     """The user's connected account comes first; an environment variable is the fallback."""
-    source = os.environ if env is None else env
-    key = (keys(cfg.provider_name) if keys else None) or source.get(cfg.api_key_env)
+    key = _key(cfg, env, keys)
     if not key:
         msg = (
             f"{cfg.provider_name} is not connected: run /login {cfg.provider_name} "
@@ -43,3 +42,15 @@ def build_brain(
         forced_tool_choice=cfg.forced_tool_choice is not False,
         provider=cfg.provider_name,
     )
+
+
+def has_key(
+    cfg: BrainConfig, env: Mapping[str, str] | None = None, *, keys: KeyLookup | None = None
+) -> bool:
+    """Whether ``build_brain`` would find a key for this brain."""
+    return bool(_key(cfg, env, keys))
+
+
+def _key(cfg: BrainConfig, env: Mapping[str, str] | None, keys: KeyLookup | None) -> str | None:
+    source = os.environ if env is None else env
+    return (keys(cfg.provider_name) if keys else None) or source.get(cfg.api_key_env)

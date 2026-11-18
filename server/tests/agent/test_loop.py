@@ -36,15 +36,16 @@ USER = [Message.user("do the thing")]
 def make_router(brain: ScriptedBrain) -> Router:
     config = BrainsConfig.model_validate(
         {
-            "brains": {"main": {"api": "anthropic", "model": "m", "api_key_env": "KEY"}},
-            "routing": {"default": "main"},
+            "brains": {
+                "main": {"api": "anthropic", "model": "m", "api_key_env": "KEY", "tier": "balanced"}
+            },
         }
     )
 
     def build(_: BrainConfig) -> BrainProvider:
         return brain
 
-    return Router(config, build=build)
+    return Router(config, build=build, available=lambda _c: True)
 
 
 def call(name: str, value: Any, cid: str = "c1") -> ToolCall:

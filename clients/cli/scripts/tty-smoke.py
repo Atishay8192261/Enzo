@@ -68,7 +68,7 @@ results = {"prompt shown": wait_for("Message Enzo")}
 for ch in "hello enzo":  # fast, like a paste-happy human
     os.write(fd, ch.encode())
 os.write(fd, b"\r")
-results["honest failure shown"] = wait_for("is not connected: run /login")
+results["honest failure shown"] = wait_for("/login anthropic")  # how to connect, either way
 results["typed line kept"] = "you: hello enzo" in screen_text()
 for ch in "/login anthropic":
     os.write(fd, ch.encode())

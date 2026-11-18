@@ -5,6 +5,7 @@ agent still finishes and the turn is saved (§6.1, §9.2). Clients read events f
 """
 
 import asyncio
+import logging
 import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
@@ -14,9 +15,11 @@ from importlib import resources
 from enzo.agent.loop import AgentEvent, TurnDone, TurnOutcome, run_turn
 from enzo.agent.prompt import compose_prompt
 from enzo.brain.models import Message, TextPart
-from enzo.brain.router import Router
+from enzo.brain.router import Router, classify
 from enzo.store.repository import ConversationInfo, Store
 from enzo.tools.registry import ToolRegistry
+
+log = logging.getLogger("enzo.agent.service")
 
 DEFAULT_SYSTEM_PROMPT = (
     resources.files("enzo.agent").joinpath("system_prompt.md").read_text(encoding="utf-8")
@@ -124,12 +127,16 @@ class ConversationService:
     ) -> None:
         try:
             decisions = await self.store.decisions(info.id)
+            task, why = classify(self.router.config, prompt)
+            log.info("turn task", extra={"conversation": str(info.id), "task": task, "why": why})
             async for event in run_turn(
                 self.router,
                 self.registry,
                 prompt,
+                task=task,
                 decisions=decisions,
                 override=info.brain,
+                affinity=str(info.id),
                 max_steps=self._max_steps,
             ):
                 if isinstance(event, TurnDone):
