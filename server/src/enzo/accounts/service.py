@@ -106,6 +106,10 @@ class AccountsService:
             raise NotConnectedError(msg)
         await self._checker(cfg, key)
 
+    def connected(self, provider: str) -> bool:
+        """From the non-secret index: routing asks often, and must not read the vault for it."""
+        return self._store is not None and provider in self._store.connections()
+
     def api_key(self, provider: str) -> str | None:
         return self._store.api_key(provider) if self._store else None
 

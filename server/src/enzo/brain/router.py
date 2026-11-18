@@ -1,12 +1,18 @@
 """Pick a brain per task, try one recorded fallback, account for every call (spec §1.3.3 to §1.3.5).
 
 Rules this module enforces:
-- the route comes from configuration and is logged;
+- the route comes from configuration and is logged: task → tier → the tier's brain from the
+  providers the user connected (ADR 0010);
+- a conversation stays with one provider (stable hash), so different conversations spread across
+  providers and prompt caches stay warm;
+- the fallback is the next connected provider's brain of the same tier, never a weaker one when a
+  same-tier brain exists;
 - only rate-limit, server, connection and timeout failures fall back, exactly once;
 - a stream only falls back before its first token, so the user never sees two half-answers;
 - every attempt, failed or not, becomes a ``CallRecord`` with tokens, latency and cost (or None).
 """
 
+import hashlib
 import logging
 import time
 from collections.abc import AsyncIterator, Callable, Sequence
@@ -14,10 +20,18 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Protocol
 
-from enzo.brain.config import BrainConfig, BrainsConfig, TaskKind
+from enzo.brain.config import TIERS, BrainConfig, BrainsConfig, TaskKind, Tier
 from enzo.brain.errors import BrainError, ProviderServerError
-from enzo.brain.factory import build_brain
-from enzo.brain.models import BrainResponse, Message, StreamDone, TextDelta, ToolChoice, ToolSpec
+from enzo.brain.factory import build_brain, has_key
+from enzo.brain.models import (
+    BrainResponse,
+    Message,
+    StreamDone,
+    TextDelta,
+    TextPart,
+    ToolChoice,
+    ToolSpec,
+)
 from enzo.brain.pricing import cost_usd
 from enzo.brain.provider import BrainProvider
 
@@ -60,9 +74,27 @@ class InMemoryLedger:
 @dataclass(frozen=True, slots=True)
 class RoutePlan:
     task: TaskKind
+    tier: Tier
     primary: str
     fallback: str | None
     reason: str
+
+
+#: Nearest tiers first when a provider has no brain in the asked tier: stronger before weaker.
+_NEAREST: dict[Tier, tuple[Tier, ...]] = {
+    "fast": ("fast", "balanced", "powerful"),
+    "balanced": ("balanced", "powerful", "fast"),
+    "powerful": ("powerful", "balanced", "fast"),
+}
+
+
+class NoBrainAvailableError(BrainError):
+    """No connected account can serve this request. Nothing was sent to any provider."""
+
+    kind = "not_connected"
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, provider="none", model="none")
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +139,22 @@ class PromptOverBudgetError(Exception):
 
 
 type BrainFactory = Callable[[BrainConfig], BrainProvider]
+#: Whether a brain's provider has credentials (a connected account or an environment key).
+type Availability = Callable[[BrainConfig], bool]
+
+
+def classify(config: BrainsConfig, messages: Sequence[Message]) -> tuple[TaskKind, str]:
+    """The task of a turn, from explicit rules and no model call (spec §1.3.3), with the reason.
+
+    The user's own words are the first text part of the latest user message (ADR 0007 puts context
+    and memory after them), so a resumed turn classifies exactly like the turn it continues.
+    """
+    words = next((m.parts[0] for m in reversed(messages) if m.role == "user" and m.parts), None)
+    size = len(words.text) if isinstance(words, TextPart) else 0
+    limit = config.routing.classify.long_message_chars
+    if size > limit:
+        return "hard", f"message of {size} characters > {limit}: long-document reasoning"
+    return "streaming", "live reply"
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,11 +177,13 @@ class Router:
         config: BrainsConfig,
         *,
         build: BrainFactory = build_brain,
+        available: Availability = has_key,
         ledger: Ledger | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._config = config
         self._build = build
+        self._available = available
         self.ledger: Ledger = ledger if ledger is not None else InMemoryLedger()
         self._clock = clock
         self._live: dict[str, BrainProvider] = {}
@@ -147,31 +197,89 @@ class Router:
         for name in [n for n in self._live if self._config.brains[n].provider_name == provider]:
             del self._live[name]
 
+    def available(self, name: str) -> bool:
+        """Whether this brain's provider has credentials right now."""
+        return self._available(self._config.brains[name])
+
     def brain(self, name: str) -> BrainProvider:
         """Adapters are built on first use, so a missing key only matters for brains in use."""
         if name not in self._live:
             self._live[name] = self._build(self._config.brains[name])
         return self._live[name]
 
-    def plan(self, task: TaskKind, *, override: str | None = None) -> RoutePlan:
-        routing = self._config.routing
-        if override is not None:
-            if override not in self._config.brains:
-                msg = f"unknown brain {override!r}"
-                raise KeyError(msg)
-            primary, reason = override, "selected by user"
-        elif task in routing.tasks:
-            primary, reason = routing.tasks[task], f"routing.tasks.{task}"
+    def plan(
+        self, task: TaskKind, *, override: str | None = None, affinity: str | None = None
+    ) -> RoutePlan:
+        """Choose a primary and one fallback. ``override`` is a brain or a tier the user picked;
+        ``affinity`` (the conversation id) keeps a conversation with one provider."""
+        brains = self._config.brains
+        if override is not None and override not in brains and override not in TIERS:
+            msg = f"unknown brain or tier {override!r}"
+            raise KeyError(msg)
+        order = self._providers(affinity)
+        if override in brains:
+            chosen = brains[override]
+            others = [p for p in order if p != chosen.provider_name]
+            backup = self._candidates(chosen.tier, others)
+            plan = RoutePlan(
+                task,
+                chosen.tier,
+                override,
+                backup[0][0] if backup else None,
+                "selected by user",
+            )
         else:
-            primary, reason = routing.default, "routing.default"
-        plan = RoutePlan(task, primary, routing.fallback.get(primary), reason)
+            tier: Tier = override if override in TIERS else self._config.tier_of(task)
+            candidates = self._candidates(tier, order)
+            if not candidates:
+                raise NoBrainAvailableError(_nothing_connected(self._config))
+            (primary, got), backup = candidates[0], candidates[1:]
+            why = "selected by user" if override else f"task {task}"
+            reason = f"tier {tier} ({why}); providers in order: {', '.join(order)}"
+            if got != tier:
+                reason += f"; {brains[primary].provider_name} has no {tier} brain, using {got}"
+            plan = RoutePlan(task, tier, primary, backup[0][0] if backup else None, reason)
         log.info(
             "route",
-            extra={"task": task, "primary": primary, "fallback": plan.fallback, "reason": reason},
+            extra={
+                "task": task,
+                "tier": plan.tier,
+                "primary": plan.primary,
+                "fallback": plan.fallback,
+                "reason": plan.reason,
+            },
         )
         return plan
 
-    async def chat(
+    def _providers(self, affinity: str | None) -> list[str]:
+        """Connected providers, rotated by a stable hash of the conversation: an even spread."""
+        names = sorted(
+            {c.provider_name for c in self._config.brains.values() if self._available(c)}
+        )
+        if not names or affinity is None:
+            return names
+        shift = int.from_bytes(hashlib.sha256(affinity.encode()).digest()[:8]) % len(names)
+        return names[shift:] + names[:shift]
+
+    def _candidates(self, tier: Tier, providers: Sequence[str]) -> list[tuple[str, Tier]]:
+        """Per provider: its recommended brain of the nearest tier it has. Same or stronger tiers
+        come first, in provider order; a weaker brain only when no provider has one (§1.3.4)."""
+        out: list[tuple[str, Tier]] = []
+        for provider in providers:
+            own = [
+                (n, c)
+                for n, c in self._config.brains.items()
+                if c.provider_name == provider and self._available(c)
+            ]
+            for want in _NEAREST[tier]:
+                fits = [n for n, c in own if c.tier == want]
+                picks = [n for n in fits if self._config.brains[n].recommended] or fits
+                if picks:
+                    out.append((picks[0], want))
+                    break
+        return sorted(out, key=lambda c: TIERS.index(c[1]) < TIERS.index(tier))  # stable
+
+    async def chat(  # noqa: PLR0913 - keyword-only call settings
         self,
         task: TaskKind,
         messages: Sequence[Message],
@@ -180,6 +288,7 @@ class Router:
         tool_choice: ToolChoice = "auto",
         max_output_tokens: int,
         override: str | None = None,
+        affinity: str | None = None,
         budget_tokens: int | None = None,
     ) -> RoutedResponse:
         done: RoutedDone | None = None
@@ -190,6 +299,7 @@ class Router:
             tool_choice=tool_choice,
             max_output_tokens=max_output_tokens,
             override=override,
+            affinity=affinity,
             budget_tokens=budget_tokens,
         ):
             if isinstance(event, RoutedDone):
@@ -199,7 +309,7 @@ class Router:
             raise RuntimeError(msg)
         return done.routed
 
-    async def stream(
+    async def stream(  # noqa: PLR0913 - keyword-only call settings
         self,
         task: TaskKind,
         messages: Sequence[Message],
@@ -208,9 +318,10 @@ class Router:
         tool_choice: ToolChoice = "auto",
         max_output_tokens: int,
         override: str | None = None,
+        affinity: str | None = None,
         budget_tokens: int | None = None,
     ) -> AsyncIterator[TextDelta | RoutedDone]:
-        plan = self.plan(task, override=override)
+        plan = self.plan(task, override=override, affinity=affinity)
         attempts: list[CallRecord] = []
         candidates = [plan.primary] + ([plan.fallback] if plan.fallback else [])
         for number, name in enumerate(candidates, start=1):
@@ -306,3 +417,9 @@ class Router:
     def _emit(self, record: CallRecord) -> None:
         self.ledger.record(record)
         log.info("brain call", extra={"call": asdict(record)})
+
+
+def _nothing_connected(config: BrainsConfig) -> str:
+    providers = sorted({c.provider_name for c in config.brains.values()})
+    logins = ", ".join(f"/login {p}" for p in providers)
+    return f"no model account is connected. Connect one: {logins}"

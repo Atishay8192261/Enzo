@@ -107,7 +107,7 @@ async def run_turn(  # noqa: PLR0913 - keyword-only turn settings
     registry: ToolRegistry,
     history: Sequence[Message],
     *,
-    task: TaskKind = "hard",
+    task: TaskKind = "streaming",
     tools: Sequence[str] | None = None,
     max_steps: int = DEFAULT_MAX_STEPS,
     max_output_tokens: int = 16_000,
@@ -115,10 +115,17 @@ async def run_turn(  # noqa: PLR0913 - keyword-only turn settings
     decisions: Mapping[str, bool] | None = None,
     stop: asyncio.Event | None = None,
     override: str | None = None,
+    affinity: str | None = None,
 ) -> AsyncIterator[AgentEvent]:
-    """Run one user turn. ``history`` already ends with the user's message (or a paused turn)."""
+    """Run one user turn. ``history`` already ends with the user's message (or a paused turn).
+
+    ``task`` is fixed for the whole turn, so the brain never changes mid-task (spec §1.3.3);
+    ``affinity`` (the conversation id) keeps the conversation with one provider (ADR 0010).
+    """
     turn = _Turn(messages=list(history))
-    ask = _Ask(router, registry.specs(tools), task, max_output_tokens, budget_tokens, override)
+    ask = _Ask(
+        router, registry.specs(tools), task, max_output_tokens, budget_tokens, override, affinity
+    )
     decided = decisions or {}
     while True:
         unanswered = _unanswered_calls(turn.messages)
@@ -153,6 +160,7 @@ class _Ask:
     max_output_tokens: int
     budget_tokens: int | None
     override: str | None
+    affinity: str | None
 
 
 def _halt(turn: _Turn, stop: asyncio.Event | None, max_steps: int) -> TurnDone | None:
@@ -173,6 +181,7 @@ async def _ask_brain(ask: _Ask, turn: _Turn) -> AsyncIterator[TextDelta | TurnDo
             tools=ask.specs,
             max_output_tokens=ask.max_output_tokens,
             override=ask.override,
+            affinity=ask.affinity,
             budget_tokens=ask.budget_tokens,
         ):
             if isinstance(event, RoutedDone):

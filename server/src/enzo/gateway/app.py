@@ -14,8 +14,8 @@ from pydantic import BaseModel
 from enzo import __version__
 from enzo.accounts.service import AccountsService
 from enzo.agent.service import ConversationService
-from enzo.brain.config import load_config
-from enzo.brain.factory import build_brain
+from enzo.brain.config import Tier, load_config
+from enzo.brain.factory import build_brain, has_key
 from enzo.brain.router import Router
 from enzo.config import Settings
 from enzo.gateway.connections import build_accounts, connection_routes
@@ -37,6 +37,11 @@ class BrainOut(BaseModel):
     provider: str
     model: str
     priced: bool
+    tier: Tier
+    recommended: bool
+    note: str | None
+    #: The provider is connected (or has an environment key), so this brain can answer now.
+    available: bool
 
 
 def create_app(
@@ -57,7 +62,11 @@ def create_app(
         store = Store.from_url(cfg.database_url)
         config = load_config(cfg.brains_config)
         acct = accounts or build_accounts(cfg, config)
-        router = Router(config, build=lambda c: build_brain(c, keys=acct.api_key))
+        router = Router(
+            config,
+            build=lambda c: build_brain(c, keys=acct.api_key),
+            available=lambda c: acct.connected(c.provider_name) or has_key(c),
+        )
         acct.on_change(router.forget)
         app.state.accounts = acct
         app.state.service = ConversationService(store, router, ToolRegistry())
@@ -88,10 +97,19 @@ def create_app(
 
     @app.get("/brains", dependencies=[auth])
     def brains(s: ServiceDep) -> list[BrainOut]:
-        config = s.router.config
+        router = s.router
         return [
-            BrainOut(name=n, provider=b.provider_name, model=b.model, priced=b.pricing is not None)
-            for n, b in config.brains.items()
+            BrainOut(
+                name=n,
+                provider=b.provider_name,
+                model=b.model,
+                priced=b.pricing is not None,
+                tier=b.tier,
+                recommended=b.recommended,
+                note=b.note,
+                available=router.available(n),
+            )
+            for n, b in router.config.brains.items()
         ]
 
     app.include_router(conversation_routes(auth))

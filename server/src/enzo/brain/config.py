@@ -1,7 +1,10 @@
-"""Brain configuration: which brains exist and how tasks route to them (spec §1.3.3).
+"""Brain configuration: which brains exist and how tasks route to them (spec §1.3.3, ADR 0010).
 
 Routing lives in a file, not in code, so it can change without a redeploy and is visible in review.
 API keys never live here: each brain names the environment variable that holds its key.
+
+Every brain has a tier. Tasks map to tiers, and the router picks the brain of that tier from the
+providers the user connected, so no provider is favoured.
 """
 
 import tomllib
@@ -14,6 +17,8 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 from enzo.brain.pricing import Pricing
 
 type TaskKind = Literal["light", "hard", "streaming"]
+type Tier = Literal["fast", "balanced", "powerful"]
+TIERS: tuple[Tier, ...] = ("fast", "balanced", "powerful")
 type Api = Literal["anthropic", "openai-responses"]
 
 ANTHROPIC_EFFORTS = ("low", "medium", "high", "xhigh", "max")
@@ -35,6 +40,12 @@ class BrainConfig(_Strict):
     forced_tool_choice: bool | None = None
     embedding_model: str | None = None
     pricing: Pricing | None = None
+    #: fast: cheapest, lowest latency · balanced: everyday default · powerful: hardest tasks.
+    tier: Tier
+    #: Enzo's pick for this provider in this tier (shown to users, chosen first by routing).
+    recommended: bool = False
+    #: Why it is or is not recommended, shown in the catalog. Keep it factual and sourced.
+    note: str | None = None
 
     @model_validator(mode="after")
     def _effort_is_valid(self) -> Self:
@@ -48,30 +59,34 @@ class BrainConfig(_Strict):
         return self.provider or ("anthropic" if self.api == "anthropic" else "openai")
 
 
+class ClassifyConfig(_Strict):
+    """Rules that pick a turn's task before any brain is called: explicit, logged, free."""
+
+    #: A new message longer than this (a pasted document) is a hard task: long-document reasoning.
+    long_message_chars: int = Field(default=20_000, gt=0)
+
+
 class RoutingConfig(_Strict):
-    default: str
-    tasks: dict[TaskKind, str] = Field(default_factory=dict)
-    #: One fallback per brain, tried once (spec §1.3.4).
-    fallback: dict[str, str] = Field(default_factory=dict)
+    #: Tier for any task not listed in ``tasks``.
+    default: Tier = "balanced"
+    tasks: dict[TaskKind, Tier] = Field(default_factory=dict)
+    classify: ClassifyConfig = Field(default_factory=ClassifyConfig)
 
 
 class BrainsConfig(_Strict):
     brains: dict[BrainName, BrainConfig] = Field(min_length=1)
-    routing: RoutingConfig
+    routing: RoutingConfig = Field(default_factory=RoutingConfig)
 
     @model_validator(mode="after")
-    def _names_resolve(self) -> Self:
-        referenced = [self.routing.default, *self.routing.tasks.values()]
-        referenced += [*self.routing.fallback, *self.routing.fallback.values()]
-        unknown = sorted({n for n in referenced if n not in self.brains})
-        if unknown:
-            msg = f"routing refers to unknown brains: {', '.join(unknown)}"
+    def _names_are_unambiguous(self) -> Self:
+        clash = sorted(set(self.brains) & set(TIERS))
+        if clash:  # users choose "/model <brain or tier>": a brain may not be named like a tier
+            msg = f"brain names cannot be tier names: {', '.join(clash)}"
             raise ValueError(msg)
-        for source, target in self.routing.fallback.items():
-            if source == target:
-                msg = f"brain {source!r} cannot fall back to itself"
-                raise ValueError(msg)
         return self
+
+    def tier_of(self, task: TaskKind) -> Tier:
+        return self.routing.tasks.get(task, self.routing.default)
 
 
 def load_config(path: Path | None = None) -> BrainsConfig:

@@ -26,14 +26,14 @@ PRICED = {"source": "test", "rates": {"input": 1.0, "output": 2.0}}
 
 
 def config() -> BrainsConfig:
-    brain = {"api": "anthropic", "api_key_env": "KEY"}
+    brain = {"api": "anthropic", "api_key_env": "KEY", "tier": "balanced"}
     return BrainsConfig.model_validate(
         {
             "brains": {
-                "main": {**brain, "model": "m-main", "pricing": PRICED},
+                "main": {**brain, "model": "m-main", "pricing": PRICED, "recommended": True},
                 "backup": {**brain, "model": "m-backup"},
+                "quick": {**brain, "model": "m-quick", "tier": "fast"},
             },
-            "routing": {"default": "main"},
         }
     )
 
@@ -42,7 +42,8 @@ def service(store: Store, brains: dict[str, BrainProvider]) -> ConversationServi
     def build(c: BrainConfig) -> BrainProvider:
         return brains[c.model]
 
-    return ConversationService(store, Router(config(), build=build), t.registry())
+    router = Router(config(), build=build, available=lambda _c: True)
+    return ConversationService(store, router, t.registry())
 
 
 def client(svc: ConversationService, token: str | None = None) -> httpx2.AsyncClient:
@@ -83,12 +84,25 @@ def test_prod_refuses_to_start_without_a_token() -> None:
 async def test_brains_are_listed_and_chosen_per_conversation(store: Store) -> None:
     async with client(service(store, {})) as c:
         names = {b["name"]: b for b in (await c.get("/brains")).json()}
-        assert names["main"]["priced"] is True
+        assert names["main"] == {
+            "name": "main",
+            "provider": "anthropic",
+            "model": "m-main",
+            "priced": True,
+            "tier": "balanced",
+            "recommended": True,
+            "note": None,
+            "available": True,
+        }
         assert names["backup"]["priced"] is False
         cid = await new_conversation(c)
         assert (
             await c.put(f"/conversations/{cid}/brain", json={"brain": "ghost"})
         ).status_code == 422
+        assert (
+            await c.put(f"/conversations/{cid}/brain", json={"brain": "fast"})
+        ).status_code == 204  # a tier: the best connected fast model
+        assert (await c.get(f"/conversations/{cid}")).json()["brain"] == "fast"
         assert (
             await c.put(f"/conversations/{cid}/brain", json={"brain": "backup"})
         ).status_code == 204
@@ -142,6 +156,21 @@ async def test_the_conversation_brain_choice_is_used(store: Store) -> None:
             -1
         ][1]
         assert done["text"] == "from backup"
+        assert (done["brain"], done["model"]) == ("backup", backup.model)  # the served model
+
+
+async def test_auto_routing_and_tier_choice(store: Store) -> None:
+    """Auto: a reply is balanced (the recommended one); choosing a tier routes to that tier."""
+    main = ScriptedBrain([Message.assistant("balanced reply")])
+    quick = ScriptedBrain([Message.assistant("fast reply")])
+    async with client(service(store, {"m-main": main, "m-quick": quick})) as c:
+        cid = await new_conversation(c)
+        turn = await c.post(f"/conversations/{cid}/turns", json={"message": "hi"})
+        assert events(turn.text)[-1][1]["brain"] == "main"
+        await c.put(f"/conversations/{cid}/brain", json={"brain": "fast"})
+        turn = await c.post(f"/conversations/{cid}/turns", json={"message": "hi again"})
+        done = events(turn.text)[-1][1]
+        assert (done["brain"], done["text"]) == ("quick", "fast reply")
 
 
 async def test_approval_flow_over_http(store: Store) -> None:
@@ -257,7 +286,56 @@ async def test_failed_brain_calls_are_persisted(store: Store) -> None:
             -1
         ][1]
         assert done["stop"] == "brain_failure"
+        assert (done["brain"], done["model"]) == (None, None)  # nothing answered
     (row,) = await store.brain_calls(uuid.UUID(cid))
     assert (row.brain, row.outcome, row.cost_usd) == ("main", "rate_limit", None)
     assert row.error is not None
     assert "slow down" in row.error
+
+
+def spread_service(store: Store, served: list[str]) -> tuple[ConversationService, Router]:
+    """Two providers with a balanced and a powerful brain each; records which brain answered."""
+
+    def brain(provider: str, tier: str, model: str) -> dict[str, Any]:
+        api = "anthropic" if provider == "anthropic" else "openai-responses"
+        return {"api": api, "provider": provider, "model": model, "api_key_env": "K", "tier": tier}
+
+    cfg = BrainsConfig.model_validate(
+        {
+            "brains": {
+                "a-mid": brain("anthropic", "balanced", "a-mid"),
+                "a-top": brain("anthropic", "powerful", "a-top"),
+                "o-mid": brain("openai", "balanced", "o-mid"),
+                "o-top": brain("openai", "powerful", "o-top"),
+            },
+            "routing": {"tasks": {"streaming": "balanced", "hard": "powerful"}},
+        }
+    )
+
+    def build(c: BrainConfig) -> BrainProvider:
+        served.append(c.model)
+        return ScriptedBrain([Message.assistant(c.model)] * 10)
+
+    router = Router(cfg, build=build, available=lambda _c: True)
+    return ConversationService(store, router, t.registry()), router
+
+
+async def test_conversations_spread_across_providers_and_long_input_goes_powerful(
+    store: Store,
+) -> None:
+    served: list[str] = []
+    svc, router = spread_service(store, served)
+    answered: dict[str, str] = {}
+    async with client(svc) as c:
+        for _ in range(8):
+            cid = await new_conversation(c)
+            turn = await c.post(f"/conversations/{cid}/turns", json={"message": "hi"})
+            answered[cid] = events(turn.text)[-1][1]["brain"]
+            # the service routes by the conversation: exactly what the router plans for it
+            assert answered[cid] == router.plan("streaming", affinity=cid).primary
+        assert set(answered.values()) == {"a-mid", "o-mid"}  # both providers get conversations
+        cid, mid = next(iter(answered.items()))
+        long = "x" * (router.config.routing.classify.long_message_chars + 1)
+        turn = await c.post(f"/conversations/{cid}/turns", json={"message": long})
+        top = events(turn.text)[-1][1]["brain"]
+        assert top == mid.replace("-mid", "-top")  # powerful tier, same provider

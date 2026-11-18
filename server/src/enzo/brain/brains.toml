@@ -5,6 +5,7 @@
 #   `source`. A price that could not be confirmed is left out on purpose: the call then records
 #   its cost as unknown, never as 0 (spec §1.3.5).
 # - A brain is only "supported" once it passes live conformance (spec §1.4, §16).
+# - tier: fast | balanced | powerful. recommended: Enzo's pick for that provider and tier.
 
 # ---------- Anthropic (Claude) ----------
 
@@ -13,6 +14,8 @@ api = "anthropic"
 model = "claude-opus-5-5"
 api_key_env = "ANTHROPIC_API_KEY"
 effort = "medium"  # the model's default, set explicitly
+tier = "powerful"
+recommended = true
 
 [brains.claude-opus.pricing]
 source = "Claude API pricing table (cached 2026-11-03), cache writes 1.25x (5m) / 2x (1h) of input; read 2026-11-17"
@@ -22,6 +25,9 @@ rates = { input = 4.00, output = 20.00, cached_input = 0.20, cache_write = { "5m
 api = "anthropic"
 model = "claude-sonnet-5-5"
 api_key_env = "ANTHROPIC_API_KEY"
+tier = "balanced"
+recommended = true
+note = "Default for everyday replies"
 
 [brains.claude-sonnet.pricing]
 source = "Claude API pricing table (cached 2026-11-03), cache writes 1.25x (5m) / 2x (1h) of input; read 2026-11-17"
@@ -31,6 +37,8 @@ rates = { input = 2.00, output = 10.00, cached_input = 0.10, cache_write = { "5m
 api = "anthropic"
 model = "claude-haiku-5-5"
 api_key_env = "ANTHROPIC_API_KEY"
+tier = "fast"
+recommended = true
 
 [brains.claude-haiku.pricing]
 # Cache-read price is only given as "~0.1x" for this model, so it is left out (unknown).
@@ -44,6 +52,8 @@ long_context = { from_input_tokens = 100001, rates = { input = 0.50, output = 2.
 api = "openai-responses"
 model = "gpt-6.2-astra"
 api_key_env = "OPENAI_API_KEY"
+tier = "powerful"
+recommended = true
 
 [brains.gpt-astra.pricing]
 source = "https://developers.openai.com/api/docs/pricing (standard; short context <=272K input), read 2026-11-17"
@@ -54,6 +64,9 @@ long_context = { from_input_tokens = 272001, rates = { input = 16.00, output = 6
 api = "openai-responses"
 model = "gpt-6.2-sol"
 api_key_env = "OPENAI_API_KEY"
+tier = "balanced"
+recommended = true
+note = "Default for everyday replies"
 
 [brains.gpt-sol.pricing]
 source = "https://developers.openai.com/api/docs/pricing (standard; short context <=272K input), read 2026-11-17"
@@ -64,6 +77,8 @@ long_context = { from_input_tokens = 272001, rates = { input = 4.00, output = 15
 api = "openai-responses"
 model = "gpt-6-luna"
 api_key_env = "OPENAI_API_KEY"
+tier = "fast"
+recommended = true
 
 [brains.gpt-luna.pricing]
 source = "https://developers.openai.com/api/docs/pricing (standard; short context <=272K input), read 2026-11-17"
@@ -78,6 +93,9 @@ provider = "xai"
 base_url = "https://api.x.ai/v1"
 model = "grok-4.7"
 api_key_env = "XAI_API_KEY"
+tier = "powerful"
+recommended = true
+note = "xAI's frontier model and the only Grok on the public API (docs.x.ai, read 2026-11-17)"
 
 [brains.grok.pricing]
 # Cached price beyond 200K-token prompts was not found: unknown there.
@@ -93,6 +111,9 @@ provider = "moonshot"
 base_url = "https://api.moonshot.ai/v1"
 model = "kimi-k3.1-pro"
 api_key_env = "MOONSHOT_API_KEY"
+tier = "powerful"
+recommended = true
+note = "Moonshot's flagship (platform.kimi.ai, read 2026-11-17)"
 
 [brains.kimi.pricing]
 # Official pages disagree on cache-write prices, so cache writes are unknown.
@@ -105,28 +126,25 @@ provider = "moonshot"
 base_url = "https://api.moonshot.ai/v1"
 model = "kimi-k3"
 api_key_env = "MOONSHOT_API_KEY"
+tier = "powerful"
+note = "Superseded by Kimi K3.1 Pro, a post-trained upgrade that is faster and cheaper (read 2026-11-17)"
 
 [brains.kimi-k3.pricing]
 source = "https://www.kimi.ai/blog/kimi-k3 via search, read 2026-11-17"
 rates = { input = 3.00, output = 15.00, cached_input = 0.30 }
 
-# ---------- Routing ----------
+# ---------- Routing (ADR 0010) ----------
+# A task maps to a tier. The router then picks that tier's brain from the providers the user
+# connected, spreading conversations across them; a conversation stays with one provider, and
+# falls back once to the next connected provider's brain of the same tier.
 
 [routing]
-default = "claude-opus"
+default = "balanced"    # everyday replies: Claude Sonnet 5.5 / GPT-6.2 Sol (decision 2026-11-17)
 
 [routing.tasks]
-light = "claude-haiku"       # triage, short summaries: cheap and fast
-hard = "claude-opus"         # planning, tool orchestration, long documents: strongest
-streaming = "claude-sonnet"  # live replies: low time-to-first-token
+light = "fast"          # triage, short summaries: cheap and fast
+streaming = "balanced"  # live replies: low time-to-first-token
+hard = "powerful"       # planning, tool orchestration, long documents: strongest
 
-[routing.fallback]           # tried once, only on rate limit / server / connection / timeout
-claude-opus = "gpt-astra"
-claude-sonnet = "gpt-sol"
-claude-haiku = "gpt-luna"
-gpt-astra = "claude-opus"
-gpt-sol = "claude-sonnet"
-gpt-luna = "claude-haiku"
-grok = "gpt-sol"
-kimi = "gpt-sol"
-kimi-k3 = "gpt-sol"
+[routing.classify]
+long_message_chars = 20000  # a longer new message (a pasted document) is a hard task
