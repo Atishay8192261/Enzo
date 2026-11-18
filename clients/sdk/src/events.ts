@@ -4,7 +4,14 @@ export type AgentEvent =
   | { type: "text"; text: string }
   | { type: "tool_started"; id: string; tool: string }
   | { type: "tool_finished"; id: string; tool: string; status: string; latency_ms: number }
-  | { type: "approval_needed"; id: string; tool: string; arguments: Record<string, unknown> }
+  | {
+      type: "approval_needed";
+      id: string;
+      tool: string;
+      arguments: Record<string, unknown>;
+      /** The exact action in plain words, for the approval card; null when the tool has none. */
+      summary: string | null;
+    }
   | {
       type: "done";
       stop: StopReason;
@@ -35,7 +42,7 @@ const SHAPES: Record<AgentEvent["type"], Shape> = {
   text: { text: "string" },
   tool_started: { id: "string", tool: "string" },
   tool_finished: { id: "string", tool: "string", status: "string", latency_ms: "number" },
-  approval_needed: { id: "string", tool: "string", arguments: "object" },
+  approval_needed: { id: "string", tool: "string", arguments: "object", summary: "string|null" },
   done: {
     stop: "string",
     text: "string",

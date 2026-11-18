@@ -61,7 +61,8 @@ export function Accounts({
         <ul>
           {rows.map((c) => (
             <li key={c.provider}>
-              <strong>{c.provider}</strong> <small>{c.models.join(", ")}</small>
+              <strong>{c.provider}</strong>{" "}
+              <small>{c.models.length > 0 ? c.models.join(", ") : c.purpose}</small>
               {c.connected ? (
                 <span>
                   {" "}

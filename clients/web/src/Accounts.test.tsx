@@ -16,6 +16,8 @@ function row(provider: string, connected: boolean): ProviderConnection {
     connected_at: connected ? "2026-11-17T20:00:00Z" : null,
     methods: ["api_key"],
     models: [`${provider}-model`],
+    tools: [],
+    purpose: null,
   };
 }
 

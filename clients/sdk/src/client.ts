@@ -43,6 +43,9 @@ export interface ProviderConnection {
   connected_at: string | null;
   methods: string[];
   models: string[];
+  /** Service accounts (e.g. web search) unlock tools instead of models. */
+  tools: string[];
+  purpose: string | null;
 }
 
 export interface ConnectionCheck {

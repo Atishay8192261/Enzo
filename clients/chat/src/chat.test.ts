@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatCost, initialState, reduce, toItems } from "./chat.ts";
+import { describeApproval, formatCost, initialState, reduce, toItems } from "./chat.ts";
 
 const ready = reduce(initialState, {
   type: "connected",
@@ -67,6 +67,7 @@ describe("chat reducer", () => {
         type: "approval_needed",
         id: "appr_1",
         tool: "send_email",
+        summary: null,
         arguments: { to: "bob" },
       },
     });
@@ -83,7 +84,9 @@ describe("chat reducer", () => {
         failure: null,
       },
     });
-    expect(s.approvals).toEqual([{ id: "appr_1", tool: "send_email", arguments: { to: "bob" } }]);
+    expect(s.approvals).toEqual([
+      { id: "appr_1", tool: "send_email", arguments: { to: "bob" }, summary: null },
+    ]);
     expect(s.items.at(-1)).toEqual({ role: "notice", text: "Waiting for your approval." });
     s = reduce(s, { type: "approval_decided", id: "appr_1" });
     expect(s.approvals).toEqual([]);
@@ -144,5 +147,15 @@ describe("formatCost", () => {
     expect(formatCost(null)).toBe("cost unknown");
     expect(formatCost(0)).toBe("no charge");
     expect(formatCost(0.0021)).toBe("cost $0.0021");
+  });
+});
+
+describe("describeApproval", () => {
+  it("uses the tool's plain words, and never shows a bare tool name", () => {
+    const base = { id: "a", tool: "delete_file", arguments: { path: "x" } };
+    expect(describeApproval({ ...base, summary: "Delete x from your Enzo folder" })).toBe(
+      "Delete x from your Enzo folder",
+    );
+    expect(describeApproval({ ...base, summary: null })).toBe('Run "delete file"');
   });
 });

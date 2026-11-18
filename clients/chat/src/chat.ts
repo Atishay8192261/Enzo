@@ -27,6 +27,12 @@ export interface PendingApproval {
   id: string;
   tool: string;
   arguments: Record<string, unknown>;
+  summary: string | null;
+}
+
+/** What the approval card says: the tool's plain description, never a bare tool name (§10.3). */
+export function describeApproval(a: PendingApproval): string {
+  return a.summary ?? `Run "${a.tool.replaceAll("_", " ")}"`;
 }
 
 export interface ChatState {
@@ -123,10 +129,10 @@ function onEvent(state: ChatState, event: AgentEvent): ChatState {
     case "tool_finished":
       return { ...state, working: Math.max(0, state.working - 1) };
     case "approval_needed": {
-      const { id, tool } = event;
+      const { id, tool, summary } = event;
       return {
         ...state,
-        approvals: [...state.approvals, { id, tool, arguments: event.arguments }],
+        approvals: [...state.approvals, { id, tool, arguments: event.arguments, summary }],
       };
     }
     case "done": {
