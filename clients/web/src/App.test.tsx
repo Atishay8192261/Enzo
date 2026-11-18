@@ -118,6 +118,7 @@ describe("App", () => {
             type: "approval_needed",
             id: "appr_1",
             tool: "send_email",
+            summary: "Email bob@example.com",
             arguments: { to: "bob@example.com", body: "hi" },
           },
           {
@@ -147,8 +148,9 @@ describe("App", () => {
     fireEvent.change(await screen.findByLabelText("Message"), { target: { value: "email bob" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     const card = await screen.findByRole("region", { name: "Approval needed" });
-    expect(card.textContent).toContain('"to": "bob@example.com"');
-    expect(card.textContent).toContain("send_email");
+    expect(card.textContent).toContain("Email bob@example.com"); // plain words (§10.3)
+    expect(card.textContent).not.toContain("send_email");
+    expect(card.textContent).toContain('"to": "bob@example.com"'); // the exact action (§12.3)
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
     expect(await screen.findByText("Sent.")).toBeDefined();
     expect(decide).toHaveBeenCalledWith("c1", "appr_1", true);
@@ -195,6 +197,8 @@ describe("App", () => {
         connected_at: null,
         methods: ["api_key"],
         models: ["grok-4.7"],
+        tools: [],
+        purpose: null,
       },
     ];
     render(<App client={fakeClient({ brains, connections })} />);

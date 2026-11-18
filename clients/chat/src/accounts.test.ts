@@ -9,6 +9,8 @@ const base: ProviderConnection = {
   connected_at: null,
   methods: ["api_key"],
   models: ["claude-opus-5-5", "claude-sonnet-5-5"],
+  tools: [],
+  purpose: null,
 };
 
 describe("accounts", () => {
@@ -28,6 +30,16 @@ describe("accounts", () => {
     const env = { ...base, connected: true, method: "environment" };
     expect(describeConnection(env)).toBe(
       "anthropic: connected (environment variable) · claude-opus-5-5, claude-sonnet-5-5",
+    );
+    const search = {
+      ...base,
+      provider: "tavily",
+      models: [],
+      tools: ["web_search"],
+      purpose: "optional: raises web search limits (search works without it)",
+    };
+    expect(describeConnection(search)).toBe(
+      "tavily: not connected: /login tavily · optional: raises web search limits (search works without it)",
     );
   });
 });

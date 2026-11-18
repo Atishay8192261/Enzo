@@ -56,6 +56,8 @@ const CONNECTIONS: ProviderConnection[] = [
     connected_at: "2026-11-17T20:00:00Z",
     methods: ["api_key"],
     models: ["claude-opus-5-5"],
+    tools: [],
+    purpose: null,
   },
   {
     provider: "xai",
@@ -64,6 +66,8 @@ const CONNECTIONS: ProviderConnection[] = [
     connected_at: null,
     methods: ["api_key"],
     models: ["grok-4.7"],
+    tools: [],
+    purpose: null,
   },
 ];
 
@@ -200,6 +204,7 @@ describe("terminal chat (OpenTUI)", () => {
             type: "approval_needed",
             id: "appr_1",
             tool: "send_email",
+            summary: "Email bob@example.com",
             arguments: { to: "bob@example.com" },
           },
           {
@@ -228,7 +233,9 @@ describe("terminal chat (OpenTUI)", () => {
     await using s = await screen(client);
     await enter(s, "email bob");
     const card = await until(s, "Approve this action? (y / n)");
-    expect(card).toContain('"to": "bob@example.com"');
+    expect(card).toContain("Email bob@example.com"); // plain words, not the tool name (§10.3)
+    expect(card).not.toContain("send_email");
+    expect(card).toContain('"to": "bob@example.com"'); // and the exact action (§12.3)
     await press(s, "y");
     await until(s, "enzo: Sent.");
     expect(decide).toHaveBeenCalledWith("c1", "appr_1", true);

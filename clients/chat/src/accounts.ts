@@ -11,7 +11,8 @@ export function describeConnection(c: ProviderConnection): string {
   const state = c.connected
     ? `connected (${methodName(c.method)}${c.connected_at ? `, since ${c.connected_at.slice(0, 10)}` : ""})`
     : `not connected: /login ${c.provider}`;
-  return `${c.provider}: ${state} · ${c.models.join(", ")}`;
+  const unlocks = c.models.length > 0 ? c.models.join(", ") : (c.purpose ?? c.tools.join(", "));
+  return `${c.provider}: ${state} · ${unlocks}`;
 }
 
 export function methodName(method: string | null): string {

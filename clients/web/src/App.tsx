@@ -2,6 +2,7 @@ import {
   type AccountsClient,
   type ChatClient,
   type ConversationMemory,
+  describeApproval,
   formatCost,
   useChat,
 } from "@enzo/chat";
@@ -97,8 +98,9 @@ export function App({ client }: { client: ChatClient & AccountsClient }) {
         <section key={a.id} className="approval" aria-label="Approval needed">
           <h2>Approve this action?</h2>
           <p>
-            <strong>{a.tool}</strong> with exactly:
+            <strong>{describeApproval(a)}</strong>
           </p>
+          <p>Exact details:</p>
           <pre>{JSON.stringify(a.arguments, null, 2)}</pre>
           <button type="button" onClick={() => void decide(a.id, true)}>
             Approve

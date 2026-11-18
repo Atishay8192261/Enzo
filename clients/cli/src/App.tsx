@@ -2,6 +2,7 @@ import {
   type AccountsClient,
   type ChatClient,
   type ConversationMemory,
+  describeApproval,
   formatCost,
   useChat,
 } from "@enzo/chat";
@@ -107,7 +108,8 @@ export function App({
           flexDirection="column"
         >
           <text>
-            {approval.tool} with exactly: {JSON.stringify(approval.arguments, null, 2)}
+            {describeApproval(approval)}
+            {"\n"}Exact details: {JSON.stringify(approval.arguments, null, 2)}
           </text>
         </box>
       ) : null}
