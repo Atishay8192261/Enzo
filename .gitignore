@@ -8,6 +8,7 @@ __pycache__/
 .ruff_cache/
 .pytest_cache/
 coverage/
+.dev/
 
 # local config and secrets: never committed (spec §11.2)
 .env

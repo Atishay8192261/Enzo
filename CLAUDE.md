@@ -60,11 +60,15 @@ cd server && uv sync && uv run ruff format --check . && uv run ruff check . && u
 pnpm install && pnpm check && pnpm typecheck && pnpm test && pnpm --filter @enzo/web build
 ```
 
-Postgres 16 + pgvector is required (tests use a real database, never mocks). Local dev URL:
+One command runs everything from a clone (checks tools, installs, creates the DB, migrates, starts the
+gateway, opens the app): `scripts/dev.sh` (`web`, `doctor`, `setup`; also `pnpm dev`). Keep it working.
+
+Postgres 16 is required (tests use a real database, never mocks); pgvector is not used until memory
+(spec §6). Local dev URL:
 `postgresql+asyncpg://enzo:enzo@localhost:5432/enzo` (`ENZO_DATABASE_URL` overrides). Set it up with:
 
 ```bash
-sudo apt-get install -y postgresql-16 postgresql-16-pgvector && sudo pg_ctlcluster 16 main start
+sudo apt-get install -y postgresql-16 && sudo pg_ctlcluster 16 main start
 ```
 
 ```bash
@@ -73,8 +77,8 @@ sudo -u postgres psql -c "CREATE ROLE enzo LOGIN SUPERUSER PASSWORD 'enzo'" && s
 
 If a resumed session finds Postgres down: `pg_ctlcluster 16 main start`. Migrations: `uv run alembic upgrade head`.
 
-Run locally: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter @enzo/cli start` or
-`pnpm --filter @enzo/web dev`.
+Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --filter @enzo/cli start` or
+`pnpm --filter @enzo/web dev`. The Bun version lives in `.bun-version` (CI and the script read it).
 
 ## Gotchas already found
 
