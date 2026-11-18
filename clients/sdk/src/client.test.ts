@@ -28,7 +28,7 @@ describe("GatewayClient", () => {
       fetch: fakeFetch(
         () =>
           sse(
-            'event: text\ndata: {"text":"hi"}\n\nevent: done\ndata: {"stop":"final_answer","text":"hi","steps":1,"cost_usd":0.001,"brain":"b","model":"m"}\n\n',
+            'event: text\ndata: {"text":"hi"}\n\nevent: done\ndata: {"stop":"final_answer","text":"hi","steps":1,"cost_usd":0.001,"brain":"b","model":"m","failure":null}\n\n',
           ),
         seen,
       ),

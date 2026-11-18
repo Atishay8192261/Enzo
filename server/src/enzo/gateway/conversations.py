@@ -173,9 +173,8 @@ def _sse(event: ServiceEvent) -> ServerSentEvent:
             return ServerSentEvent(event="approval_needed", data=data)
         case TurnDone(outcome=o):
             costs = [c.cost_usd for c in o.brain_calls]
-            cost = (
-                None if not costs or any(c is None for c in costs) else sum(c or 0 for c in costs)
-            )
+            # No call made: nothing was spent (#25). Any unpriced call: unknown, never 0 (§1.3.5).
+            cost = None if any(c is None for c in costs) else sum(c or 0 for c in costs)
             answered = next((c for c in reversed(o.brain_calls) if c.outcome == "ok"), None)
             data = {
                 "stop": o.stop,
@@ -185,6 +184,7 @@ def _sse(event: ServiceEvent) -> ServerSentEvent:
                 # Which brain replied, shown where the reply appears (spec §1.3.6).
                 "brain": answered.brain if answered else None,
                 "model": answered.model if answered else None,
+                "failure": o.failure,
             }
             return ServerSentEvent(event="done", data=data)
         case TurnFailed(message=message):

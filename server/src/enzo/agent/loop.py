@@ -68,6 +68,8 @@ class TurnOutcome:
     brain_calls: tuple[CallRecord, ...] = ()
     tool_outcomes: tuple[ToolOutcome, ...] = ()
     pending: tuple[ApprovalRequest, ...] = ()
+    #: Why a brain_failure happened (e.g. "not_connected"), so each client can word it (#25).
+    failure: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +89,12 @@ class _Turn:
     tool_outcomes: list[ToolOutcome] = field(default_factory=list)
 
     def done(
-        self, stop: StopReason, text: str, pending: Sequence[ApprovalRequest] = ()
+        self,
+        stop: StopReason,
+        text: str,
+        pending: Sequence[ApprovalRequest] = (),
+        *,
+        failure: str | None = None,
     ) -> TurnDone:
         return TurnDone(
             TurnOutcome(
@@ -98,6 +105,7 @@ class _Turn:
                 brain_calls=tuple(self.brain_calls),
                 tool_outcomes=tuple(self.tool_outcomes),
                 pending=tuple(pending),
+                failure=failure,
             )
         )
 
@@ -193,7 +201,8 @@ async def _ask_brain(ask: _Ask, turn: _Turn) -> AsyncIterator[TextDelta | TurnDo
         return
     except (BrainError, AllBrainsFailedError) as exc:
         turn.brain_calls.extend(a for a in exc.attempts if isinstance(a, CallRecord))
-        yield turn.done("brain_failure", f"I could not get an answer: {exc}")
+        kind = exc.kind if isinstance(exc, BrainError) else "all_brains_failed"
+        yield turn.done("brain_failure", f"I could not get an answer: {exc}", failure=kind)
         return
     if routed is None:  # router.stream always ends in RoutedDone or raises; guard regardless
         yield turn.done("brain_failure", "I could not get an answer: no response.")

@@ -151,6 +151,7 @@ describe("terminal chat (OpenTUI)", () => {
             cost_usd: 0.0021,
             brain: null,
             model: null,
+            failure: null,
           },
         ),
     });
@@ -171,6 +172,7 @@ describe("terminal chat (OpenTUI)", () => {
         cost_usd: null,
         brain: null,
         model: null,
+        failure: null,
       }),
     );
     await using s = await screen(fakeClient({ send }));
@@ -208,6 +210,7 @@ describe("terminal chat (OpenTUI)", () => {
             cost_usd: null,
             brain: null,
             model: null,
+            failure: null,
           },
         ),
       resume: () =>
@@ -219,6 +222,7 @@ describe("terminal chat (OpenTUI)", () => {
           cost_usd: null,
           brain: null,
           model: null,
+          failure: null,
         }),
     });
     await using s = await screen(client);
@@ -270,6 +274,7 @@ describe("terminal chat (OpenTUI)", () => {
           cost_usd: null,
           brain: "claude-sonnet",
           model: "claude-sonnet-5-5",
+          failure: null,
         }),
     });
     await using s = await screen(client);

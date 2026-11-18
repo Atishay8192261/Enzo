@@ -15,5 +15,7 @@ export function describeConnection(c: ProviderConnection): string {
 }
 
 export function methodName(method: string | null): string {
-  return method === "api_key" ? "API key" : (method ?? "unknown");
+  if (method === "api_key") return "API key";
+  if (method === "environment") return "environment variable";
+  return method ?? "unknown";
 }

@@ -35,6 +35,7 @@ describe("chat reducer", () => {
         cost_usd: 0.002,
         brain: "claude-sonnet",
         model: "claude-sonnet-5-5",
+        failure: null,
       },
     });
     expect(s.items).toEqual([
@@ -79,6 +80,7 @@ describe("chat reducer", () => {
         cost_usd: null,
         brain: null,
         model: null,
+        failure: null,
       },
     });
     expect(s.approvals).toEqual([{ id: "appr_1", tool: "send_email", arguments: { to: "bob" } }]);
@@ -98,6 +100,7 @@ describe("chat reducer", () => {
         cost_usd: null,
         brain: null,
         model: null,
+        failure: null,
       },
     });
     expect(s.items).toEqual([{ role: "notice", text: "I could not get an answer: no API key" }]);
@@ -132,5 +135,14 @@ describe("formatCost", () => {
     expect(formatCost(null)).toBe("cost unknown");
     expect(formatCost(0.00123)).toBe("cost $0.0012");
     expect(formatCost(1.5)).toBe("cost $1.50");
+  });
+});
+
+describe("formatCost", () => {
+  it("says no charge when nothing was spent, and never invents a price", () => {
+    expect(formatCost(undefined)).toBe("");
+    expect(formatCost(null)).toBe("cost unknown");
+    expect(formatCost(0)).toBe("no charge");
+    expect(formatCost(0.0021)).toBe("cost $0.0021");
   });
 });

@@ -420,6 +420,7 @@ class Router:
 
 
 def _nothing_connected(config: BrainsConfig) -> str:
-    providers = sorted({c.provider_name for c in config.brains.values()})
+    # In catalog order (the defaults' providers come first), not alphabetical (#25).
+    providers = list(dict.fromkeys(c.provider_name for c in config.brains.values()))
     logins = ", ".join(f"/login {p}" for p in providers)
     return f"no model account is connected. Connect one: {logins}"

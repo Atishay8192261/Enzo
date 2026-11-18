@@ -19,6 +19,8 @@ export interface ChatItem {
   text: string;
   /** The brain that wrote this reply (live replies; stored history does not record it). */
   by?: string;
+  /** For a notice about a failed turn: why, so each surface can say what to do. */
+  failure?: string;
 }
 
 export interface PendingApproval {
@@ -136,6 +138,7 @@ function onEvent(state: ChatState, event: AgentEvent): ChatState {
           role: answer ? "assistant" : "notice",
           text: event.text,
           ...(answer && event.brain ? { by: event.brain } : {}),
+          ...(event.failure ? { failure: event.failure } : {}),
         });
       }
       if (notice) items.push({ role: "notice", text: notice });
@@ -160,5 +163,6 @@ export function toItems(messages: StoredMessage[]): ChatItem[] {
 export function formatCost(cost: number | null | undefined): string {
   if (cost === undefined) return "";
   if (cost === null) return "cost unknown";
+  if (cost === 0) return "no charge";
   return `cost $${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}`;
 }

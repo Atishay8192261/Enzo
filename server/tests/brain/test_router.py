@@ -17,7 +17,7 @@ from enzo.brain import (
     ToolChoice,
     ToolSpec,
 )
-from enzo.brain.config import BrainConfig, BrainsConfig
+from enzo.brain.config import BrainConfig, BrainsConfig, load_config
 from enzo.brain.fake import ScriptedBrain
 from enzo.brain.models import StreamEvent
 from enzo.brain.provider import BrainProvider
@@ -413,3 +413,13 @@ def test_a_brain_without_a_key_is_skipped_even_if_its_provider_has_others() -> N
     )
     r = Router(config, build=lambda _c: ok(), available=lambda c: c.model != "o")
     assert r.plan("hard").primary == "sonnet"
+
+
+def test_the_connect_hint_follows_catalog_order_not_the_alphabet() -> None:
+    """Regression (#25): the default models' providers come first."""
+    r = router({}, load_config(), connected=set())
+    with pytest.raises(NoBrainAvailableError) as exc:
+        r.plan("streaming")
+    assert str(exc.value).endswith(
+        "Connect one: /login anthropic, /login openai, /login xai, /login moonshot"
+    )

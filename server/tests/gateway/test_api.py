@@ -339,3 +339,21 @@ async def test_conversations_spread_across_providers_and_long_input_goes_powerfu
         turn = await c.post(f"/conversations/{cid}/turns", json={"message": long})
         top = events(turn.text)[-1][1]["brain"]
         assert top == mid.replace("-mid", "-top")  # powerful tier, same provider
+
+
+async def test_a_turn_with_no_connected_account_says_why_and_costs_nothing(store: Store) -> None:
+    """Regression (#25): clients need the reason to word it, and no model call means no cost."""
+    router = Router(config(), build=lambda _c: ScriptedBrain([]), available=lambda _c: False)
+    svc = ConversationService(store, router, t.registry())
+    async with client(svc) as c:
+        cid = await new_conversation(c)
+        done = events((await c.post(f"/conversations/{cid}/turns", json={"message": "hi"})).text)[
+            -1
+        ][1]
+    assert (done["stop"], done["failure"], done["cost_usd"], done["brain"]) == (
+        "brain_failure",
+        "not_connected",
+        0,
+        None,
+    )
+    assert "Connect one: /login anthropic" in done["text"]
