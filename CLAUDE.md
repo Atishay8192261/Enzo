@@ -26,6 +26,19 @@ Read this first in every session. It carries the context from earlier sessions.
 - Model catalog grouped fast / balanced / powerful with recommendations; defaults balanced (Claude
   Sonnet 5.5, GPT-6.2 Sol); smart routing per task, spread across the providers the user connected.
 
+## Decisions from Atishay (2026-11-18)
+
+- Enzo is **local-first and single-user**, like Claude Code / OpenCode but a personal agent: each person
+  installs their own private copy, connects their own model accounts, grants permissions (files, browser,
+  apps), and their data stays on their machine. No Enzo-run servers, no user accounts, no tenant separation.
+- **One-line install, then `enzo`** (issue #23): everything bundled, nothing to pre-install (Postgres
+  bundled, terminal app compiled, web app served by the gateway); `enzo web`, `enzo doctor`, `enzo update`.
+- **24/7 later, still single-user:** `enzo deploy` runs the same private Enzo on an always-on machine the
+  user owns (their cloud VM or a home machine). Until then, background work runs while the computer is
+  awake; missed jobs run on wake and say they are late. A hosted service for everyone is not planned.
+- Core tools hand-built; services via MCP. Order: GitHub connector (MCP), one-line install, then
+  memory/background; **laptop use** (computer control with per-action approval) and a web agent after the core.
+
 ## Git and GitHub
 
 - Branch from `main`: `feat/…`, `fix/…`, `chore/…`, `docs/…`.
@@ -133,6 +146,11 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
   plain `summary` for the approval card. Never show tool names to users (§10.3).
 - Tavily keyless search runs out fast under testing: tests mock it; connect a free key for real use.
 - trafilatura warns about urllib3 SOCKS on import: `enzo.tools.web` silences exactly that warning.
+- MCP tools: `enzo.connectors.mcp`. Approval unless the server marks `readOnlyHint`; outputs fenced; rate limit
+  stops the connector 15 min, a rejected token until reconnect. Test servers: in-process `MCPServer`, and
+  raise `mcp.server.mcpserver.exceptions.ToolError` (other exceptions reach clients as a generic message).
+- GitHub MCP is hosted (`api.githubcopilot.com/mcp/`, blocked in cloud sessions unless allowed). The cloud
+  proxy only allows repo-scoped `api.github.com` paths (`/user`, `/versions` are refused here).
 - Secrets: `enzo.accounts` vault (keychain or AES-GCM file with `ENZO_VAULT_KEY`), never plaintext (ADR 0009).
 
 ## Brain providers and auth (verified 2026-11-17, details in ADR 0001)
@@ -163,7 +181,8 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
 - [ ] Spec §7 tools: [x] typed registry (`enzo.tools`, `@tool`), validation before execution, errors as data,
   timeouts, parallel batches; [x] batch 1 core tools (ADR 0011): `web_search` (Tavily, keyless or key),
   `read_page` (own fetch + SSRF guard), workspace files (list/read/create/edit/delete with approval),
-  untrusted-output fence, plain-language approval summaries; [ ] batch 2 MCP client + GitHub (issue #2);
+  untrusted-output fence, plain-language approval summaries; [x] batch 2 MCP connectors + GitHub (ADR 0012,
+  `docs/connectors/github.md`): schema tools, prepare-before-approval (merge pinned to head + diff), §8.3 stops;
   [ ] batch 3 Gmail + Calendar via MCP; [ ] batch 4 reminders/scheduling and memory tools
 - [x] Spec §4 agent loop (`enzo.agent`: `run_turn`, approvals, prompt order; ADR 0004)
 - [x] Spec §11 persistence base: Postgres store for transcripts, brain/tool call ledgers, approvals (ADR 0005)
@@ -180,5 +199,5 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
      `clients/cli/src/commands.ts`), web Model menu by tier, each live reply names its model
   4. [ ] Sign in with ChatGPT (`enzo login chatgpt`, runs on the user's machine)
 - [ ] Release automation (release PRs, CHANGELOG, tags)
-- [ ] GitHub connector: issue #2
+- [x] GitHub connector: issue #2 (live write flow on a sandbox repo still to verify with a real token)
 - Then continue in the order of the spec §17 checklist.

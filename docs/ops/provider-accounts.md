@@ -17,6 +17,7 @@ for. Design: ADR 0009.
 | Service | What connecting it does | Without it |
 | --- | --- | --- |
 | Tavily | Raises web search limits (1,000 free searches a month, no card) | Search still works, keyless and rate-limited |
+| GitHub | Issues, pull requests, CI and releases on your repos (fine-grained token, setup in `docs/connectors/github.md`) | No GitHub tools |
 
 Connect with `/login tavily` or the web Accounts panel, like a model provider. The key is checked
 with Tavily's usage endpoint (no credits spent), then kept in the vault.
