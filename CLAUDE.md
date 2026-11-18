@@ -33,6 +33,10 @@ Read this first in every session. It carries the context from earlier sessions.
 - Every change lands through a PR that fills `.github/pull_request_template.md`. CI must be green.
 - Merge method: rebase-merge. Delete the branch after merge.
 - Standing permission from Atishay: merge your own PRs once CI is green.
+- **Cadence (Atishay, 2026-11-18): slow down.** One PR per complete, user-visible feature, opened only
+  when it is built, tested (unit, mutation, live) and documented. A few meaningful commits per PR (e.g.
+  the bug fix, then the feature), each one building on its own. No docs-only, micro or follow-up PRs:
+  docs and small fixes ride with the feature they belong to.
 - Cloud sessions: GitHub GraphQL is blocked, so use `gh api` REST endpoints. They cannot create repos,
   delete branches, or approve PRs (GitHub never allows approving your own PR). The repo may be checked
   out as `Enzo` or `enzo`.
