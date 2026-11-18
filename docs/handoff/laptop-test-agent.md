@@ -78,45 +78,34 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
   conversation.
 - No background jobs, no scheduled tasks, no deployment.
 
-## One-time setup on this Mac
+## Setup and running (one command, issue #22)
 
-Check every version against what is installed. Don't trust this list blindly; report any mismatch.
+From `~/projects/enzo`:
 
-1. **Tools.** Use Homebrew, unless a tool is already installed.
-   - `git` and `gh` (logged in: `gh auth status`).
-   - `uv`: it installs Python 3.13 by itself.
-   - Node 22.12 or newer (CI uses 24).
-   - pnpm 10: run `corepack enable`. The repo pins `pnpm@10.28.0`.
-   - Bun **1.4.4**, the exact version CI uses. Check with `bun --version`.
-   - PostgreSQL 16. pgvector is not used yet, so skip it if it's awkward to install.
-2. **Database.** Start Postgres. With Homebrew: `brew services start postgresql@16`.
-   - Create the role and database that `CLAUDE.md` names: role `enzo`, password `enzo`, superuser
-     (the tests create throwaway databases), database `enzo`.
-   - Homebrew's admin user is the Mac login user, so drop the `sudo -u postgres` part of the
-     commands in `CLAUDE.md`.
-3. **Code.**
-   - `git pull` in `~/projects/enzo`.
-   - `pnpm install` at the root.
-   - `cd server && uv sync && uv run alembic upgrade head`.
-4. **Prove it works before using it.**
-   - Run both check commands in `CLAUDE.md`. Every test should pass.
-   - If anything fails here, that is your first issue.
-5. **Keychain.** Enzo saves keys through the `keyring` library into the login Keychain.
-   - macOS may ask whether Python can use the Keychain. That prompt is expected: allow it for this
-     Python only.
-   - Note whether it asked, and how often: repeated prompts are a usability bug.
-   - If Enzo says "no secure place for credentials", the Keychain was not usable. Report it.
+```bash
+git pull && scripts/dev.sh
+```
 
-## Running it
+- It checks every tool and version (Node, pnpm, Bun from `.bun-version`, uv, PostgreSQL), installs
+  dependencies, creates the `enzo` database if needed, migrates, starts the gateway and opens the
+  terminal app. Quitting the app stops the gateway it started.
+- `scripts/dev.sh web`: the web app instead. Open the address it prints; Ctrl+C stops everything.
+- `scripts/dev.sh doctor`: only checks, changes nothing.
+- When it prints `FIX`, do exactly that and run it again. If a `FIX` is wrong or unclear for this Mac,
+  that is an issue to file.
+- Gateway log: `.dev/gateway.log` in the repo. It is your first evidence for any bug.
+- If you must run pieces by hand: `cd server && uv run enzo-server`, then
+  `pnpm --filter @enzo/cli start` or `pnpm --filter @enzo/web dev`. The terminal app uses
+  `ENZO_GATEWAY_URL` (default `http://127.0.0.1:8787`); the web app proxies `/api` to the same.
+- Before testing a new version, also run both check commands in `CLAUDE.md`; a failure there is the
+  first issue to file.
 
-- Use three terminals (or background processes you started and will stop):
-  1. Gateway: `cd server && uv run enzo-server`. Its logs are your first evidence for any bug.
-  2. Terminal app: `pnpm --filter @enzo/cli start`.
-  3. Web app: `pnpm --filter @enzo/web dev`.
-- **Updating:** `git pull`, then `pnpm install`, `cd server && uv sync && uv run alembic upgrade head`.
-  Then restart the gateway.
-- **Gateway URL:** the terminal app uses `ENZO_GATEWAY_URL`, default `http://127.0.0.1:8787`. The
-  web app uses the same default for its `/api` proxy.
+**Keychain.** Enzo saves keys through the `keyring` library into the login Keychain.
+
+- macOS may ask whether Python can use the Keychain. That prompt is expected: allow it for this
+  Python only.
+- Note whether it asked, and how often: repeated prompts are a usability bug.
+- If Enzo says "no secure place for credentials", the Keychain was not usable. Report it.
 
 ## What to test: real user journeys
 

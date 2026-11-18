@@ -30,26 +30,27 @@ docs/          Spec and architecture decision records
 
 ## Quickstart
 
-Requires Python 3.13+ with [uv](https://docs.astral.sh/uv/), Node 22.12+, pnpm 10, [Bun](https://bun.sh) 1.4.4
-(the terminal app, pinned like CI) and Postgres 16 (see `CLAUDE.md`).
+One command from a clone. It checks your tools, installs dependencies, creates the database,
+runs migrations, starts the gateway and opens the terminal app; quitting the app stops the gateway.
 
 ```bash
-pnpm install
+scripts/dev.sh
 ```
 
-```bash
-cd server && uv sync && uv run enzo-server
-```
+`scripts/dev.sh web` opens the web app instead, `scripts/dev.sh doctor` only checks, and
+`pnpm dev` runs the same script. When a tool is missing or the wrong version, it says what to
+install and stops.
 
-In a second terminal, either surface:
+**Tools it needs:** Node 22.12+ (24 LTS recommended), pnpm via `corepack enable`, Bun 1.4.4
+(pinned in `.bun-version`), [uv](https://docs.astral.sh/uv/) (it installs Python 3.13) and
+PostgreSQL 16.
 
-```bash
-pnpm --filter @enzo/cli start
-```
-
-```bash
-pnpm --filter @enzo/web dev
-```
+- **macOS (Homebrew):** `brew install postgresql@16 && brew services start postgresql@16`. The
+  script creates the `enzo` role and database itself, because Homebrew makes your login user a
+  database superuser. On Apple Silicon, install Node with the official arm64 installer from
+  nodejs.org if an Intel Homebrew cannot build it.
+- **Linux (Debian/Ubuntu):** `sudo apt-get install -y postgresql-16`. The script never uses sudo,
+  so it prints the two `sudo -u postgres` commands that create the role and database.
 
 ## Checks
 
