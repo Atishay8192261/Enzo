@@ -11,11 +11,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, params
 from pydantic import BaseModel, ConfigDict, Field
 
-from enzo.accounts.check import check_api_key
+from enzo.accounts.check import check_api_key, check_tavily_key
 from enzo.accounts.service import (
     AccountsService,
     EnvironmentKeyError,
     NotConnectedError,
+    Service,
     UnknownProviderError,
 )
 from enzo.accounts.store import CredentialStore
@@ -48,11 +49,26 @@ class ConnectionOut(BaseModel):
     connected_at: str | None
     methods: list[str]
     models: list[str]
+    #: Services (not model providers) list the tools they unlock instead of models.
+    tools: list[str]
+    purpose: str | None
 
 
 class CheckOut(BaseModel):
     ok: bool
     detail: str | None = None
+
+
+#: Accounts that tools use, besides model providers. Web search works without one (keyless).
+SERVICES = {
+    "tavily": Service(
+        name="tavily",
+        purpose="optional: raises web search limits (search works without it)",
+        tools=("web_search",),
+        env_var="TAVILY_API_KEY",
+        check=check_tavily_key,
+    ),
+}
 
 
 def build_accounts(cfg: Settings, config: BrainsConfig) -> AccountsService:
@@ -62,9 +78,11 @@ def build_accounts(cfg: Settings, config: BrainsConfig) -> AccountsService:
     try:
         vault = open_vault(cfg.config_dir, key)
     except VaultUnavailableError as exc:
-        return AccountsService(config, None, check_api_key, unavailable=str(exc), env=env)
+        return AccountsService(
+            config, None, check_api_key, services=SERVICES, unavailable=str(exc), env=env
+        )
     store = CredentialStore(vault, cfg.config_dir / "connections.json")
-    return AccountsService(config, store, check_api_key, env=env)
+    return AccountsService(config, store, check_api_key, services=SERVICES, env=env)
 
 
 def connection_routes(auth: params.Depends) -> APIRouter:
@@ -81,6 +99,8 @@ def connection_routes(auth: params.Depends) -> APIRouter:
                 connected_at=s.connected_at.isoformat() if s.connected_at else None,
                 methods=list(s.methods),
                 models=list(s.models),
+                tools=list(s.tools),
+                purpose=s.purpose,
             )
             for s in a.status()
         ]

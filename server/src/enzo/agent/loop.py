@@ -255,7 +255,10 @@ def _gate(registry: ToolRegistry, call: ToolCall) -> ApprovalRequest | None:
     if tool is None or not tool.requires_approval:
         return None
     checked = registry.validate(call)
-    return approval_request(call, checked.args) if isinstance(checked, ValidatedCall) else None
+    if not isinstance(checked, ValidatedCall):
+        return None
+    summary = tool.summary(checked.args) if tool.summary else None
+    return approval_request(call, checked.args, summary)
 
 
 async def _execute(

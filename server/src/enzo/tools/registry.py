@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict
 
 from enzo.brain.models import ToolCall, ToolResult, ToolSpec
 from enzo.brain.toolcall import ToolCallRejection, ValidatedCall, validate_call
+from enzo.tools.fence import fence
 
 DEFAULT_TIMEOUT_S = 60.0
 
@@ -45,6 +46,11 @@ class Tool[P: BaseModel, R: BaseModel]:
     #: Irreversible or outward actions wait for the user's approval of the exact call (§12.3).
     requires_approval: bool = False
     timeout_s: float = DEFAULT_TIMEOUT_S
+    #: The result carries outside content (web pages, files): fenced as untrusted data (§12.4).
+    untrusted_output: bool = False
+    #: For approval-gated tools: the exact action in plain words, shown on the approval card
+    #: (§10.3: no tool names in user-facing text; §12.3: approve the exact action).
+    summary: Callable[[P], str] | None = None
 
     def spec(self) -> ToolSpec:
         return ToolSpec.from_model(self.name, self.description, self.params)
@@ -56,6 +62,8 @@ def tool[P: BaseModel, R: BaseModel](
     description: str,
     requires_approval: bool = False,
     timeout_s: float = DEFAULT_TIMEOUT_S,
+    untrusted_output: bool = False,
+    summary: Callable[[P], str] | None = None,
 ) -> Callable[[Handler[P, R]], Tool[P, R]]:
     """Declare a tool from an async function; parameter and result models come from its hints."""
 
@@ -74,6 +82,8 @@ def tool[P: BaseModel, R: BaseModel](
             handler=fn,
             requires_approval=requires_approval,
             timeout_s=timeout_s,
+            untrusted_output=untrusted_output,
+            summary=summary,
         )
 
     return wrap
@@ -138,9 +148,12 @@ class ToolRegistry:
             got = type(value).__name__
             msg = f"{call.name} returned {got}, expected {t.returns.__name__}"
             return self._failed(call, "bad_result", msg, started)
+        content = value.model_dump_json()
+        if t.untrusted_output:
+            content = fence(content, source=call.name)
         return ToolOutcome(
             call=call,
-            result=ToolResult(call_id=call.id, name=call.name, content=value.model_dump_json()),
+            result=ToolResult(call_id=call.id, name=call.name, content=content),
             status="ok",
             latency_ms=_since(started),
         )

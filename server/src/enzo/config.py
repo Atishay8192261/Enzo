@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     brains_config: Path | None = None
     #: Where Enzo keeps its local state (connection index, encrypted vault).
     config_dir: Path = Path.home() / ".config" / "enzo"
+    #: The user-visible folder for files Enzo reads and writes (spec §11.2).
+    workspace_dir: Path = Path.home() / "Enzo"
     #: Key for the encrypted credential vault on machines without an OS keychain (§11.2).
     vault_key: SecretStr | None = None
     #: Also use provider keys from environment variables (OPENAI_API_KEY, …). Off by default: a key

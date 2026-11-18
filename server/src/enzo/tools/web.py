@@ -1,0 +1,273 @@
+"""Web tools: search and read pages as text (spec §7.2.2 Browser, §7.2.4 text-fetch mode).
+
+- ``web_search`` uses Tavily. Without a key it uses Tavily's keyless mode (free, rate-limited);
+  a key connected with ``/login tavily`` raises the limits. Only the query leaves the machine.
+- ``read_page`` fetches the page itself (the URL is not sent to a third party) and keeps only the
+  main text. It refuses private and internal addresses, so content met along the way cannot point
+  Enzo at the user's router or a cloud metadata service (SSRF). A failed fetch says only that the
+  fetch failed, never that the site is down (§7.2.4).
+
+Both return outside content, fenced as untrusted data (§12.4).
+"""
+
+import asyncio
+import ipaddress
+import socket
+import urllib.request
+import warnings
+from collections.abc import Callable
+from typing import Any, Literal
+from urllib.parse import urljoin, urlsplit
+
+import httpx2
+from pydantic import BaseModel, ConfigDict, Field
+from urllib3.exceptions import DependencyWarning
+
+from enzo.tools.registry import Tool, tool
+
+with warnings.catch_warnings():
+    # trafilatura probes urllib3's optional SOCKS support on import, and urllib3 warns when
+    # PySocks is absent. Enzo only parses HTML with trafilatura (it never fetches through it).
+    warnings.filterwarnings("ignore", "SOCKS support in urllib3", DependencyWarning)
+    import trafilatura
+
+TAVILY_SEARCH = "https://api.tavily.com/search"
+USER_AGENT = "Enzo/0.1 (personal AI agent; reads pages on its user's request)"
+MAX_PAGE_BYTES = 3_000_000
+MAX_REDIRECTS = 5
+TEXT_TYPES = ("text/html", "application/xhtml+xml", "text/plain")
+
+type KeyLookup = Callable[[], str | None]
+
+
+class WebToolError(Exception):
+    """A plain-language failure the brain can relay. Never claims the site itself is down."""
+
+
+class _Params(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class SearchParams(_Params):
+    query: str = Field(min_length=1, max_length=400, description="What to search the web for.")
+    max_results: int = Field(default=5, ge=1, le=10, description="How many results to return.")
+    topic: Literal["general", "news", "finance"] = Field(
+        default="general", description="Use news for current events, finance for markets."
+    )
+    time_range: Literal["day", "week", "month", "year"] | None = Field(
+        default=None, description="Only results published within this period."
+    )
+
+
+class SearchHit(BaseModel):
+    title: str
+    url: str
+    snippet: str
+
+
+class SearchResults(BaseModel):
+    query: str
+    results: list[SearchHit]
+
+
+class ReadParams(_Params):
+    url: str = Field(min_length=1, max_length=2000, description="The http(s) address to read.")
+    max_chars: int = Field(
+        default=12_000, ge=500, le=40_000, description="Longest text to return; the rest is cut."
+    )
+
+
+class Page(BaseModel):
+    url: str  # after redirects
+    title: str | None
+    text: str
+    truncated: bool
+
+
+def web_tools(*, tavily_key: KeyLookup, http: httpx2.AsyncClient) -> list[Tool[Any, Any]]:
+    """The web tools, bound to the user's Tavily key (if any) and a shared HTTP client."""
+
+    @tool(
+        name="web_search",
+        description=(
+            "Search the web for current information: news, prices, facts, documentation. "
+            "Returns titles, addresses and short snippets; cite the address of what you use. "
+            "Read a result in full with read_page."
+        ),
+        timeout_s=30,
+        untrusted_output=True,
+    )
+    async def web_search(params: SearchParams) -> SearchResults:
+        return await search(params, http=http, key=tavily_key())
+
+    @tool(
+        name="read_page",
+        description=(
+            "Read a web page as plain text (no login, no clicks). Use it to read a search "
+            "result or an address the user gave. A failure means only that this fetch failed."
+        ),
+        timeout_s=30,
+        untrusted_output=True,
+    )
+    async def read_page(params: ReadParams) -> Page:
+        return await fetch_page(params, http=http)
+
+    return [web_search, read_page]
+
+
+async def search(
+    params: SearchParams, *, http: httpx2.AsyncClient, key: str | None
+) -> SearchResults:
+    body: dict[str, object] = {
+        "query": params.query,
+        "max_results": params.max_results,
+        "topic": params.topic,
+        "search_depth": "basic",  # 1 credit; "advanced" costs 2 (docs.tavily.com, read 2026-11-18)
+    }
+    if params.time_range:
+        body["time_range"] = params.time_range
+    # A connected key takes precedence; keyless mode is free but rate-limited.
+    headers = {"Authorization": f"Bearer {key}"} if key else {"X-Tavily-Access-Mode": "keyless"}
+    try:
+        response = await http.post(TAVILY_SEARCH, json=body, headers=headers)
+    except httpx2.HTTPError as exc:
+        msg = f"could not reach the search service ({type(exc).__name__})"
+        raise WebToolError(msg) from exc
+    if response.status_code == 401:
+        msg = "the search service rejected the Tavily key: run /login tavily with a new key"
+        raise WebToolError(msg)
+    if response.status_code in (429, 432, 433, 434):
+        msg = "web search limit reached" + (
+            "" if key else ": connect a free Tavily key with /login tavily for more searches"
+        )
+        raise WebToolError(msg)
+    if response.status_code != 200:
+        msg = f"the search service failed (HTTP {response.status_code})"
+        raise WebToolError(msg)
+    data = response.json()
+    hits = [
+        SearchHit(title=r.get("title") or r["url"], url=r["url"], snippet=r.get("content") or "")
+        for r in data.get("results", [])
+        if isinstance(r, dict) and isinstance(r.get("url"), str)
+    ]
+    return SearchResults(query=params.query, results=hits)
+
+
+async def fetch_page(params: ReadParams, *, http: httpx2.AsyncClient) -> Page:
+    url = params.url
+    for _ in range(MAX_REDIRECTS + 1):
+        await check_public(url)  # every hop: a redirect must not lead inside the network
+        request = http.build_request("GET", url, headers={"User-Agent": USER_AGENT})
+        try:
+            response = await http.send(request, stream=True)
+        except httpx2.HTTPError as exc:
+            reason = type(exc).__name__
+            msg = f"could not fetch {url} ({reason}); this fetch failed, the site may be fine"
+            raise WebToolError(msg) from exc
+        try:
+            if response.is_redirect and "location" in response.headers:
+                url = urljoin(url, response.headers["location"])
+                continue
+            if response.status_code != 200:
+                msg = f"fetching {url} returned HTTP {response.status_code}; this fetch failed"
+                raise WebToolError(msg)
+            kind = response.headers.get("content-type", "").split(";")[0].strip().lower()
+            if kind not in TEXT_TYPES:
+                msg = (
+                    f"{url} is {kind or 'an unknown type'}, not a text page; it cannot be read here"
+                )
+                raise WebToolError(msg)
+            body = await _read_capped(response)
+        finally:
+            await response.aclose()
+        return _to_page(url, kind, body, params.max_chars)
+    msg = f"{params.url} redirected more than {MAX_REDIRECTS} times; this fetch failed"
+    raise WebToolError(msg)
+
+
+async def check_public(url: str) -> None:
+    """Refuse non-web schemes and addresses inside private networks (SSRF guard).
+
+    Without a proxy, the host is resolved here and every address must be public. When a proxy is
+    configured for the host, the proxy resolves the name, so only literal IPs and names this
+    machine can resolve are checked; ADR 0011 records that limit.
+    """
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        msg = f"only http and https pages can be read, not {parts.scheme or 'this address'}"
+        raise WebToolError(msg)
+    if not parts.hostname or parts.username or parts.password:
+        msg = "that address has no host, or carries a login; it cannot be read"
+        raise WebToolError(msg)
+    host = parts.hostname
+    literal = _ip(host)
+    if literal is not None:
+        addresses = {literal}
+    else:
+        resolved = await _resolve(host, parts.port or (443 if parts.scheme == "https" else 80))
+        if resolved is None:
+            if _proxied(host):
+                return  # the proxy resolves it (see docstring)
+            msg = f"could not find the address of {host}; this fetch failed"
+            raise WebToolError(msg)
+        addresses = resolved
+    private = sorted(str(a) for a in addresses if not a.is_global)
+    if private:
+        where = ", ".join(private)
+        msg = f"{host} points inside a private network ({where}); Enzo does not read those"
+        raise WebToolError(msg)
+
+
+type IP = ipaddress.IPv4Address | ipaddress.IPv6Address
+
+
+def _ip(host: str) -> IP | None:
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        return None
+
+
+async def _resolve(
+    host: str, port: int
+) -> set[ipaddress.IPv4Address | ipaddress.IPv6Address] | None:
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return None
+    return {ipaddress.ip_address(info[4][0]) for info in infos}
+
+
+def _proxied(host: str) -> bool:
+    proxies = urllib.request.getproxies()
+    return bool(proxies.get("https") or proxies.get("http")) and not urllib.request.proxy_bypass(
+        host
+    )
+
+
+async def _read_capped(response: httpx2.Response) -> bytes:
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in response.aiter_bytes():
+        size += len(chunk)
+        if size > MAX_PAGE_BYTES:
+            msg = f"{response.url} is larger than {MAX_PAGE_BYTES // 1_000_000} MB; it was not read"
+            raise WebToolError(msg)
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _to_page(url: str, kind: str, body: bytes, max_chars: int) -> Page:
+    if kind == "text/plain":
+        title, text = None, body.decode("utf-8", errors="replace")
+    else:
+        doc = trafilatura.bare_extraction(
+            body, url=url, with_metadata=True, include_comments=False, include_tables=True
+        )
+        if doc is None or isinstance(doc, dict) or not doc.text:
+            msg = f"{url} has no readable main text (it may need a browser to render)"
+            raise WebToolError(msg)
+        title, text = doc.title, doc.text
+    truncated = len(text) > max_chars
+    return Page(url=url, title=title, text=text[:max_chars], truncated=truncated)
