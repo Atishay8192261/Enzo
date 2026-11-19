@@ -154,6 +154,12 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
 - GitHub MCP is hosted (`api.githubcopilot.com/mcp/`, blocked in cloud sessions unless allowed). The cloud
   proxy only allows repo-scoped `api.github.com` paths (`/user`, `/versions` are refused here).
 - Secrets: `enzo.accounts` vault (keychain or AES-GCM file with `ENZO_VAULT_KEY`), never plaintext (ADR 0009).
+- Sign in with ChatGPT (OpenAI SIWC "ChatGPT plan usage", read 2026-11-18): public `api.openai.com/v1`
+  Responses with the OAuth token, never `chatgpt.com/backend-api`. First sign-in `client_id=dynamic_agent_client`,
+  then the issued id; `ext_agent_host_id` per install. Plan route: `store:false`, `stream:true`, no
+  `max_output_tokens`, tools in a namespace. The callback is the gateway (`127.0.0.1:<port>/auth/callback`).
+  Tests: `tests/accounts/fake_openai_auth.py` (real RSA-signed ID tokens; its transport yields, so races are real).
+- OpenTUI wraps long lines mid-word: put a link a user must click or copy on its own line.
 
 ## Brain providers and auth (verified 2026-11-17, details in ADR 0001)
 
@@ -176,7 +182,7 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
   1. [x] Canonical types (`enzo.brain.models`), `BrainProvider` protocol + `tool_call()`, strict
      tool-argument validation, `ScriptedBrain` for tests
   2. [x] Anthropic adapter (`AnthropicBrain`, ADR 0002); live conformance pending an API key
-  3. [x] OpenAI Responses adapter (`OpenAIBrain`); live conformance pending a key; Sign in with ChatGPT later
+  3. [x] OpenAI Responses adapter (`OpenAIBrain`); live conformance pending a key; plan mode for Sign in with ChatGPT (ADR 0013)
   4. [x] Kimi (Moonshot) and Grok (xAI) configured via `OpenAIBrain` + `base_url` (ADR 0002 #11); verify live
   5. [x] Router, single fallback, budget check, cost accounting (`enzo.brain.router`, `brains.toml`, ADR 0003)
   6. Live conformance (§1.4) on every configured brain: needs API keys
@@ -199,7 +205,8 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
      conversation hash over connected providers, same-tier cross-provider fallback, rules classifier,
      tier pins, `done` names the answering brain; [x] clients: `/models`, `/model` (command table in
      `clients/cli/src/commands.ts`), web Model menu by tier, each live reply names its model
-  4. [ ] Sign in with ChatGPT (`enzo login chatgpt`, runs on the user's machine)
+  4. [x] Sign in with ChatGPT (ADR 0013, `/login chatgpt`, web "Continue with ChatGPT"); live flow
+     pending on the laptop (cloud blocks auth.openai.com)
 - [ ] Release automation (release PRs, CHANGELOG, tags)
 - [x] GitHub connector: issue #2 (live write flow on a sandbox repo still to verify with a real token)
 - Then continue in the order of the spec §17 checklist.
