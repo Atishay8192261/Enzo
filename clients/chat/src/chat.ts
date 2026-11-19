@@ -78,7 +78,7 @@ export type ChatAction =
   | { type: "resuming" }
   | { type: "brain_chosen"; brain: string | null }
   | { type: "brains_loaded"; brains: Brain[] }
-  | { type: "approval_decided"; id: string }
+  | { type: "approval_decided"; id: string; approved: boolean }
   | { type: "event"; event: AgentEvent };
 
 const STOP_NOTICES: Record<string, string> = {
@@ -119,8 +119,20 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
       return { ...state, brain: action.brain };
     case "brains_loaded":
       return { ...state, brains: action.brains };
-    case "approval_decided":
-      return { ...state, approvals: state.approvals.filter((a) => a.id !== action.id) };
+    case "approval_decided": {
+      // The card goes; a line in the chat keeps what the user decided (spec §15.4).
+      const decided = state.approvals.find((a) => a.id === action.id);
+      const items: ChatItem[] = decided
+        ? [
+            ...state.items,
+            {
+              role: "notice",
+              text: `${action.approved ? "Approved" : "Declined"}: ${describeApproval(decided)}`,
+            },
+          ]
+        : state.items;
+      return { ...state, items, approvals: state.approvals.filter((a) => a.id !== action.id) };
+    }
     case "event":
       return onEvent(state, action.event);
   }
