@@ -52,8 +52,12 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
   - Terminal: `/login <provider>`, `/logout <provider>`, `/connections`, `/check <provider>`.
   - Web: the **Accounts** panel.
 - **Chat.** Streaming replies. The conversation survives a restart.
-  - Terminal: the conversation id is kept in `~/.config/enzo/conversation`.
-  - Web: it is kept in the browser's local storage.
+  - Terminal: the conversation id is kept in `~/.config/enzo/conversation`. `/new` starts a new
+    chat; a new chat greets you and says how to connect when nothing is.
+  - Web (redesigned 2026-11-19): a welcome screen with suggestions, **New chat**, an **Accounts**
+    side panel, Enter sends and Shift+Enter makes a new line. Light and dark follow the system.
+  - Old chats stay saved, but there is no list of them yet (only the latest is reopened).
+  - After an approval, a line in the chat keeps what was approved or declined.
 - **Routing (ADR 0010).** Models are grouped fast / balanced / powerful.
   - Normal messages go to balanced: Claude Sonnet 5.5 or GPT-6.2 Sol.
   - A message over 20,000 characters goes to powerful.
@@ -149,7 +153,8 @@ For each journey:
 4. **Chat.**
    - Ask a few ordinary questions and judge the replies: speed, streaming, how long until the first
      word, cost shown.
-   - Is it pleasant to use? What feels slow or confusing?
+   - Is it pleasant to use? What feels slow or confusing? Compare the web app on a laptop and a
+     phone-sized window, in light and dark mode.
 5. **Two providers.**
    - Connect a second provider and start several new conversations.
    - Check with the query below that they spread across providers, and that each conversation keeps

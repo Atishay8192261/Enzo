@@ -160,6 +160,8 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
   `max_output_tokens`, tools in a namespace. The callback is the gateway (`127.0.0.1:<port>/auth/callback`).
   Tests: `tests/accounts/fake_openai_auth.py` (real RSA-signed ID tokens; its transport yields, so races are real).
 - OpenTUI wraps long lines mid-word: put a link a user must click or copy on its own line.
+- Vite's dev server can keep serving an old `@enzo/chat` after edits: restart it with `--force` before
+  judging a live web check.
 
 ## Brain providers and auth (verified 2026-11-17, details in ADR 0001)
 
@@ -195,7 +197,8 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
 - [x] Spec §4 agent loop (`enzo.agent`: `run_turn`, approvals, prompt order; ADR 0004)
 - [x] Spec §11 persistence base: Postgres store for transcripts, brain/tool call ledgers, approvals (ADR 0005)
 - [x] Gateway: conversations, SSE turns, approvals, brain choice, auth (`enzo.gateway`, `enzo.agent.service`, ADR 0006)
-- [x] Web chat: streaming, approval cards with exact arguments, brain picker, history (`clients/web`)
+- [x] Web chat: streaming, approval cards with exact arguments, brain picker, history (`clients/web`);
+  redesigned 2026-11-19: welcome + suggestions, New chat, Accounts side panel, light/dark, phone width
 - [x] Terminal chat (`clients/cli`, OpenTUI on Bun), sharing chat state with web via `@enzo/chat`
 - [ ] Bring your own account (decision 2026-11-17):
   1. [x] Server: vault, connections index, live key check, `/connections` endpoints (ADR 0009,
