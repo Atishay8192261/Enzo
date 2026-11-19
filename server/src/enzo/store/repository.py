@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Literal
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
@@ -138,6 +138,9 @@ class Store:
                                 "id": p.id,
                                 "tool": p.tool,
                                 "arguments": p.arguments,
+                                "call_id": p.call.id,
+                                "summary": p.summary,
+                                "detail": p.detail,
                             }
                             for p in pending
                         ]
@@ -170,6 +173,31 @@ class Store:
                 )
             )
             return {row.id: bool(row.approved) for row in rows}
+
+    async def pending_approvals(self, conversation_id: uuid.UUID) -> list[ApprovalRow]:
+        """Approvals still waiting for the user, oldest first."""
+        async with self._sessions() as session:
+            rows = await session.scalars(
+                select(ApprovalRow)
+                .where(
+                    ApprovalRow.conversation_id == conversation_id,
+                    ApprovalRow.approved.is_(None),
+                )
+                .order_by(ApprovalRow.requested_at)
+            )
+            return list(rows)
+
+    async def drop_pending(self, conversation_id: uuid.UUID) -> int:
+        """Forget approvals nobody answered: the user moved on, so they are no longer asked.
+        Decided ones stay: they are the record of consent (§12.2)."""
+        async with self._sessions.begin() as session:
+            result = await session.execute(
+                delete(ApprovalRow).where(
+                    ApprovalRow.conversation_id == conversation_id,
+                    ApprovalRow.approved.is_(None),
+                )
+            )
+            return int(getattr(result, "rowcount", 0) or 0)
 
     async def brain_calls(self, conversation_id: uuid.UUID) -> list[BrainCallRow]:
         async with self._sessions() as session:

@@ -12,11 +12,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from importlib import resources
 
+from enzo.agent.history import close_open_calls, open_calls, repair
 from enzo.agent.loop import AgentEvent, TurnDone, TurnOutcome, run_turn
 from enzo.agent.prompt import compose_prompt
 from enzo.brain.models import Message, TextPart
 from enzo.brain.router import Router, classify
 from enzo.store.repository import ConversationInfo, Store
+from enzo.store.schema import ApprovalRow
 from enzo.tools.registry import ToolRegistry
 
 log = logging.getLogger("enzo.agent.service")
@@ -70,6 +72,7 @@ class ConversationService:
         self._system = system_prompt
         self._max_steps = max_steps
         self._running: dict[uuid.UUID, asyncio.Task[None]] = {}
+        self._stops: dict[uuid.UUID, asyncio.Event] = {}
 
     async def require(self, conversation_id: uuid.UUID) -> ConversationInfo:
         info = await self.store.conversation(conversation_id)
@@ -80,23 +83,56 @@ class ConversationService:
     async def send(
         self, conversation_id: uuid.UUID, text: str, meta: TurnMeta | None = None
     ) -> AsyncGenerator[ServiceEvent]:
-        """Start a turn for a new user message; returns its event stream."""
+        """Start a turn for a new user message; returns its event stream.
+
+        If an approval is still open, the user has moved on: its calls are closed as "not run" and
+        the open approval is dropped, so nothing runs unasked and the history stays valid (#39).
+        """
         info = await self._claim(conversation_id)
         history = await self.store.history(conversation_id)
+        closing = close_open_calls(history)
+        if closing is not None:
+            history.append(closing)
+            dropped = await self.store.drop_pending(conversation_id)
+            log.info("moved on", extra={"conversation": str(conversation_id), "dropped": dropped})
         user = _user_message(text, meta or TurnMeta())
         prompt = compose_prompt(
-            system=self._system, developer=None, memory=[], history=history, user_message=user
+            system=self._system,
+            developer=None,
+            memory=[],
+            history=repair(history),
+            user_message=user,
         )
-        return self._start(info, prompt, first_new=len(prompt) - 1)
+        saved_from = len(prompt) - (2 if closing is not None else 1)
+        return self._start(info, prompt, first_new=saved_from)
 
     async def resume(self, conversation_id: uuid.UUID) -> AsyncGenerator[ServiceEvent]:
         """Continue a paused turn (after an approval decision or an interruption)."""
         info = await self._claim(conversation_id)
-        history = await self.store.history(conversation_id)
+        history = repair(await self.store.history(conversation_id))
         prompt = compose_prompt(
             system=self._system, developer=None, memory=[], history=history, user_message=None
         )
         return self._start(info, prompt, first_new=len(prompt))
+
+    def stop(self, conversation_id: uuid.UUID) -> bool:
+        """Ask the running turn to stop (#46). What already streamed is kept. False: none runs."""
+        stop = self._stops.get(conversation_id)
+        if stop is None:
+            return False
+        stop.set()
+        return True
+
+    def running(self, conversation_id: uuid.UUID) -> bool:
+        return conversation_id in self._running
+
+    async def pending_approvals(self, conversation_id: uuid.UUID) -> list[ApprovalRow]:
+        """Approvals waiting for the user right now: open ones for the calls the chat ends with.
+        Older unanswered rows (from before #39 was fixed) are not shown."""
+        history = await self.store.history(conversation_id)
+        waiting = {c.id for c in open_calls(history)}
+        rows = await self.store.pending_approvals(conversation_id)
+        return [r for r in rows if r.call_id in waiting]
 
     async def wait_idle(self, conversation_id: uuid.UUID) -> None:
         task = self._running.get(conversation_id)
@@ -113,9 +149,16 @@ class ConversationService:
         self, info: ConversationInfo, prompt: list[Message], *, first_new: int
     ) -> AsyncGenerator[ServiceEvent]:
         queue: asyncio.Queue[ServiceEvent | object] = asyncio.Queue()
-        task = asyncio.create_task(self._drive(info, prompt, first_new, queue))
+        stop = asyncio.Event()
+        task = asyncio.create_task(self._drive(info, prompt, first_new, queue, stop))
         self._running[info.id] = task
-        task.add_done_callback(lambda _: self._running.pop(info.id, None))
+        self._stops[info.id] = stop
+
+        def finished(_: asyncio.Task[None]) -> None:
+            self._running.pop(info.id, None)
+            self._stops.pop(info.id, None)
+
+        task.add_done_callback(finished)
         return _drain(queue)
 
     async def _drive(
@@ -124,6 +167,7 @@ class ConversationService:
         prompt: list[Message],
         first_new: int,
         queue: asyncio.Queue[ServiceEvent | object],
+        stop: asyncio.Event,
     ) -> None:
         try:
             decisions = await self.store.decisions(info.id)
@@ -138,6 +182,7 @@ class ConversationService:
                 override=info.brain,
                 affinity=str(info.id),
                 max_steps=self._max_steps,
+                stop=stop,
             ):
                 if isinstance(event, TurnDone):
                     # Persist before telling the client the turn is done.

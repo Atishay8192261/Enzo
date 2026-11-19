@@ -39,11 +39,30 @@ class NewConversation(_In):
     title: str | None = Field(default=None, max_length=200)
 
 
+class ApprovalOut(BaseModel):
+    """An approval card, as the live ``approval_needed`` event shows it."""
+
+    id: str
+    tool: str
+    arguments: dict[str, Any]
+    summary: str | None
+    detail: str | None
+
+
 class ConversationOut(BaseModel):
     id: uuid.UUID
     kind: str
     title: str | None
     brain: str | None
+    #: Cards still waiting for the user, so a reopened app shows them (#39).
+    pending_approvals: list[ApprovalOut] = Field(default_factory=list)
+    #: A reply is being written right now (another window, or one that lost its stream).
+    running: bool = False
+
+
+class StopOut(BaseModel):
+    #: False: no reply was running, so there was nothing to stop.
+    stopping: bool
 
 
 class BrainChoice(_In):
@@ -72,7 +91,26 @@ def conversation_routes(auth: params.Depends) -> APIRouter:
     @router.get("/{conversation_id}")
     async def get_conversation(conversation_id: uuid.UUID, s: ServiceDep) -> ConversationOut:
         info = await _require(s, conversation_id)
-        return ConversationOut(id=info.id, kind=info.kind, title=info.title, brain=info.brain)
+        pending = await s.pending_approvals(conversation_id)
+        return ConversationOut(
+            id=info.id,
+            kind=info.kind,
+            title=info.title,
+            brain=info.brain,
+            pending_approvals=[
+                ApprovalOut(
+                    id=r.id, tool=r.tool, arguments=r.arguments, summary=r.summary, detail=r.detail
+                )
+                for r in pending
+            ],
+            running=s.running(conversation_id),
+        )
+
+    @router.post("/{conversation_id}/stop")
+    async def stop(conversation_id: uuid.UUID, s: ServiceDep) -> StopOut:
+        """Stop the reply being written (#46). What already streamed is kept."""
+        await _require(s, conversation_id)
+        return StopOut(stopping=s.stop(conversation_id))
 
     @router.put("/{conversation_id}/brain", status_code=204)
     async def choose_brain(conversation_id: uuid.UUID, body: BrainChoice, s: ServiceDep) -> None:
@@ -149,7 +187,9 @@ async def _guard(
     except ConversationNotFoundError as exc:
         raise HTTPException(404, "conversation not found") from exc
     except TurnInProgressError as exc:
-        raise HTTPException(409, "a turn is already running in this conversation") from exc
+        raise HTTPException(
+            409, "Enzo is still finishing the last reply in this chat. Stop it, or wait."
+        ) from exc
     return stream
 
 
