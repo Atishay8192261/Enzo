@@ -1,124 +1,464 @@
+/* Enzo web: a calm, personal assistant. Tokens first; dark mode redefines them. */
 :root {
-  color-scheme: light dark;
-  --bg: #fafaf9;
-  --fg: #1c1917;
-  --muted: #78716c;
-  --user: #e7e5e4;
-  --card: #fff7ed;
-  --accent: #c2410c;
-  font-family: system-ui, sans-serif;
+  color-scheme: light;
+  --bg: #f7f6f3;
+  --surface: #ffffff;
+  --surface-2: #efede8;
+  --fg: #1d1c1a;
+  --muted: #6f6b64;
+  --line: #e3e0d9;
+  --accent: #3d5afe;
+  --accent-soft: #e8ecff;
+  --accent-fg: #ffffff;
+  --warn: #b45309;
+  --warn-soft: #fff4e5;
+  --error: #b91c1c;
+  --shadow: 0 1px 2px rgb(0 0 0 / 5%), 0 8px 24px rgb(0 0 0 / 6%);
+  --radius: 14px;
+  --font: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #1c1917;
-    --fg: #f5f5f4;
-    --muted: #a8a29e;
-    --user: #292524;
-    --card: #431407;
-    --accent: #fb923c;
+    color-scheme: dark;
+    --bg: #141413;
+    --surface: #1d1c1b;
+    --surface-2: #262523;
+    --fg: #ecebe7;
+    --muted: #a19d95;
+    --line: #34322f;
+    --accent: #8c9eff;
+    --accent-soft: #23284a;
+    --accent-fg: #0f1020;
+    --warn: #fbbf24;
+    --warn-soft: #2d2412;
+    --error: #f87171;
+    --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 8px 24px rgb(0 0 0 / 35%);
   }
 }
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+html,
 body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
+  font: 15px / 1.6 var(--font);
+  -webkit-font-smoothing: antialiased;
 }
-.chat {
-  max-width: 46rem;
-  margin: 0 auto;
-  padding: 1rem;
+button,
+select,
+textarea,
+input {
+  font: inherit;
+  color: inherit;
+}
+a {
+  color: var(--accent);
+}
+.muted {
+  color: var(--muted);
+}
+.center {
+  text-align: center;
+}
+
+/* ---------- frame ---------- */
+.app {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
   min-height: 100dvh;
-  box-sizing: border-box;
 }
-header {
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: 1rem;
-  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
 }
-h1 {
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.brand h1 {
   margin: 0;
-  font-size: 1.4rem;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
 }
+.mark,
+.avatar {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, var(--accent), #9c6bff);
+  color: #fff;
+  font-weight: 700;
+  font-size: 14px;
+  flex: none;
+}
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.actions select {
+  max-width: 15rem;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+/* ---------- buttons ---------- */
+button {
+  cursor: pointer;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 6px 12px;
+}
+button:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+button:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+input:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+button.ghost {
+  border-color: transparent;
+  background: transparent;
+}
+button.ghost:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+button.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 88%, black);
+}
+button.link {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* ---------- conversation ---------- */
+.conversation {
+  flex: 1;
+  width: 100%;
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 24px 16px 32px; /* the last message clears the composer */
+}
+.welcome {
+  margin: 10vh 0 24px;
+  text-align: center;
+}
+.welcome h2 {
+  margin: 0 0 4px;
+  font-size: clamp(26px, 5vw, 34px);
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.suggestions {
+  list-style: none;
+  padding: 0;
+  margin: 28px auto 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 10px;
+  max-width: 36rem;
+}
+.suggestions button {
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  border-color: transparent;
+}
+.connect-card {
+  margin: 28px auto 0;
+  max-width: 30rem;
+  padding: 18px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.connect-card p {
+  margin: 0 0 12px;
+}
+
 .items {
   list-style: none;
   padding: 0;
   margin: 0;
-  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 18px;
 }
 .items li {
-  padding: 0.6rem 0.8rem;
-  border-radius: 0.6rem;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.user {
+.items .user {
   align-self: flex-end;
-  background: var(--user);
+  max-width: 85%;
+  background: var(--surface-2);
+  padding: 10px 14px;
+  border-radius: 18px 18px 4px 18px;
 }
-.assistant {
-  align-self: flex-start;
-}
-.draft {
-  opacity: 0.85;
-}
-.notice {
-  color: var(--muted);
-  font-size: 0.9rem;
-}
-.approval {
-  background: var(--card);
-  border-left: 4px solid var(--accent);
-  padding: 0.75rem 1rem;
-  border-radius: 0.5rem;
-}
-.approval h2 {
-  margin: 0 0 0.5rem;
-  font-size: 1rem;
-}
-.approval pre {
-  overflow-x: auto;
-}
-.approval button {
-  margin-right: 0.5rem;
-}
-form {
+.items .assistant {
   display: flex;
-  gap: 0.5rem;
-  align-items: center;
-  position: sticky;
-  bottom: 0;
-  background: var(--bg);
-  padding-block: 0.5rem;
+  gap: 12px;
+  align-items: flex-start;
 }
-input {
+.items .assistant .body {
   flex: 1;
   min-width: 0;
-  padding: 0.6rem;
-  font: inherit;
+  padding-top: 2px;
 }
-small {
+.items .draft .body::after {
+  content: "▍";
+  margin-left: 1px;
   color: var(--muted);
+  animation: blink 1s steps(2) infinite;
 }
-.accounts-toggle summary {
+.items .notice {
+  color: var(--muted);
+  font-size: 14px;
+  padding-left: 40px;
+}
+.by {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.dots {
+  display: inline-block;
+  width: 24px;
+  height: 8px;
+  background: radial-gradient(circle, var(--muted) 3px, transparent 3.5px) 0 0 / 8px 8px repeat-x;
+  animation: pulse 1.2s ease-in-out infinite;
+  vertical-align: middle;
+}
+@keyframes blink {
+  to {
+    visibility: hidden;
+  }
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dots,
+  .items .draft .body::after {
+    animation: none;
+  }
+}
+
+.banner {
+  margin: 16px 0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+.banner.error {
+  color: var(--error);
+}
+
+/* ---------- approval ---------- */
+.approval {
+  margin: 18px 0 0 40px;
+  padding: 16px;
+  border-radius: var(--radius);
+  background: var(--warn-soft);
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+}
+.approval h2 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--warn);
+}
+.approval .summary {
+  margin: 0 0 12px;
+  font-weight: 600;
+  font-size: 16px;
+}
+.approval .label {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.approval pre {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface);
+  font: 12.5px / 1.5 var(--mono);
+  overflow: auto;
+  max-height: 20rem;
+}
+.approval-detail summary {
   cursor: pointer;
   color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 6px;
 }
-.accounts {
-  border: 1px solid var(--user);
-  border-radius: 0.5rem;
-  padding: 0.75rem;
+.approval .buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+/* ---------- composer ---------- */
+.dock {
+  position: sticky;
+  bottom: 0;
+  padding: 8px 16px 14px;
+  background: linear-gradient(to top, var(--bg) 70%, transparent);
+}
+.composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 8px 8px 8px 16px;
+  border-radius: 22px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+.composer textarea {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  padding: 7px 0;
+  max-height: 12rem;
+  field-sizing: content;
+}
+.composer textarea:focus-visible {
+  outline: none;
+}
+.composer:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+}
+.send {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  border: 0;
+  background: var(--fg);
+  color: var(--bg);
+  font-size: 18px;
+  font-weight: 700;
+  flex: none;
+}
+.send:hover:not(:disabled) {
+  background: var(--fg);
+  opacity: 0.85;
+}
+.meta {
+  display: block;
+  max-width: 46rem;
+  margin: 6px auto 0;
+  padding-left: 16px;
+  color: var(--muted);
+  font-size: 12px;
+  min-height: 1em;
+}
+
+/* ---------- accounts panel ---------- */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  justify-content: flex-end;
+}
+.backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  border-radius: 0;
+  background: rgb(0 0 0 / 35%);
+}
+.backdrop:hover:not(:disabled) {
+  background: rgb(0 0 0 / 35%);
+}
+.panel {
+  position: relative;
+  width: min(30rem, 100%);
+  height: 100%;
+  overflow: auto;
+  padding: 20px 16px;
+  background: var(--bg);
+  box-shadow: var(--shadow);
+}
+.panel .close {
+  position: absolute;
+  top: 14px;
+  right: 12px;
 }
 .accounts h2 {
-  margin: 0 0 0.25rem;
-  font-size: 1rem;
+  margin: 0 0 4px;
+  font-size: 18px;
+}
+.accounts > p {
+  margin: 0 0 16px;
+  font-size: 14px;
+}
+.accounts [role="status"],
+.accounts [role="alert"] {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 14px;
+}
+.accounts [role="alert"] {
+  color: var(--error);
 }
 .accounts ul {
   list-style: none;
@@ -126,35 +466,111 @@ small {
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 10px;
 }
-.accounts li small {
+.account {
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+.account-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.pill {
+  font-size: 12px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
   color: var(--muted);
-  overflow-wrap: anywhere;
 }
-.accounts form {
-  position: static;
-  padding-block: 0;
-  background: none;
-  margin-top: 0.25rem;
-}
-.accounts form input {
-  flex: 1;
-  min-width: 0;
-}
-.accounts [role="alert"] {
+.account.on .pill {
+  background: var(--accent-soft);
   color: var(--accent);
 }
-.accounts li button {
-  margin-left: 0.25rem;
-}
-.by {
+.account small {
   display: block;
-  margin-top: 0.25rem;
-  font-size: 0.75rem;
+  color: var(--muted);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+  margin: 2px 0 8px;
 }
-.approval-detail pre {
-  max-height: 20rem;
-  overflow: auto;
-  font-size: 0.8rem;
+.account-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+}
+.account form {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.account form input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+}
+/* OpenAI's guidelines: a black "Continue with ChatGPT" button (white on dark backgrounds). */
+button.chatgpt {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 999px;
+  border: 0;
+  background: #000;
+  color: #fff;
+  font-weight: 600;
+}
+button.chatgpt:hover:not(:disabled) {
+  background: #222;
+}
+@media (prefers-color-scheme: dark) {
+  button.chatgpt {
+    background: #fff;
+    color: #000;
+  }
+  button.chatgpt:hover:not(:disabled) {
+    background: #e8e8e8;
+  }
+}
+
+/* ---------- small screens ---------- */
+@media (max-width: 560px) {
+  .topbar {
+    padding: 8px 12px;
+    gap: 8px;
+  }
+  .actions {
+    flex-wrap: nowrap;
+    gap: 2px;
+  }
+  .actions select {
+    max-width: 8.5rem;
+    padding: 5px 8px;
+  }
+  .actions button {
+    padding: 6px 8px;
+    white-space: nowrap;
+  }
+  .brand h1 {
+    display: none;
+  }
+  .approval {
+    margin-left: 0;
+  }
+  .items .notice {
+    padding-left: 0;
+  }
+}
+
+/* Scrolling to the newest message leaves room for the composer docked over the bottom. */
+.end {
+  scroll-margin-bottom: 120px;
 }

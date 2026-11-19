@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { describeApproval, formatCost, initialState, reduce, toItems } from "./chat.ts";
+import {
+  type ChatState,
+  describeApproval,
+  formatCost,
+  initialState,
+  reduce,
+  toItems,
+} from "./chat.ts";
 
 const ready = reduce(initialState, {
   type: "connected",
@@ -82,6 +89,35 @@ describe("chat reducer", () => {
       { role: "assistant", text: "I'll tidy that up.", by: "gpt-sol" },
       { role: "notice", text: "Waiting for your approval." },
     ]);
+  });
+
+  it("a new conversation carries nothing over from the old one", () => {
+    const busy: ChatState = {
+      ...initialState,
+      status: "ready",
+      items: [{ role: "user", text: "old" }],
+      draft: "half",
+      working: 1,
+      approvals: [{ id: "a1", tool: "t", arguments: {}, summary: null, detail: null }],
+      lastCost: 0.5,
+      lastPlan: true,
+    };
+    const fresh = reduce(busy, {
+      type: "connected",
+      conversationId: "c2",
+      brains: [],
+      brain: null,
+      items: [],
+    });
+    expect(fresh).toMatchObject({
+      conversationId: "c2",
+      items: [],
+      draft: "",
+      working: 0,
+      approvals: [],
+      lastCost: undefined,
+      lastPlan: false,
+    });
   });
 
   it("tracks running tools without naming them in the chat", () => {

@@ -219,6 +219,7 @@ describe("App", () => {
       },
     ];
     render(<App client={fakeClient({ brains, connections })} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Accounts" }));
     fireEvent.change(await screen.findByLabelText("xai API key"), {
       target: { value: "fake-xai-000000000000" },
     });
@@ -248,10 +249,52 @@ describe("App", () => {
     await screen.findByText(/No model account is connected yet/);
     expect(screen.queryByText(/\/login/)).toBeNull();
     expect(screen.getByText("no charge")).toBeDefined();
-    const accounts = screen.getByText("Accounts", { selector: "summary" }).closest("details");
-    expect(accounts?.open).toBe(false);
+    expect(screen.queryByRole("dialog", { name: "Accounts" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Open Accounts" }));
-    expect(accounts?.open).toBe(true);
+    expect(screen.getByRole("dialog", { name: "Accounts" })).toBeDefined();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Accounts" })).toBeNull();
+  });
+
+  it("sends with Enter, keeps Shift+Enter for a new line", async () => {
+    const send = vi.fn((_id: string, _text: string) => events());
+    render(<App client={fakeClient({ send })} />);
+    const box = await screen.findByLabelText("Message");
+    fireEvent.change(box, { target: { value: "line one" } });
+    fireEvent.keyDown(box, { key: "Enter", shiftKey: true });
+    expect(send).not.toHaveBeenCalled();
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0]?.[1]).toBe("line one");
+  });
+
+  it("starts a new chat, leaving the old one saved", async () => {
+    let n = 0;
+    const createConversation = vi.fn(async () => ({ ...CONVERSATION, id: `c${++n}` }));
+    const messages = async (): Promise<StoredMessage[]> => [
+      { role: "user", parts: [{ type: "text", text: "earlier question" }] },
+    ];
+    render(<App client={fakeClient({ createConversation, messages })} />);
+    expect(await screen.findByText("earlier question")).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "New chat" }));
+    await waitFor(() => expect(screen.queryByText("earlier question")).toBeNull());
+    expect(await screen.findByRole("region", { name: "Welcome" })).toBeDefined();
+    expect(createConversation).toHaveBeenCalled();
+    expect(localStorage.getItem("enzo.conversation")).toBe(`c${n}`); // reopening finds the new one
+  });
+
+  it("welcomes with suggestions, or a way to connect when nothing is", async () => {
+    render(<App client={fakeClient()} />);
+    const suggestion = await screen.findByRole("button", { name: "What's in the news today?" });
+    fireEvent.click(suggestion);
+    expect(screen.getByLabelText<HTMLTextAreaElement>("Message").value).toBe(
+      "What's in the news today?",
+    );
+    cleanup();
+    const offline = BRAINS.map((b) => ({ ...b, available: false }));
+    render(<App client={fakeClient({ brains: async () => offline })} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Connect an account" }));
+    expect(screen.getByRole("dialog", { name: "Accounts" })).toBeDefined();
   });
 
   it("says plainly when the gateway is down", async () => {

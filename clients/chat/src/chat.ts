@@ -89,6 +89,7 @@ const STOP_NOTICES: Record<string, string> = {
 export function reduce(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case "connected":
+      // Also how a new chat starts: nothing from the previous conversation carries over.
       return {
         ...state,
         status: "ready",
@@ -97,6 +98,11 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
         brains: action.brains,
         brain: action.brain,
         items: action.items,
+        draft: "",
+        working: 0,
+        approvals: [],
+        lastCost: undefined,
+        lastPlan: false,
       };
     case "offline":
       return { ...state, status: "offline", error: action.error, draft: "", working: 0 };
