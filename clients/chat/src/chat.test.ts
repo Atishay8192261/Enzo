@@ -60,6 +60,30 @@ describe("chat reducer", () => {
     expect([s.lastCost, s.lastPlan]).toEqual([0, true]);
   });
 
+  it("keeps Enzo's words written before an approval is needed", () => {
+    let s = reduce(initialState, { type: "user_sent", text: "delete old notes" });
+    s = reduce(s, { type: "event", event: { type: "text", text: "I'll tidy that up." } });
+    s = reduce(s, {
+      type: "event",
+      event: {
+        type: "done",
+        stop: "approval_pending",
+        text: "Waiting for your approval: delete_file.",
+        steps: 1,
+        cost_usd: 0,
+        brain: "gpt-sol",
+        model: "gpt-6.2-sol",
+        failure: null,
+        plan: false,
+      },
+    });
+    expect(s.items).toEqual([
+      { role: "user", text: "delete old notes" },
+      { role: "assistant", text: "I'll tidy that up.", by: "gpt-sol" },
+      { role: "notice", text: "Waiting for your approval." },
+    ]);
+  });
+
   it("tracks running tools without naming them in the chat", () => {
     let s = reduce(ready, {
       type: "event",
