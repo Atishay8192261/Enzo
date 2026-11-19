@@ -71,7 +71,11 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
 - **Which model answered.** Every live reply shows the model that wrote it (terminal: `· name` after
   the reply; web: small text under it). Replies loaded from history don't show it yet.
 - **Approvals.** A risky action (deleting a file, merging a pull request) waits for an approval card
-  in plain words, with the exact arguments and, for merges, the diff.
+  in plain words, with the exact arguments and, for merges, the diff. A card left open when the
+  app closed comes back when it reopens. Each request needs its own yes: approving "delete
+  plan.md" once never approves it again later.
+- **Stop.** Esc (terminal) or the Stop button (web) ends the reply being written, from any window.
+  The words already shown stay. A message sent while a reply runs is marked "(not sent)".
 - **Cost.** Shown after each reply, or "cost unknown" when a provider publishes no price. With a
   ChatGPT sign-in: "Using ChatGPT plan" and a Manage usage link.
 
@@ -170,7 +174,18 @@ For each journey:
 9. **Failures.**
    - Stop the gateway while an app is open. Expect a plain "Gateway unreachable" message.
    - Disconnect a provider with `/logout`, then send a message to a conversation that used it.
-   - Turn Wi-Fi off mid-reply.
+   - **Wi-Fi off mid-reply (#46 retest):** ask for a long story, turn Wi-Fi off once words
+     stream.
+     - Within about 30 s the reply should end with "The reply was cut off (lost the connection to
+       the model)", and the words already shown stay.
+     - Turn Wi-Fi back on and send again: it must answer at once. A 409, or a 10-minute lock, is
+       the bug coming back.
+     - While a reply runs, open a second terminal on the same chat. It says "still finishing a
+       reply… Esc stops it". Esc there stops it.
+   - **Close during an approval (#39 retest):** ask Enzo to delete a file and quit at the card.
+     - Reopen: the card is back. `y` or `n` works, and so does typing a new message instead
+       ("Not approved: … (you sent a new message)").
+     - The chat must keep working afterwards, with no "No tool output found".
    - Every failure must be explained honestly. Nothing may be invented.
 10. **Tools.** Ask things that need them, and judge the answers.
    - "What's the weather/news/price of X today?" Expect a web search, with sources cited.
