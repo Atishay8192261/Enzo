@@ -151,7 +151,17 @@ function onEvent(state: ChatState, event: AgentEvent): ChatState {
           ...(event.failure ? { failure: event.failure } : {}),
         });
       }
-      if (notice) items.push({ role: "notice", text: notice });
+      if (notice) {
+        // The canned stop text replaces nothing Enzo wrote: words streamed before an approval stay.
+        if (state.draft.trim()) {
+          items.push({
+            role: "assistant",
+            text: state.draft,
+            ...(event.brain ? { by: event.brain } : {}),
+          });
+        }
+        items.push({ role: "notice", text: notice });
+      }
       return {
         ...state,
         status: "ready",
