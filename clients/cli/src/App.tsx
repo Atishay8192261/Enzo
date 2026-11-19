@@ -4,10 +4,12 @@ import {
   type ConversationMemory,
   describeApproval,
   formatCost,
+  signInWithChatGPT,
   useChat,
 } from "@enzo/chat";
 import { useKeyboard } from "@opentui/react";
 import { useRef, useState } from "react";
+import { openInBrowser } from "./browser.ts";
 import { type CommandContext, type Reply, runCommand } from "./commands.ts";
 import { KeyPrompt } from "./KeyPrompt.tsx";
 
@@ -17,10 +19,13 @@ export function App({
   client,
   memory,
   onQuit,
+  openUrl = openInBrowser,
 }: {
   client: ChatClient & AccountsClient;
   memory: ConversationMemory;
   onQuit: () => void;
+  /** Opens sign-in pages; tests pass a fake. */
+  openUrl?: (url: string) => Promise<void>;
 }) {
   const { state, send, decide, chooseBrain } = useChat(client, memory, "cli");
   const [reply, setReply] = useState<Reply>(null);
@@ -31,11 +36,27 @@ export function App({
   const approval = state.approvals[0];
   const typing = state.status === "ready" && !approval;
 
+  const chatGPT = async (newAccount: boolean): Promise<Reply> => {
+    setReply("Opening your browser to sign in with ChatGPT…");
+    const result = await signInWithChatGPT(client, {
+      newAccount,
+      open: openUrl,
+      waiting: (url) =>
+        // The link gets its own line: a terminal must never wrap it, or a click opens half of it.
+        setReply(
+          `Finish signing in with ChatGPT in your browser. If no page opened, go to:\n${url}`,
+        ),
+    });
+    if (!result.ok) return { text: result.text, error: true };
+    return result.usageUrl ? `${result.text} Manage usage: ${result.usageUrl}` : result.text;
+  };
+
   const context: CommandContext = {
     client,
     current: state.brain,
     chooseBrain,
     startLogin: setLogin,
+    signInWithChatGPT: chatGPT,
     quit: onQuit,
   };
 
@@ -134,7 +155,12 @@ export function App({
           <input key={inputKey} focused={typing} placeholder="Type a message" onSubmit={submit} />
         </box>
       )}
-      {state.lastCost !== undefined ? <text fg={DIM}>{formatCost(state.lastCost)}</text> : null}
+      {state.lastCost !== undefined ? (
+        <text fg={DIM}>
+          {formatCost(state.lastCost, state.lastPlan)}
+          {state.lastPlan ? " · manage usage: chatgpt.com/settings/usage" : ""}
+        </text>
+      ) : null}
     </box>
   );
 }

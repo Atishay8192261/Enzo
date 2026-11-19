@@ -46,6 +46,29 @@ export interface ProviderConnection {
   /** Service accounts (e.g. web search) unlock tools instead of models. */
   tools: string[];
   purpose: string | null;
+  /** Tells accounts apart, e.g. the email of the ChatGPT account that is signed in. */
+  label: string | null;
+}
+
+/** A Sign in with ChatGPT attempt: open `url` in the browser, then poll by `login_id`. */
+export interface ChatGPTSignInStart {
+  login_id: string;
+  /** A local address on the gateway that forwards to OpenAI's sign-in page. */
+  url: string;
+}
+
+export interface ChatGPTSignInStatus {
+  status: "pending" | "connected" | "failed";
+  message: string | null;
+  /** The first sign-in on this computer: say once that replies now use the plan. */
+  first_time: boolean;
+  /** Where the user reviews and limits what Enzo uses of their ChatGPT plan. */
+  usage_url: string;
+}
+
+export interface Disconnected {
+  /** For a sign-in: whether the provider confirmed the session ended. Null for a key. */
+  remote_sign_out: "confirmed" | "not_confirmed" | null;
 }
 
 export interface ConnectionCheck {
@@ -134,8 +157,22 @@ export class GatewayClient {
     await this.#json("PUT", `/connections/${enc(provider)}`, { api_key: apiKey });
   }
 
-  async disconnect(provider: string): Promise<void> {
-    await this.#json("DELETE", `/connections/${enc(provider)}`);
+  disconnect(provider: string): Promise<Disconnected> {
+    return this.#json("DELETE", `/connections/${enc(provider)}`) as Promise<Disconnected>;
+  }
+
+  /** Start Sign in with ChatGPT; `newAccount` adds another ChatGPT account. */
+  startChatGPTSignIn(newAccount = false): Promise<ChatGPTSignInStart> {
+    return this.#json("POST", "/connections/openai/chatgpt", {
+      new_account: newAccount,
+    }) as Promise<ChatGPTSignInStart>;
+  }
+
+  chatGPTSignIn(loginId: string): Promise<ChatGPTSignInStatus> {
+    return this.#json(
+      "GET",
+      `/connections/openai/chatgpt/${enc(loginId)}`,
+    ) as Promise<ChatGPTSignInStatus>;
   }
 
   checkConnection(provider: string): Promise<ConnectionCheck> {

@@ -1,10 +1,19 @@
-import { type AccountsClient, methodName } from "@enzo/chat";
+import { type AccountsClient, CHATGPT_USAGE_URL, methodName, signInWithChatGPT } from "@enzo/chat";
 import type { ProviderConnection } from "@enzo/sdk";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 
 interface Notice {
   text: string;
   error?: boolean;
+  /** A link the notice points to, e.g. the sign-in page when no tab opened. */
+  link?: { href: string; label: string };
+}
+
+/** A tab opened inside the click (so it is not blocked), cut off from this page. */
+function blankTab(): Window | null {
+  const tab = window.open("about:blank", "_blank");
+  if (tab) tab.opener = null;
+  return tab;
 }
 
 const failure = (e: unknown): Notice => ({
@@ -37,6 +46,30 @@ export function Accounts({
     void refresh();
   }, [refresh]);
 
+  const continueWithChatGPT = (newAccount = false) => {
+    const tab = blankTab();
+    void run("openai", async () => {
+      const result = await signInWithChatGPT(client, {
+        newAccount,
+        open: (url) => {
+          if (tab) tab.location.href = url;
+          else throw new Error("no tab");
+        },
+        waiting: (url) =>
+          setNotice({
+            text: "Finish signing in with ChatGPT in the new tab.",
+            link: { href: url, label: "Open the sign-in page" },
+          }),
+      });
+      return result.ok
+        ? {
+            text: result.text,
+            link: { href: result.usageUrl ?? CHATGPT_USAGE_URL, label: "Manage usage" },
+          }
+        : { text: result.text, error: true };
+    });
+  };
+
   const run = async (provider: string, action: () => Promise<Notice>) => {
     setBusy(provider);
     try {
@@ -54,7 +87,19 @@ export function Accounts({
     <section className="accounts" aria-label="Accounts">
       <h2>Your accounts</h2>
       <p>Enzo uses your own model accounts. Keys are checked, then kept in the vault.</p>
-      {notice && <p role={notice.error ? "alert" : "status"}>{notice.text}</p>}
+      {notice && (
+        <p role={notice.error ? "alert" : "status"}>
+          {notice.text}
+          {notice.link && (
+            <>
+              {" "}
+              <a href={notice.link.href} target="_blank" rel="noopener noreferrer">
+                {notice.link.label}
+              </a>
+            </>
+          )}
+        </p>
+      )}
       {rows === null ? (
         <p role="status">Loading accounts…</p>
       ) : (
@@ -67,6 +112,7 @@ export function Accounts({
                 <span>
                   {" "}
                   Connected ({methodName(c.method)}
+                  {c.label ? `, ${c.label}` : ""}
                   {c.connected_at ? `, since ${c.connected_at.slice(0, 10)}` : ""}){" "}
                   <button
                     type="button"
@@ -75,7 +121,7 @@ export function Accounts({
                       void run(c.provider, async () => {
                         const r = await client.checkConnection(c.provider);
                         return r.ok
-                          ? { text: `${c.provider}: the key works.` }
+                          ? { text: `${c.provider}: the connection works.` }
                           : { text: `${c.provider}: ${r.detail}`, error: true };
                       })
                     }
@@ -87,25 +133,47 @@ export function Accounts({
                     disabled={busy !== null}
                     onClick={() =>
                       void run(c.provider, async () => {
-                        await client.disconnect(c.provider);
+                        const out = await client.disconnect(c.provider);
+                        if (out.remote_sign_out === "confirmed") {
+                          return { text: "Signed out of ChatGPT." };
+                        }
+                        if (out.remote_sign_out === "not_confirmed") {
+                          return {
+                            text: "Signed out here, but OpenAI did not confirm it. To be sure, remove Enzo in your ChatGPT settings.",
+                            error: true,
+                            link: { href: CHATGPT_USAGE_URL, label: "ChatGPT settings" },
+                          };
+                        }
                         return { text: `Disconnected ${c.provider}. Its key was deleted.` };
                       })
                     }
                   >
-                    Disconnect
+                    {c.method === "chatgpt" ? "Sign out" : "Disconnect"}
                   </button>
                 </span>
               ) : (
-                <KeyForm
-                  provider={c.provider}
-                  disabled={busy !== null}
-                  onSubmit={(key) =>
-                    run(c.provider, async () => {
-                      await client.connect(c.provider, key);
-                      return { text: `Connected ${c.provider}.` };
-                    })
-                  }
-                />
+                <>
+                  {c.methods.includes("chatgpt") && (
+                    <button
+                      type="button"
+                      className="chatgpt"
+                      disabled={busy !== null}
+                      onClick={() => continueWithChatGPT()}
+                    >
+                      Continue with ChatGPT
+                    </button>
+                  )}
+                  <KeyForm
+                    provider={c.provider}
+                    disabled={busy !== null}
+                    onSubmit={(key) =>
+                      run(c.provider, async () => {
+                        await client.connect(c.provider, key);
+                        return { text: `Connected ${c.provider}.` };
+                      })
+                    }
+                  />
+                </>
               )}
             </li>
           ))}

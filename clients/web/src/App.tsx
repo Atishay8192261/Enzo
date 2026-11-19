@@ -1,5 +1,6 @@
 import {
   type AccountsClient,
+  CHATGPT_USAGE_URL,
   type ChatClient,
   type ConversationMemory,
   describeApproval,
@@ -130,7 +131,17 @@ export function App({ client }: { client: ChatClient & AccountsClient }) {
         <button type="submit" disabled={busy || !text.trim()}>
           Send
         </button>
-        <small>{formatCost(state.lastCost)}</small>
+        <small>
+          {formatCost(state.lastCost, state.lastPlan)}
+          {state.lastPlan && (
+            <>
+              {" · "}
+              <a href={CHATGPT_USAGE_URL} target="_blank" rel="noopener noreferrer">
+                Manage usage
+              </a>
+            </>
+          )}
+        </small>
       </form>
     </main>
   );
