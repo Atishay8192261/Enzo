@@ -6,6 +6,7 @@ import os
 import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from importlib import resources
 from typing import Annotated, Literal
 
 import httpx2
@@ -13,7 +14,10 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from enzo import __version__
 from enzo.accounts.chatgpt import host_id
@@ -103,6 +107,8 @@ def create_app(
             await store.close()
 
     app = FastAPI(title="Enzo Gateway", version=__version__, lifespan=lifespan)
+    # The web app calls /api/…: in development Vite strips the prefix, here the gateway does.
+    app.add_middleware(StripApiPrefix)
     if service is not None:
         app.state.service = service  # available even when the ASGI server skips lifespan
     if accounts is not None:
@@ -142,10 +148,23 @@ def create_app(
     app.include_router(conversation_routes(auth))
     app.include_router(connection_routes(auth))
     app.include_router(chatgpt_routes(auth, cfg.port))
+    _finish(app, cfg)
+    return app
+
+
+def _finish(app: FastAPI, cfg: Settings) -> None:
+    """Log redaction, the host check, and the built-in web app."""
     access = logging.getLogger("uvicorn.access")
     if not any(isinstance(f, RedactAuthQuery) for f in access.filters):
         access.addFilter(RedactAuthQuery())
-    return app
+    if cfg.env != "test":
+        # Only local names reach the gateway: a web page that rebinds its own domain to 127.0.0.1
+        # (DNS rebinding) is refused instead of driving Enzo.
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(cfg.allowed_hosts))
+    web = resources.files("enzo") / "webapp"
+    if (web / "index.html").is_file():
+        # An installed Enzo serves its web app itself (#23): routes above win, the rest is the app.
+        app.mount("/", StaticFiles(directory=str(web), html=True), name="web")
 
 
 async def _invalid_request(_request: Request, exc: RequestValidationError) -> JSONResponse:
@@ -185,3 +204,17 @@ class Connectors:
         for task in list(self._tasks):
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
+
+
+class StripApiPrefix:
+    """``/api/brains`` is ``/brains``: the web app reaches the gateway the same way in development
+    (through Vite) and when the gateway serves it."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        path = scope.get("path", "")
+        if scope["type"] in ("http", "websocket") and (path == "/api" or path.startswith("/api/")):
+            scope = {**scope, "path": path[4:] or "/", "raw_path": None}
+        await self.app(scope, receive, send)

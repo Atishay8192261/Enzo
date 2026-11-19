@@ -2,4 +2,4 @@
 
 from importlib.metadata import version
 
-__version__ = version("enzo")
+__version__ = version("enzo-agent")

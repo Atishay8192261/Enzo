@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     #: Also use provider keys from environment variables (OPENAI_API_KEY, …). Off by default: a key
     #: in the shell must never be used, and billed, while the app says "not connected" (#24).
     use_env_keys: bool = False
+    #: Host names the gateway answers to (DNS-rebinding defence). Local only unless changed.
+    allowed_hosts: tuple[str, ...] = ("127.0.0.1", "localhost", "[::1]", "::1")
 
     @model_validator(mode="after")
     def _prod_requires_a_token(self) -> Self:
