@@ -1,0 +1,294 @@
+name: Release
+
+# A tag v<version> (matching server/pyproject.toml) releases Enzo:
+#   1. the terminal app is compiled for macOS and Linux, smoke-tested, and the macOS builds signed;
+#   2. the web app is built;
+#   3. the Python package `enzo-agent` is built with the web app inside and the SHA-256 of every
+#      terminal-app build pinned in it, then installed and checked on Linux and macOS;
+#   4. a GitHub release gets the terminal-app builds and install.sh;
+#   5. the package is published to PyPI by trusted publishing (no API token).
+# On pull requests that touch the release, steps 1-3 run as a rehearsal: nothing is published.
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - .github/release/**
+      - install.sh
+      - pnpm-workspace.yaml
+      - clients/cli/**
+      - server/pyproject.toml
+      - server/src/enzo/cli.py
+      - server/src/enzo/launcher.py
+      - server/src/enzo/tui.py
+      - server/src/enzo/bundled_db.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  version:
+    name: version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: read
+        name: Read the version (a tag must match it)
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' server/pyproject.toml | head -1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME}" != "v$version" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match server/pyproject.toml version $version"
+            exit 1
+          fi
+
+  tui:
+    name: terminal app (${{ matrix.target }})
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: darwin-arm64, runner: macos-14, run: native }
+          - { target: darwin-x64, runner: macos-14, run: rosetta }
+          - { target: linux-x64, runner: ubuntu-24.04, run: native }
+          - { target: linux-arm64, runner: ubuntu-24.04-arm, run: native }
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Compile
+        run: >
+          bun build --compile --minify --target=bun-${{ matrix.target }}
+          --define "ENZO_VERSION=\"$VERSION\""
+          clients/cli/src/bin.tsx --outfile dist/enzo-tui-${{ matrix.target }}
+      - name: Sign (macOS, ad hoc)
+        if: startsWith(matrix.target, 'darwin')
+        run: |
+          codesign --force --sign - dist/enzo-tui-${{ matrix.target }}
+          codesign --verify --verbose dist/enzo-tui-${{ matrix.target }}
+      - name: Smoke test (it draws its screen)
+        if: matrix.run == 'native'
+        run: python3 .github/release/smoke_tui.py dist/enzo-tui-${{ matrix.target }} "$VERSION"
+      - name: Smoke test under Rosetta
+        if: matrix.run == 'rosetta'
+        run: |
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then
+            arch -x86_64 python3 .github/release/smoke_tui.py dist/enzo-tui-${{ matrix.target }} "$VERSION"
+          else
+            echo "::warning::Rosetta is not available on this runner: darwin-x64 was built and signed but not run"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tui-${{ matrix.target }}
+          path: dist/enzo-tui-${{ matrix.target }}
+          if-no-files-found: error
+
+  web:
+    name: web app
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @enzo/web build
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web
+          path: clients/web/dist
+          if-no-files-found: error
+
+  package:
+    name: python package
+    needs: [version, tui, web]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: tui-*
+          path: dist/tui
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web
+          path: server/src/enzo/webapp
+      - name: Pin the terminal-app builds in the package
+        run: python3 .github/release/pin_tui.py dist/tui "$VERSION"
+      - name: Build
+        working-directory: server
+        run: uv build --out-dir ../dist/python
+      - name: Check what the wheel carries
+        run: |
+          wheel=$(ls dist/python/enzo_agent-"$VERSION"-py3-none-any.whl)
+          python3 - "$wheel" <<'PY'
+          import json, sys, zipfile
+          names = zipfile.ZipFile(sys.argv[1]).namelist()
+          for needed in ("enzo/_release.json", "enzo/webapp/index.html", "enzo/migrations/env.py", "enzo/brain/brains.toml"):
+              assert needed in names, f"{needed} missing from the wheel"
+          meta = json.loads(zipfile.ZipFile(sys.argv[1]).read("enzo/_release.json"))
+          assert sorted(meta["tui"]) == ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"], meta
+          print("wheel ok:", len(names), "files")
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: python
+          path: dist/python
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tui-all
+          path: dist/tui
+          if-no-files-found: error
+
+  rehearse:
+    name: install rehearsal (${{ matrix.os }})
+    needs: [version, package]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: python
+          path: dist/python
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tui-all
+          path: mirror/v${{ needs.version.outputs.version }}
+      - name: Install with install.sh, as a user would (from the built wheel)
+        run: ENZO_PACKAGE="$(ls "$PWD"/dist/python/enzo_agent-*.whl)" sh install.sh
+      - name: enzo doctor
+        run: |
+          bin=$(uv tool dir --bin)
+          export PATH="$bin:$PATH"
+          enzo --version | grep "enzo $VERSION"
+          ENZO_VAULT_KEY="$(enzo-server --new-vault-key)" enzo doctor
+      - name: First run fetches and verifies the terminal app (from a local mirror of the release)
+        run: |
+          bin=$(uv tool dir --bin)
+          export PATH="$bin:$PATH"
+          (cd mirror && python3 -m http.server 8899 --bind 127.0.0.1 >/dev/null 2>&1 &)
+          sleep 1
+          ENZO_RELEASE_BASE=http://127.0.0.1:8899 "$(uv tool dir)/enzo-agent/bin/python" - <<'PY'
+          import httpx2
+          from enzo import tui
+          from enzo.paths import data_dir
+          with httpx2.Client() as http:
+              print("terminal app ready:", tui.ensure(data_dir(), http, progress=print))
+          PY
+      - name: The launcher starts the gateway on the bundled Postgres and stops both
+        run: |
+          ENZO_VAULT_KEY="$("$(uv tool dir --bin)/enzo-server" --new-vault-key)" \
+          "$(uv tool dir)/enzo-agent/bin/python" - <<'PY'
+          import os, time, pathlib
+          from enzo import launcher
+          from enzo.paths import state_dir
+          state = state_dir()
+          gateway = launcher.attach(state, 8787)
+          assert launcher.health(8787)["version"] == os.environ["VERSION"], "wrong gateway"
+          launcher.release(state)
+          time.sleep(1)
+          assert launcher.health(8787) is None, "gateway still running after the last app closed"
+          print("launcher ok:", gateway.url)
+          PY
+
+  github-release:
+    name: GitHub release
+    if: github.ref_type == 'tag'
+    needs: [version, package, rehearse]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tui-all
+          path: dist/tui
+      - name: Create the release
+        run: |
+          cat > notes.md <<EOF
+          Install or update:
+
+          \`\`\`bash
+          curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/install.sh | sh
+          \`\`\`
+
+          Or with uv: \`uv tool install enzo-agent\`. Then run \`enzo\`.
+
+          The terminal-app builds below are fetched by \`enzo\` on first run and checked against
+          the SHA-256 pinned in the enzo-agent ${VERSION} package.
+          EOF
+          gh release create "v$VERSION" dist/tui/* install.sh \
+            --repo "$GITHUB_REPOSITORY" --title "Enzo $VERSION" --notes-file notes.md --verify-tag
+
+  pypi:
+    name: publish to PyPI
+    if: github.ref_type == 'tag'
+    needs: github-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/enzo-agent/
+    permissions:
+      id-token: write # trusted publishing: PyPI trusts this workflow, no API token exists
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: python
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
