@@ -1,8 +1,9 @@
-"""Approval gating keyed to the exact action (spec §3 step 5, §12.2, §12.3).
+"""Approval gating keyed to the exact action of one request (spec §3 step 5, §12.2, §12.3).
 
-An approval covers one tool with one exact set of arguments. If any argument changes, the id
-changes, so Enzo asks again. A claim of past consent is not consent: only a recorded decision for
-this id counts.
+An approval covers one tool call with one exact set of arguments. If any argument changes, the id
+changes, so Enzo asks again. The same action asked for again later is a new request with a new id:
+an earlier yes or no never decides it (ADR 0014). A claim of past consent is not consent: only a
+recorded decision for this id counts.
 """
 
 import hashlib
@@ -32,7 +33,9 @@ def approval_request(
     call: ToolCall, args: BaseModel, summary: str | None = None, detail: str | None = None
 ) -> ApprovalRequest:
     arguments = args.model_dump(mode="json")
-    canonical = json.dumps({"tool": call.name, "arguments": arguments}, sort_keys=True)
+    canonical = json.dumps(
+        {"call": call.id, "tool": call.name, "arguments": arguments}, sort_keys=True
+    )
     digest = hashlib.sha256(canonical.encode()).hexdigest()[:32]
     return ApprovalRequest(
         id=f"appr_{digest}",
