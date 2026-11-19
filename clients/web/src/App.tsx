@@ -55,7 +55,7 @@ function greeting(now = new Date()): string {
 }
 
 export function App({ client }: { client: ChatClient & AccountsClient }) {
-  const { state, send, decide, chooseBrain, refreshBrains, newChat } = useChat(
+  const { state, send, decide, chooseBrain, refreshBrains, newChat, stop } = useChat(
     client,
     browserMemory,
     "web",
@@ -181,6 +181,15 @@ export function App({ client }: { client: ChatClient & AccountsClient }) {
                 ) : (
                   item.text
                 )}
+                {item.unsent && <small className="unsent"> Not sent</small>}
+                {item.offer === "stop" && (
+                  <>
+                    {" "}
+                    <button type="button" className="link" onClick={() => void stop()}>
+                      Stop it
+                    </button>
+                  </>
+                )}
                 {item.by && <small className="by">{item.by}</small>}
               </div>
             </li>
@@ -248,9 +257,21 @@ export function App({ client }: { client: ChatClient & AccountsClient }) {
             onKeyDown={onKeyDown}
             disabled={state.status === "offline"}
           />
-          <button type="submit" className="send" aria-label="Send" disabled={busy || !text.trim()}>
-            ↑
-          </button>
+          {state.status === "streaming" ? (
+            // While Enzo writes, the send button becomes Stop (#46); what arrived stays.
+            <button type="button" className="send" aria-label="Stop" onClick={() => void stop()}>
+              ■
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="send"
+              aria-label="Send"
+              disabled={busy || !text.trim()}
+            >
+              ↑
+            </button>
+          )}
         </form>
         <small className="meta">
           {formatCost(state.lastCost, state.lastPlan)}

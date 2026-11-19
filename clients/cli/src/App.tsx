@@ -27,7 +27,7 @@ export function App({
   /** Opens sign-in pages; tests pass a fake. */
   openUrl?: (url: string) => Promise<void>;
 }) {
-  const { state, send, decide, chooseBrain, newChat } = useChat(client, memory, "cli");
+  const { state, send, decide, chooseBrain, newChat, stop } = useChat(client, memory, "cli");
   const [reply, setReply] = useState<Reply>(null);
   // Provider whose key is being entered at the hidden prompt.
   const [login, setLogin] = useState<string | null>(null);
@@ -76,10 +76,17 @@ export function App({
 
   // y / n answer the approval on screen; nothing else does. Read through a ref so the handler
   // always sees the latest state, whenever the renderer delivers the key.
-  const latest = useRef({ approval, ready: state.status === "ready", decide });
-  latest.current = { approval, ready: state.status === "ready", decide };
+  // Esc stops a reply being written, here or one an earlier session left running (#46).
+  const latest = useRef({ approval, ready: state.status === "ready", decide, stop, login });
+  latest.current = { approval, ready: state.status === "ready", decide, stop, login };
   useKeyboard((key) => {
     const now = latest.current;
+    if (key.name === "escape" && !now.login) {
+      void now.stop().then((stopping) => {
+        if (stopping) setReply("Stopping the reply…");
+      });
+      return;
+    }
     if (!now.approval || !now.ready) return;
     if (key.name === "y") void now.decide(now.approval.id, true);
     if (key.name === "n") void now.decide(now.approval.id, false);
@@ -113,6 +120,8 @@ export function App({
           {item.role === "user" ? <span fg="cyan">you: </span> : null}
           {item.role === "assistant" ? <span fg="green">enzo: </span> : null}
           {item.text}
+          {item.unsent ? <span fg="red"> (not sent)</span> : null}
+          {item.offer === "stop" ? <span fg="yellow"> Esc stops it.</span> : null}
           {item.by ? <span fg={DIM}> · {item.by}</span> : null}
         </text>
       ))}
@@ -151,7 +160,7 @@ export function App({
       ) : (
         <box
           border
-          title={state.status === "streaming" ? "Enzo is working…" : "Message Enzo"}
+          title={state.status === "streaming" ? "Enzo is working… · Esc to stop" : "Message Enzo"}
           height={3}
         >
           <input key={inputKey} focused={typing} placeholder="Type a message" onSubmit={submit} />

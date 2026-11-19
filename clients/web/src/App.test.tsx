@@ -1,5 +1,11 @@
 import type { AccountsClient, ChatClient } from "@enzo/chat";
-import type { AgentEvent, Brain, Conversation, StoredMessage } from "@enzo/sdk";
+import {
+  type AgentEvent,
+  type Brain,
+  type Conversation,
+  GatewayError,
+  type StoredMessage,
+} from "@enzo/sdk";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -65,6 +71,7 @@ function fakeClient(
     send: () => events(),
     resume: () => events(),
     decide: vi.fn(async () => {}),
+    stop: vi.fn(async () => false),
     ...overrides,
   };
 }
@@ -295,6 +302,57 @@ describe("App", () => {
     render(<App client={fakeClient({ brains: async () => offline })} />);
     fireEvent.click(await screen.findByRole("button", { name: "Connect an account" }));
     expect(screen.getByRole("dialog", { name: "Accounts" })).toBeDefined();
+  });
+
+  it("turns Send into Stop while Enzo writes, and keeps what arrived (#46)", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const stop = vi.fn(async () => {
+      release();
+      return true;
+    });
+    const send = () =>
+      (async function* () {
+        yield { type: "text" as const, text: "Once upon a time" };
+        await gate;
+        yield {
+          type: "done" as const,
+          stop: "cancelled" as const,
+          text: "Stopped at your request.",
+          steps: 0,
+          cost_usd: null,
+          brain: "claude-opus",
+          model: "m",
+          failure: null,
+          plan: false,
+        };
+      })();
+    render(<App client={fakeClient({ send, stop })} />);
+    fireEvent.change(await screen.findByLabelText("Message"), { target: { value: "a story" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
+    expect(stop).toHaveBeenCalledWith("c1");
+    expect(await screen.findByText("Stopped.")).toBeDefined();
+    expect(screen.getByText("Once upon a time")).toBeDefined();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDefined();
+  });
+
+  it("marks a refused message not sent and offers to stop the running reply (#46)", async () => {
+    const stop = vi.fn(async () => true);
+    const send = () =>
+      (async function* (): AsyncGenerator<AgentEvent> {
+        yield* [];
+        throw new GatewayError("/turns failed: HTTP 409: busy", 409);
+      })();
+    render(<App client={fakeClient({ send, stop })} />);
+    fireEvent.change(await screen.findByLabelText("Message"), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByText("Not sent")).toBeDefined();
+    expect(screen.queryByText(/409/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Stop it" }));
+    expect(stop).toHaveBeenCalledWith("c1");
   });
 
   it("says plainly when the gateway is down", async () => {
