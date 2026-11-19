@@ -91,6 +91,24 @@ describe("chat reducer", () => {
     ]);
   });
 
+  it("keeps a line saying what the user approved or declined", () => {
+    const asked: ChatState = {
+      ...initialState,
+      status: "ready",
+      approvals: [
+        { id: "a1", tool: "delete_file", arguments: {}, summary: "Delete plan.md", detail: null },
+        { id: "a2", tool: "send_email", arguments: {}, summary: null, detail: null },
+      ],
+    };
+    let s = reduce(asked, { type: "approval_decided", id: "a1", approved: true });
+    s = reduce(s, { type: "approval_decided", id: "a2", approved: false });
+    expect(s.items).toEqual([
+      { role: "notice", text: "Approved: Delete plan.md" },
+      { role: "notice", text: 'Declined: Run "send email"' },
+    ]);
+    expect(s.approvals).toEqual([]);
+  });
+
   it("a new conversation carries nothing over from the old one", () => {
     const busy: ChatState = {
       ...initialState,
@@ -164,7 +182,7 @@ describe("chat reducer", () => {
       { id: "appr_1", tool: "send_email", arguments: { to: "bob" }, summary: null, detail: null },
     ]);
     expect(s.items.at(-1)).toEqual({ role: "notice", text: "Waiting for your approval." });
-    s = reduce(s, { type: "approval_decided", id: "appr_1" });
+    s = reduce(s, { type: "approval_decided", id: "appr_1", approved: true });
     expect(s.approvals).toEqual([]);
   });
 

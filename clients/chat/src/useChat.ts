@@ -98,7 +98,7 @@ export function useChat(client: ChatClient, memory: ConversationMemory, device: 
       if (!id) return;
       try {
         await client.decide(id, approvalId, approved);
-        dispatch({ type: "approval_decided", id: approvalId });
+        dispatch({ type: "approval_decided", id: approvalId, approved });
         dispatch({ type: "resuming" });
         await pump(client.resume(id), dispatch);
       } catch (e: unknown) {
