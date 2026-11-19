@@ -1,7 +1,6 @@
 """Sign in with ChatGPT through the gateway: the browser round trip, then a reply the plan pays
 for, then signing out. Real app and Postgres; OpenAI's servers are fakes (ADR 0013)."""
 
-import functools
 import json
 import logging
 from pathlib import Path
@@ -52,10 +51,9 @@ def plan_app(
             200, headers={"content-type": "text/event-stream"}, content=sse(response([TEXT]))
         )
 
-    http = openai.DefaultAsyncHttpxClient(transport=httpx2.MockTransport(responses_api))
     monkeypatch.setattr(
-        "enzo.brain.factory.openai.AsyncOpenAI",
-        functools.partial(openai.AsyncOpenAI, http_client=http),
+        "enzo.brain.factory.brain_http_client",
+        lambda: openai.DefaultAsyncHttpxClient(transport=httpx2.MockTransport(responses_api)),
     )
     app = create_app(Settings(env="test", database_url=database_url), accounts=accounts)
     return app, fake, seen

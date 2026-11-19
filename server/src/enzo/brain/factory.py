@@ -12,6 +12,7 @@ from enzo.brain.adapters.openai_brain import OpenAIBrain
 from enzo.brain.config import BrainConfig
 from enzo.brain.errors import AuthError
 from enzo.brain.provider import BrainProvider
+from enzo.brain.transport import TIMEOUT, brain_http_client
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,7 +44,9 @@ def build_brain(
         return OpenAIBrain(
             model=cfg.model,
             # The SDK asks for the token before every request, so a renewed one is always used.
-            client=openai.AsyncOpenAI(api_key=key.access_token),
+            client=openai.AsyncOpenAI(
+                api_key=key.access_token, timeout=TIMEOUT, http_client=brain_http_client()
+            ),
             reasoning_effort=cfg.effort,
             forced_tool_choice=cfg.forced_tool_choice is not False,
             provider=cfg.provider_name,
@@ -52,13 +55,20 @@ def build_brain(
     if cfg.api == "anthropic":
         return AnthropicBrain(
             model=cfg.model,
-            client=anthropic.AsyncAnthropic(api_key=key, base_url=cfg.base_url),
+            client=anthropic.AsyncAnthropic(
+                api_key=key,
+                base_url=cfg.base_url,
+                timeout=TIMEOUT,
+                http_client=brain_http_client(),
+            ),
             effort=cast("Effort | None", cfg.effort),
             forced_tool_choice=bool(cfg.forced_tool_choice),
         )
     return OpenAIBrain(
         model=cfg.model,
-        client=openai.AsyncOpenAI(api_key=key, base_url=cfg.base_url),
+        client=openai.AsyncOpenAI(
+            api_key=key, base_url=cfg.base_url, timeout=TIMEOUT, http_client=brain_http_client()
+        ),
         reasoning_effort=cfg.effort,
         embedding_model=cfg.embedding_model,
         forced_tool_choice=cfg.forced_tool_choice is not False,
