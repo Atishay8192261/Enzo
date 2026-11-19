@@ -118,16 +118,34 @@ export function useChat(client: ChatClient, memory: ConversationMemory, device: 
     [client, state.conversationId],
   );
 
+  /** Start a new conversation; the old one stays saved on the gateway. */
+  const newChat = useCallback(async () => {
+    try {
+      const conversation = await client.createConversation("main");
+      memory.set(conversation.id);
+      dispatch({
+        type: "connected",
+        conversationId: conversation.id,
+        brains: state.brains,
+        brain: conversation.brain,
+        items: [],
+      });
+    } catch (e: unknown) {
+      dispatch({ type: "event", event: { type: "error", message: message(e) } });
+    }
+  }, [client, memory, state.brains]);
+
   /** Reload the catalog, e.g. after an account was connected and more models became available. */
   const refreshBrains = useCallback(async () => {
     dispatch({ type: "brains_loaded", brains: await client.brains() });
   }, [client]);
 
-  return { state, send, decide, chooseBrain, refreshBrains } satisfies {
+  return { state, send, decide, chooseBrain, refreshBrains, newChat } satisfies {
     state: ChatState;
     send: (text: string) => Promise<void>;
     decide: (id: string, approved: boolean) => Promise<void>;
     chooseBrain: (brain: string | null) => Promise<void>;
     refreshBrains: () => Promise<void>;
+    newChat: () => Promise<void>;
   };
 }

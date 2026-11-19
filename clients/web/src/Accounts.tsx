@@ -9,6 +9,16 @@ interface Notice {
   link?: { href: string; label: string };
 }
 
+/** How each company writes its own name. */
+const NAMES: Record<string, string> = {
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  xai: "xAI",
+  moonshot: "Moonshot",
+  tavily: "Tavily",
+  github: "GitHub",
+};
+
 /** A tab opened inside the click (so it is not blocked), cut off from this page. */
 function blankTab(): Window | null {
   const tab = window.open("about:blank", "_blank");
@@ -86,7 +96,10 @@ export function Accounts({
   return (
     <section className="accounts" aria-label="Accounts">
       <h2>Your accounts</h2>
-      <p>Enzo uses your own model accounts. Keys are checked, then kept in the vault.</p>
+      <p className="muted">
+        Enzo runs on your own model accounts: sign in with ChatGPT, or paste an API key. Keys are
+        checked, then kept in your computer's vault.
+      </p>
       {notice && (
         <p role={notice.error ? "alert" : "status"}>
           {notice.text}
@@ -105,11 +118,14 @@ export function Accounts({
       ) : (
         <ul>
           {rows.map((c) => (
-            <li key={c.provider}>
-              <strong>{c.provider}</strong>{" "}
+            <li key={c.provider} className={c.connected ? "account on" : "account"}>
+              <div className="account-head">
+                <strong>{NAMES[c.provider] ?? c.provider}</strong>
+                <span className="pill">{c.connected ? "Connected" : "Not connected"}</span>
+              </div>
               <small>{c.models.length > 0 ? c.models.join(", ") : c.purpose}</small>
               {c.connected ? (
-                <span>
+                <span className="account-state">
                   {" "}
                   Connected ({methodName(c.method)}
                   {c.label ? `, ${c.label}` : ""}
