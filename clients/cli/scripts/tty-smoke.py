@@ -65,6 +65,8 @@ def wait_for(text: str, timeout: float = 20) -> bool:
 
 
 results = {"prompt shown": wait_for("Message Enzo")}
+results["welcome says how to connect"] = wait_for("/login chatgpt")
+print("=== start screen ===\n" + "\n".join(line.rstrip() for line in term.display[:8]), flush=True)
 for ch in "hello enzo":  # fast, like a paste-happy human
     os.write(fd, ch.encode())
 os.write(fd, b"\r")

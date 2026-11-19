@@ -105,6 +105,7 @@ export function App({
         <strong>Enzo</strong>
         <span fg={DIM}> · model: {state.brain ?? "auto"} · /help for commands</span>
       </text>
+      {state.items.length === 0 && !state.draft ? <Welcome brains={state.brains} /> : null}
       {state.items.map((item, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: the transcript only ever appends
         <text key={i} {...(item.role === "notice" ? { fg: DIM } : {})}>
@@ -161,6 +162,26 @@ export function App({
           {state.lastPlan ? " · manage usage: chatgpt.com/settings/usage" : ""}
         </text>
       ) : null}
+    </box>
+  );
+}
+
+/** What a new chat shows: how to start, and how to connect when no model account is. */
+function Welcome({ brains }: { brains: { available: boolean }[] }) {
+  const connected = brains.some((b) => b.available);
+  return (
+    <box flexDirection="column" paddingTop={1} paddingBottom={1}>
+      <text>Hi, I'm Enzo, your personal agent. Type a message to start.</text>
+      {connected ? (
+        <text fg={DIM}>/model picks a model · /help lists every command</text>
+      ) : (
+        // Short lines: a command a user must type is never wrapped in half.
+        <box flexDirection="column">
+          <text fg="yellow">No model account is connected yet. Connect one:</text>
+          <text fg="yellow">· your ChatGPT plan, no key needed: /login chatgpt</text>
+          <text fg="yellow">· an API key: /login anthropic, openai, xai or moonshot</text>
+        </box>
+      )}
     </box>
   );
 }

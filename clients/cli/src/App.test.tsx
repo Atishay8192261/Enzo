@@ -416,6 +416,20 @@ describe("provider accounts", () => {
     expect(connect).not.toHaveBeenCalled();
   });
 
+  it("greets a new chat, and says how to connect when nothing is", async () => {
+    await using s = await screen(fakeClient());
+    const frame = await until(s, "Hi, I'm Enzo, your personal agent.");
+    expect(frame).toContain("/help lists every command");
+    expect(frame).not.toContain("No model account is connected yet");
+  });
+
+  it("points a new user to /login chatgpt when no account is connected", async () => {
+    const offline = BRAINS.map((b) => ({ ...b, available: false }));
+    await using s = await screen(fakeClient({ brains: async () => offline }));
+    const frame = await until(s, "No model account is connected yet");
+    expect(frame).toContain("/login chatgpt");
+  });
+
   it("signs in with ChatGPT in the browser and says the plan is in use", async () => {
     const opened: string[] = [];
     let polls = 0;
