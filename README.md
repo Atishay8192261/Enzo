@@ -10,6 +10,16 @@ a background runtime and a safety layer with approval gating. The LLM is a repla
 > [build checklist](docs/spec/ENZO_SPEC.md#17-build-verification-checklist--to-be-completed-during-build)
 > is checked with evidence.
 
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Atishay8192261/Enzo/main/install.sh | sh
+```
+
+Or `uv tool install enzo-agent`. Then run `enzo` (terminal), `enzo web` (browser), `enzo doctor` (check
+the installation) or `enzo update`. Python, the database and the terminal app come with it: nothing
+else to install. macOS and Linux; on Windows, use WSL. Releases: [docs/ops/release.md](docs/ops/release.md).
+
 ## Docs
 
 - [Specification](docs/spec/ENZO_SPEC.md) — the source of truth
@@ -28,7 +38,7 @@ clients/chat/  Chat state shared by web and terminal
 docs/          Spec and architecture decision records
 ```
 
-## Quickstart
+## Develop
 
 One command from a clone. It checks your tools, installs dependencies, creates the database,
 runs migrations, starts the gateway and opens the terminal app; quitting the app stops the gateway.

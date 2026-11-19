@@ -88,7 +88,27 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
   conversation.
 - No background jobs, no scheduled tasks, no deployment.
 
-## Setup and running (one command, issue #22)
+## Installing like a normal user (issue #23)
+
+Once a release exists (`https://github.com/Atishay8192261/Enzo/releases`), test the real install in
+a fresh account or after `uv tool uninstall enzo-agent`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Atishay8192261/Enzo/main/install.sh | sh
+```
+
+- Expect it to work with nothing pre-installed except curl. Note the time it took, and anything
+  confusing it printed.
+- `enzo doctor`: every line ✓ or ·. A ✗ always comes with a fix; check that the fix works.
+- `enzo`: the first run downloads the terminal app (about 100 MB), then opens it. Quit with `/quit`.
+  `enzo-tui`, `postgres` and `enzo.cli serve` must all be gone afterwards (`pgrep -fl enzo`).
+- `enzo web` opens the browser app; Ctrl+C stops it. Run `enzo` and `enzo web` together: closing
+  one keeps the other working.
+- Close the terminal window while `enzo` runs. Afterwards nothing of Enzo may keep running.
+- `enzo update` upgrades. Data lives in `~/.local/share/enzo` and `~/.config/enzo`, files in `~/Enzo`.
+- macOS: note any Gatekeeper ("unidentified developer") prompt. There should be none.
+
+## Setup and running from a clone (one command, issue #22)
 
 From `~/projects/enzo`:
 

@@ -60,7 +60,8 @@ Read this first in every session. It carries the context from earlier sessions.
 - `clients/sdk`: the only TS code that talks to the gateway. `clients/web`: React + Vite.
   `clients/cli`: OpenTUI 0.9.2 (pinned, pre-1.0) on Bun 1.4.4 (ADR 0008). `clients/chat`: shared chat state.
 - Biome (lint/format, Markdown excluded), TypeScript 7, Vitest. pnpm workspace.
-- Postgres 16 + pgvector for persistence (ADR 0005). No agent frameworks: brain adapters, loop, memory and
+- Package `enzo-agent` on PyPI (`import enzo`, command `enzo`); migrations live in `server/src/enzo/migrations`.
+- Postgres 16 + pgvector for persistence (ADR 0005); installed copies bundle it (`pixeltable-pgserver`, ADR 0016). No agent frameworks: brain adapters, loop, memory and
   safety are hand-built on official provider SDKs.
 
 ## Commands
@@ -171,6 +172,16 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
   `enzo.agent.history` closes calls the user moved on from and repairs older chats.
 - An approval id covers the call id too (ADR 0014): a decision never applies to a later request.
 - OpenTUI drops keys typed while the input is unfocused (during a reply or an approval card).
+- Uvicorn re-raises SIGTERM after shutting down: without a handler that exits normally, atexit hooks (the
+  bundled Postgres stop) never run (`enzo serve`). The launcher also catches SIGHUP/SIGTERM to release.
+- A child process that exited stays a zombie until reaped and still "exists" to `os.kill(pid, 0)`: use
+  psutil's status and `wait()` your own children (`enzo.launcher`).
+- uv_build puts files in the wheel even when git ignores them (`webapp/`, `_release.json` at release).
+- Background jobs from a non-interactive shell ignore SIGINT: test Ctrl+C in a pty, not with `&` + `pkill -INT`.
+- Running as root, pgserver runs Postgres as a `pgserver` system user: root-only failures there are not
+  user bugs. Creating test users is blocked in this sandbox; CI runners (non-root, Linux + macOS) cover it.
+- Pin actions by commit: `git ls-remote https://github.com/<owner>/<repo> refs/tags/<tag>^{}` (the API only
+  reaches this repo from cloud sessions).
 
 ## Brain providers and auth (verified 2026-11-17, details in ADR 0001)
 
@@ -219,6 +230,8 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
      `clients/cli/src/commands.ts`), web Model menu by tier, each live reply names its model
   4. [x] Sign in with ChatGPT (ADR 0013, `/login chatgpt`, web "Continue with ChatGPT"); live flow
      pending on the laptop (cloud blocks auth.openai.com)
-- [ ] Release automation (release PRs, CHANGELOG, tags)
+- [x] One-line install + release automation (#23, ADR 0016, `docs/ops/release.md`): `install.sh`, `enzo` launcher
+  (bundled Postgres, verified terminal-app download, web app served by the gateway), tag → Release workflow →
+  GitHub release + PyPI `enzo-agent` (trusted publishing). First release pending Atishay's PyPI publisher setup.
 - [x] GitHub connector: issue #2 (live write flow on a sandbox repo still to verify with a real token)
 - Then continue in the order of the spec §17 checklist.
