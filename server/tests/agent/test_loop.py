@@ -163,9 +163,20 @@ async def test_irreversible_tools_wait_for_approval_of_the_exact_call() -> None:
 def test_changed_content_needs_a_new_approval() -> None:
     a = approval_request(call("send_email", "hello bob"), Args(value="hello bob"))
     b = approval_request(call("send_email", "hello BOB"), Args(value="hello BOB"))
-    same = approval_request(call("send_email", "hello bob", "other-id"), Args(value="hello bob"))
+    again = approval_request(call("send_email", "hello bob"), Args(value="hello bob"))
+    later = approval_request(call("send_email", "hello bob", "other-id"), Args(value="hello bob"))
     assert a.id != b.id
-    assert a.id == same.id  # the same action and content is the same approval
+    assert a.id == again.id  # the same request, asked again on resume: the same approval
+    assert a.id != later.id  # the same action requested again later: a new approval (ADR 0014)
+
+
+async def test_an_earlier_yes_never_approves_the_same_action_requested_again() -> None:
+    first = call("send_email", "hello bob", "c1")
+    approved = approval_request(first, Args(value="hello bob"))
+    brain = ScriptedBrain([calls(call("send_email", "hello bob", "c2")), Message.assistant("x")])
+    _, out = await run(brain, t.registry(), decisions={approved.id: True})
+    assert out.stop == "approval_pending"  # asked again, not sent on last week's yes
+    assert t.ran == []
 
 
 async def test_an_approval_for_other_content_does_not_unlock_a_call() -> None:
