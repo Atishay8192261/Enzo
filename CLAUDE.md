@@ -162,6 +162,15 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
 - OpenTUI wraps long lines mid-word: put a link a user must click or copy on its own line.
 - Vite's dev server can keep serving an old `@enzo/chat` after edits: restart it with `--force` before
   judging a live web check.
+- Brain HTTP uses `enzo.brain.transport` (TCP keepalive, 300 s read, 15 s connect; ADR 0015). The SDK
+  defaults (600 s read) once locked a chat for 10 minutes (#46). Tests that fake a provider over HTTP
+  monkeypatch `enzo.brain.factory.brain_http_client`.
+- `asyncio.timeout` turns the cancellation into `TimeoutError` only when its block exits: catch it
+  outside the `async with` (see `_stoppable` in `agent/loop.py`).
+- Every tool call must be answered in the next message, or providers refuse the whole history (#39):
+  `enzo.agent.history` closes calls the user moved on from and repairs older chats.
+- An approval id covers the call id too (ADR 0014): a decision never applies to a later request.
+- OpenTUI drops keys typed while the input is unfocused (during a reply or an approval card).
 
 ## Brain providers and auth (verified 2026-11-17, details in ADR 0001)
 
