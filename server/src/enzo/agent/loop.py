@@ -11,10 +11,12 @@
 import asyncio
 from collections import Counter
 from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Literal
 
 from enzo.agent.approvals import ApprovalRequest, approval_request
+from enzo.agent.history import open_calls
 from enzo.brain.config import TaskKind
 from enzo.brain.errors import BrainError
 from enzo.brain.models import BrainResponse, Message, TextDelta, ToolCall, ToolSpec
@@ -136,7 +138,7 @@ async def run_turn(  # noqa: PLR0913 - keyword-only turn settings
     )
     decided = decisions or {}
     while True:
-        unanswered = _unanswered_calls(turn.messages)
+        unanswered = open_calls(turn.messages)
         if unanswered:
             gates = dict(
                 zip(
@@ -160,7 +162,7 @@ async def run_turn(  # noqa: PLR0913 - keyword-only turn settings
         if (halt := _halt(turn, stop, max_steps)) is not None:
             yield halt
             return
-        async for event in _ask_brain(ask, turn):
+        async for event in _ask_brain(ask, turn, stop):
             yield event
             if isinstance(event, TurnDone):
                 return
@@ -188,30 +190,50 @@ def _halt(turn: _Turn, stop: asyncio.Event | None, max_steps: int) -> TurnDone |
     return None
 
 
-async def _ask_brain(ask: _Ask, turn: _Turn) -> AsyncIterator[TextDelta | TurnDone]:
-    """Stream one brain reply into the turn; a failure ends the turn with an honest report."""
+async def _ask_brain(
+    ask: _Ask, turn: _Turn, stop: asyncio.Event | None
+) -> AsyncIterator[TextDelta | TurnDone]:
+    """Stream one brain reply into the turn; a failure ends the turn with an honest report.
+
+    What already streamed is never thrown away: if the reply breaks off (lost connection, Stop),
+    the part the user saw is kept in the conversation (#46).
+    """
     routed = None
+    partial: list[str] = []
     try:
-        async for event in ask.router.stream(
-            ask.task,
-            turn.messages,
-            tools=ask.specs,
-            max_output_tokens=ask.max_output_tokens,
-            override=ask.override,
-            affinity=ask.affinity,
-            budget_tokens=ask.budget_tokens,
-        ):
-            if isinstance(event, RoutedDone):
-                routed = event.routed
-            else:
-                yield event
+        async with _stoppable(stop):
+            async for event in ask.router.stream(
+                ask.task,
+                turn.messages,
+                tools=ask.specs,
+                max_output_tokens=ask.max_output_tokens,
+                override=ask.override,
+                affinity=ask.affinity,
+                budget_tokens=ask.budget_tokens,
+            ):
+                if isinstance(event, RoutedDone):
+                    routed = event.routed
+                else:
+                    partial.append(event.text)
+                    yield event
+    except _StoppedError:
+        _keep_partial(turn, partial)
+        yield turn.done("cancelled", "Stopped at your request.")
+        return
     except PromptOverBudgetError as exc:
         yield turn.done("over_budget", f"The conversation is too long for this task: {exc}.")
         return
     except (BrainError, AllBrainsFailedError) as exc:
         turn.brain_calls.extend(a for a in exc.attempts if isinstance(a, CallRecord))
         kind = exc.kind if isinstance(exc, BrainError) else "all_brains_failed"
-        yield turn.done("brain_failure", f"I could not get an answer: {exc}", failure=kind)
+        if _keep_partial(turn, partial):
+            text = (
+                f"The reply was cut off ({_why(exc)}). "
+                "The part above is kept; send again to continue."
+            )
+        else:
+            text = f"I could not get an answer: {exc}"
+        yield turn.done("brain_failure", text, failure=kind)
         return
     if routed is None:  # router.stream always ends in RoutedDone or raises; guard regardless
         yield turn.done("brain_failure", "I could not get an answer: no response.")
@@ -220,6 +242,55 @@ async def _ask_brain(ask: _Ask, turn: _Turn) -> AsyncIterator[TextDelta | TurnDo
     turn.brain_calls.extend(routed.attempts)
     turn.messages.append(routed.response.message)
     turn.last = routed.response
+
+
+class _StoppedError(Exception):
+    """The user pressed Stop while the brain was answering."""
+
+
+@asynccontextmanager
+async def _stoppable(stop: asyncio.Event | None) -> AsyncIterator[None]:
+    """Run the body until it ends or ``stop`` is set; then cancel it where it waits.
+
+    Built on ``asyncio.timeout``: the body keeps running in this task (an HTTP stream must be read
+    and closed by the task that opened it), and Stop just makes the deadline expire now.
+    """
+    if stop is None:
+        yield
+        return
+    try:
+        async with asyncio.timeout(None) as deadline:
+            watcher = asyncio.create_task(_expire_when_set(stop, deadline))
+            try:
+                yield
+            finally:
+                watcher.cancel()
+    except TimeoutError:  # the expired deadline turns the cancellation into this, on exit
+        if stop.is_set():
+            raise _StoppedError from None
+        raise
+
+
+async def _expire_when_set(stop: asyncio.Event, deadline: asyncio.Timeout) -> None:
+    await stop.wait()
+    deadline.reschedule(asyncio.get_running_loop().time())
+
+
+def _keep_partial(turn: _Turn, partial: Sequence[str]) -> bool:
+    """Keep the words that already reached the user as an assistant message. True if any."""
+    text = "".join(partial)
+    if not text.strip():
+        return False
+    turn.messages.append(Message.assistant(text))
+    return True
+
+
+def _why(exc: BrainError | AllBrainsFailedError) -> str:
+    kind = exc.kind if isinstance(exc, BrainError) else "all_brains_failed"
+    return {
+        "connection": "lost the connection to the model",
+        "timeout": "the model stopped answering",
+    }.get(kind, str(exc))
 
 
 def _judge_reply(turn: _Turn, registry: ToolRegistry) -> TurnDone | None:
@@ -242,13 +313,6 @@ def _judge_reply(turn: _Turn, registry: ToolRegistry) -> TurnDone | None:
     if not response.tool_calls:
         return turn.done("final_answer", response.text)
     return None
-
-
-def _unanswered_calls(messages: Sequence[Message]) -> tuple[ToolCall, ...]:
-    """Tool calls in the last assistant message that have no results yet."""
-    if not messages or messages[-1].role != "assistant":
-        return ()
-    return messages[-1].tool_calls
 
 
 @dataclass(frozen=True, slots=True)

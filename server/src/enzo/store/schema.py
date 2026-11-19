@@ -132,6 +132,11 @@ class ApprovalRow(Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     tool: Mapped[str] = mapped_column(Text)
     arguments: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    #: The tool call this approval is for, so an app reopened later shows the open card (#39).
+    call_id: Mapped[str | None] = mapped_column(Text)
+    #: What the card says: the action in plain words, and what it changes (e.g. a diff).
+    summary: Mapped[str | None] = mapped_column(Text)
+    detail: Mapped[str | None] = mapped_column(Text)
     #: NULL while waiting; set once, by the user.
     approved: Mapped[bool | None]
     requested_at: Mapped[datetime] = _created_at()

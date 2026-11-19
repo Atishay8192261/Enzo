@@ -12,6 +12,7 @@ Rules this module enforces:
 - every attempt, failed or not, becomes a ``CallRecord`` with tokens, latency and cost (or None).
 """
 
+import asyncio
 import hashlib
 import logging
 import time
@@ -351,6 +352,10 @@ class Router:
                         return
                 msg = "stream ended without a final response"
                 raise ProviderServerError(msg, provider=brain.provider, model=brain.model)
+            except asyncio.CancelledError:
+                # Stopped by the user (or the turn was cancelled): still an attempt on record.
+                self._record_cancelled(attempt)
+                raise
             except BrainError as exc:
                 attempts.append(self._record_error(attempt, exc))
                 # Fall back once, only on transient failures, and never after text reached the user.
@@ -416,6 +421,22 @@ class Router:
             latency_ms=(time.perf_counter() - attempt.started) * 1000,
             outcome=exc.kind,
             error=str(exc),
+            fallback_from=attempt.fallback_from,
+        )
+        self._emit(record)
+        return record
+
+    def _record_cancelled(self, attempt: _Attempt) -> CallRecord:
+        cfg = self._config.brains[attempt.brain]
+        record = CallRecord(
+            brain=attempt.brain,
+            provider=cfg.provider_name,
+            model=cfg.model,
+            task=attempt.task,
+            attempt=attempt.number,
+            started_at=attempt.started_at,
+            latency_ms=(time.perf_counter() - attempt.started) * 1000,
+            outcome="cancelled",
             fallback_from=attempt.fallback_from,
         )
         self._emit(record)
