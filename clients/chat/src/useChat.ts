@@ -1,4 +1,4 @@
-import type { AgentEvent, Brain } from "@enzo/sdk";
+import { type AgentEvent, type Brain, GatewayError } from "@enzo/sdk";
 import { type Dispatch, useCallback, useEffect, useReducer } from "react";
 import {
   type ChatAction,
@@ -6,6 +6,7 @@ import {
   type ChatItem,
   type ChatState,
   initialState,
+  type PendingApproval,
   reduce,
   toItems,
 } from "./chat.ts";
@@ -21,6 +22,8 @@ interface Connection {
   brains: Brain[];
   brain: string | null;
   items: ChatItem[];
+  approvals: PendingApproval[];
+  running: boolean;
 }
 
 /**
@@ -49,14 +52,59 @@ async function open(client: ChatClient, memory: ConversationMemory): Promise<Con
     memory.set(conversation.id);
   }
   const items = toItems(await client.messages(conversation.id));
-  return { conversationId: conversation.id, brains, brain: conversation.brain, items };
+  return {
+    conversationId: conversation.id,
+    brains,
+    brain: conversation.brain,
+    items,
+    // An approval left open when the app closed is shown again, so it can be answered (#39).
+    approvals: (conversation.pending_approvals ?? []).map(
+      ({ id, tool, summary, detail, ...rest }) => ({
+        id,
+        tool,
+        arguments: rest.arguments,
+        summary,
+        detail,
+      }),
+    ),
+    running: conversation.running ?? false,
+  };
 }
 
+/**
+ * Feed a turn's events to the chat. A message the gateway refused never reached Enzo: it is
+ * marked "not sent" (#46). A stream that ends without its last event lost the connection: the
+ * chat stops waiting and keeps what arrived.
+ */
 async function pump(
-  stream: AsyncIterable<AgentEvent>,
+  start: () => AsyncIterable<AgentEvent>,
   dispatch: Dispatch<ChatAction>,
+  { sending }: { sending: boolean },
 ): Promise<void> {
-  for await (const event of stream) dispatch({ type: "event", event });
+  let heard = false;
+  let finished = false;
+  try {
+    for await (const event of start()) {
+      heard = true;
+      if (event.type === "done" || event.type === "error") finished = true;
+      dispatch({ type: "event", event });
+    }
+  } catch (e: unknown) {
+    if (sending && !heard) {
+      const busy = e instanceof GatewayError && e.status === 409;
+      dispatch(
+        busy
+          ? { type: "unsent", reason: "busy" }
+          : { type: "unsent", reason: "failed", message: message(e) },
+      );
+      return;
+    }
+    if (!heard) {
+      dispatch({ type: "event", event: { type: "error", message: message(e) } });
+      return;
+    }
+  }
+  if (!finished) dispatch({ type: "stream_lost" });
 }
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -85,9 +133,7 @@ export function useChat(client: ChatClient, memory: ConversationMemory, device: 
       if (!id || !text.trim()) return;
       dispatch({ type: "user_sent", text });
       const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      await pump(client.send(id, text, { timezone, device }), dispatch).catch((e: unknown) =>
-        dispatch({ type: "event", event: { type: "error", message: message(e) } }),
-      );
+      await pump(() => client.send(id, text, { timezone, device }), dispatch, { sending: true });
     },
     [client, state.conversationId, device],
   );
@@ -100,7 +146,7 @@ export function useChat(client: ChatClient, memory: ConversationMemory, device: 
         await client.decide(id, approvalId, approved);
         dispatch({ type: "approval_decided", id: approvalId, approved });
         dispatch({ type: "resuming" });
-        await pump(client.resume(id), dispatch);
+        await pump(() => client.resume(id), dispatch, { sending: false });
       } catch (e: unknown) {
         dispatch({ type: "event", event: { type: "error", message: message(e) } });
       }
@@ -117,6 +163,18 @@ export function useChat(client: ChatClient, memory: ConversationMemory, device: 
     },
     [client, state.conversationId],
   );
+
+  /** Stop the reply being written (Esc in the terminal, Stop on the web). What arrived stays. */
+  const stop = useCallback(async (): Promise<boolean> => {
+    const id = state.conversationId;
+    if (!id) return false;
+    try {
+      return await client.stop(id);
+    } catch (e: unknown) {
+      dispatch({ type: "event", event: { type: "error", message: message(e) } });
+      return false;
+    }
+  }, [client, state.conversationId]);
 
   /** Start a new conversation; the old one stays saved on the gateway. */
   const newChat = useCallback(async () => {
@@ -140,12 +198,13 @@ export function useChat(client: ChatClient, memory: ConversationMemory, device: 
     dispatch({ type: "brains_loaded", brains: await client.brains() });
   }, [client]);
 
-  return { state, send, decide, chooseBrain, refreshBrains, newChat } satisfies {
+  return { state, send, decide, chooseBrain, refreshBrains, newChat, stop } satisfies {
     state: ChatState;
     send: (text: string) => Promise<void>;
     decide: (id: string, approved: boolean) => Promise<void>;
     chooseBrain: (brain: string | null) => Promise<void>;
     refreshBrains: () => Promise<void>;
     newChat: () => Promise<void>;
+    stop: () => Promise<boolean>;
   };
 }

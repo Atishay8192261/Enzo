@@ -12,6 +12,7 @@ export type ChatClient = Pick<
   | "send"
   | "resume"
   | "decide"
+  | "stop"
 >;
 
 export interface ChatItem {
@@ -21,6 +22,10 @@ export interface ChatItem {
   by?: string;
   /** For a notice about a failed turn: why, so each surface can say what to do. */
   failure?: string;
+  /** A message of the user's that the gateway did not accept (it never reached Enzo). */
+  unsent?: true;
+  /** A notice that should offer to stop the running reply (Esc in the terminal, a button on web). */
+  offer?: "stop";
 }
 
 export interface PendingApproval {
@@ -72,14 +77,40 @@ export type ChatAction =
       brains: Brain[];
       brain: string | null;
       items: ChatItem[];
+      /** Cards still open in this chat (a reopened app shows them, #39). */
+      approvals?: PendingApproval[];
+      /** A reply is still being written by an earlier session. */
+      running?: boolean;
     }
   | { type: "offline"; error: string }
+  | { type: "unsent"; reason: "busy" | "failed"; message?: string }
+  | { type: "stream_lost" }
   | { type: "user_sent"; text: string }
   | { type: "resuming" }
   | { type: "brain_chosen"; brain: string | null }
   | { type: "brains_loaded"; brains: Brain[] }
   | { type: "approval_decided"; id: string; approved: boolean }
   | { type: "event"; event: AgentEvent };
+
+/** Said when a message is refused because a reply is still being written (HTTP 409). */
+export const BUSY = "Not sent: Enzo is still finishing the last reply.";
+export const STILL_RUNNING = "Enzo is still finishing a reply in this chat.";
+export const LOST =
+  "Lost the connection to Enzo mid-reply. What arrived is kept above; send again to continue.";
+
+/** Words that streamed before a turn ended early are never thrown away (#46). */
+function keepDraft(
+  state: ChatState,
+  items: ChatItem[],
+  by?: string | null,
+  unless?: string,
+): ChatItem[] {
+  const draft = state.draft.trim();
+  if (draft && draft !== unless?.trim()) {
+    items.push({ role: "assistant", text: state.draft, ...(by ? { by } : {}) });
+  }
+  return items;
+}
 
 const STOP_NOTICES: Record<string, string> = {
   approval_pending: "Waiting for your approval.",
@@ -97,22 +128,53 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
         conversationId: action.conversationId,
         brains: action.brains,
         brain: action.brain,
-        items: action.items,
+        items: action.running
+          ? [...action.items, { role: "notice", text: STILL_RUNNING, offer: "stop" }]
+          : action.items,
         draft: "",
         working: 0,
-        approvals: [],
+        approvals: action.approvals ?? [],
         lastCost: undefined,
         lastPlan: false,
       };
     case "offline":
       return { ...state, status: "offline", error: action.error, draft: "", working: 0 };
-    case "user_sent":
+    case "user_sent": {
+      // Sending a message instead of answering a card means "not this": the gateway closes it
+      // as not run (#39), and the chat says so.
+      const skipped: ChatItem[] = state.approvals.map((a) => ({
+        role: "notice",
+        text: `Not approved: ${describeApproval(a)} (you sent a new message)`,
+      }));
       return {
         ...state,
         status: "streaming",
         error: null,
-        items: [...state.items, { role: "user", text: action.text }],
+        approvals: [],
+        items: [...state.items, ...skipped, { role: "user", text: action.text }],
       };
+    }
+    case "unsent": {
+      // The message never reached Enzo: mark it, and say why in plain words (#46).
+      const items = [...state.items];
+      const last = items.findLastIndex((i) => i.role === "user");
+      if (last >= 0) items[last] = { ...(items[last] as ChatItem), unsent: true };
+      const why =
+        action.reason === "busy"
+          ? BUSY
+          : `Not sent: ${action.message ?? "the gateway did not answer"}.`;
+      items.push(
+        action.reason === "busy"
+          ? { role: "notice", text: why, offer: "stop" }
+          : { role: "notice", text: why },
+      );
+      return { ...state, status: "ready", draft: "", working: 0, items };
+    }
+    case "stream_lost": {
+      const items = keepDraft(state, [...state.items]);
+      items.push({ role: "notice", text: LOST });
+      return { ...state, status: "ready", draft: "", working: 0, items };
+    }
     case "resuming":
       return { ...state, status: "streaming", error: null };
     case "brain_chosen":
@@ -158,10 +220,13 @@ function onEvent(state: ChatState, event: AgentEvent): ChatState {
       };
     }
     case "done": {
-      const items = [...state.items];
       const notice = STOP_NOTICES[event.stop];
+      const answer = event.stop === "final_answer";
+      // Words that streamed before the turn stopped early stay, before the reason it stopped.
+      const items = answer
+        ? [...state.items]
+        : keepDraft(state, [...state.items], event.brain, event.text);
       if (event.text && !notice) {
-        const answer = event.stop === "final_answer";
         items.push({
           role: answer ? "assistant" : "notice",
           text: event.text,
@@ -169,17 +234,7 @@ function onEvent(state: ChatState, event: AgentEvent): ChatState {
           ...(event.failure ? { failure: event.failure } : {}),
         });
       }
-      if (notice) {
-        // The canned stop text replaces nothing Enzo wrote: words streamed before an approval stay.
-        if (state.draft.trim()) {
-          items.push({
-            role: "assistant",
-            text: state.draft,
-            ...(event.brain ? { by: event.brain } : {}),
-          });
-        }
-        items.push({ role: "notice", text: notice });
-      }
+      if (notice) items.push({ role: "notice", text: notice });
       return {
         ...state,
         status: "ready",

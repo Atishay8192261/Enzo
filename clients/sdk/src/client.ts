@@ -28,6 +28,18 @@ export interface Conversation {
   kind: "main" | "side" | "external";
   title: string | null;
   brain: string | null;
+  /** Approval cards still waiting for the user, so a reopened app shows them (#39). */
+  pending_approvals?: ApprovalCard[];
+  /** A reply is being written right now (another window, or one whose stream was lost). */
+  running?: boolean;
+}
+
+export interface ApprovalCard {
+  id: string;
+  tool: string;
+  arguments: Record<string, unknown>;
+  summary: string | null;
+  detail: string | null;
 }
 
 export interface StoredMessage {
@@ -140,6 +152,14 @@ export class GatewayClient {
 
   messages(id: string): Promise<StoredMessage[]> {
     return this.#json("GET", `/conversations/${enc(id)}/messages`) as Promise<StoredMessage[]>;
+  }
+
+  /** Stop the reply being written in this conversation (#46). False: none was running. */
+  async stop(id: string): Promise<boolean> {
+    const out = (await this.#json("POST", `/conversations/${enc(id)}/stop`)) as {
+      stopping: boolean;
+    };
+    return out.stopping;
   }
 
   async decide(id: string, approvalId: string, approved: boolean): Promise<void> {

@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  BUSY,
   type ChatState,
   describeApproval,
   formatCost,
   initialState,
+  LOST,
   reduce,
+  STILL_RUNNING,
   toItems,
 } from "./chat.ts";
 
@@ -107,6 +110,105 @@ describe("chat reducer", () => {
       { role: "notice", text: 'Declined: Run "send email"' },
     ]);
     expect(s.approvals).toEqual([]);
+  });
+
+  it("a reopened chat shows its open approval and a reply still running (#39, #46)", () => {
+    const card = {
+      id: "a1",
+      tool: "delete_file",
+      arguments: {},
+      summary: "Delete plan.md",
+      detail: null,
+    };
+    const s = reduce(initialState, {
+      type: "connected",
+      conversationId: "c1",
+      brains: [],
+      brain: null,
+      items: [],
+      approvals: [card],
+      running: true,
+    });
+    expect(s.approvals).toEqual([card]);
+    expect(s.items).toEqual([{ role: "notice", text: STILL_RUNNING, offer: "stop" }]);
+  });
+
+  it("sending instead of answering a card says the action was not approved (#39)", () => {
+    const open: ChatState = {
+      ...initialState,
+      status: "ready",
+      approvals: [
+        { id: "a1", tool: "delete_file", arguments: {}, summary: "Delete plan.md", detail: null },
+      ],
+    };
+    const s = reduce(open, { type: "user_sent", text: "never mind" });
+    expect(s.approvals).toEqual([]);
+    expect(s.items).toEqual([
+      { role: "notice", text: "Not approved: Delete plan.md (you sent a new message)" },
+      { role: "user", text: "never mind" },
+    ]);
+  });
+
+  it("a message refused while a reply runs is marked not sent, with Stop on offer (#46)", () => {
+    let s = reduce(
+      { ...initialState, status: "ready" },
+      { type: "user_sent", text: "are you back?" },
+    );
+    s = reduce(s, { type: "unsent", reason: "busy" });
+    expect(s.status).toBe("ready");
+    expect(s.items).toEqual([
+      { role: "user", text: "are you back?", unsent: true },
+      { role: "notice", text: BUSY, offer: "stop" },
+    ]);
+    s = reduce(reduce(s, { type: "user_sent", text: "hi" }), {
+      type: "unsent",
+      reason: "failed",
+      message: "connection refused",
+    });
+    expect(s.items.slice(-2)).toEqual([
+      { role: "user", text: "hi", unsent: true },
+      { role: "notice", text: "Not sent: connection refused." },
+    ]);
+  });
+
+  it("a stream that ends early stops waiting and keeps what arrived (#46)", () => {
+    let s = reduce({ ...initialState, status: "ready" }, { type: "user_sent", text: "a story" });
+    s = reduce(s, { type: "event", event: { type: "text", text: "Once upon a time" } });
+    s = reduce(s, { type: "stream_lost" });
+    expect(s.status).toBe("ready");
+    expect(s.items.slice(1)).toEqual([
+      { role: "assistant", text: "Once upon a time" },
+      { role: "notice", text: LOST },
+    ]);
+  });
+
+  it("a reply cut off by a failure keeps its words, without repeating them (#46)", () => {
+    const base = { steps: 1, cost_usd: null, brain: "gpt-sol", model: "m", plan: false };
+    let s = reduce(
+      { ...initialState, status: "streaming", draft: "The robot picked up a whisk" },
+      {
+        type: "event",
+        event: {
+          type: "done",
+          stop: "brain_failure",
+          text: "The reply was cut off.",
+          failure: "connection",
+          ...base,
+        },
+      },
+    );
+    expect(s.items).toEqual([
+      { role: "assistant", text: "The robot picked up a whisk", by: "gpt-sol" },
+      { role: "notice", text: "The reply was cut off.", failure: "connection" },
+    ]);
+    s = reduce(
+      { ...initialState, status: "streaming", draft: "half" },
+      {
+        type: "event",
+        event: { type: "done", stop: "truncated", text: "half", failure: null, ...base },
+      },
+    );
+    expect(s.items).toEqual([{ role: "notice", text: "half" }]);
   });
 
   it("a new conversation carries nothing over from the old one", () => {

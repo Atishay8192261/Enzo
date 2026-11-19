@@ -3,7 +3,13 @@ import { mkdtempSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AccountsClient, ChatClient, ConversationMemory } from "@enzo/chat";
-import type { AgentEvent, Brain, Conversation, ProviderConnection } from "@enzo/sdk";
+import {
+  type AgentEvent,
+  type Brain,
+  type Conversation,
+  GatewayError,
+  type ProviderConnection,
+} from "@enzo/sdk";
 import { testRender } from "@opentui/react/test-utils";
 import type React from "react";
 import { act } from "react";
@@ -100,6 +106,7 @@ function fakeClient(overrides: Partial<Client> = {}): Client {
     send: () => events(),
     resume: () => events(),
     decide: mock(async () => {}),
+    stop: mock(async () => false),
     ...overrides,
   };
 }
@@ -434,6 +441,63 @@ describe("provider accounts", () => {
     expect(frame).not.toContain("earlier question");
     expect(frame).toContain("Hi, I'm Enzo");
     expect(mem.get()).toBe(`c${n}`);
+  });
+
+  it("marks a refused message not sent and stops the running reply with Esc (#46)", async () => {
+    const stop = mock(async () => true);
+    const send = () =>
+      (async function* () {
+        yield* [];
+        throw new GatewayError("/turns failed: HTTP 409: busy", 409);
+      })();
+    await using s = await screen(fakeClient({ send, stop }));
+    await enter(s, "are you back?");
+    const frame = await until(s, "(not sent)");
+    expect(frame).toContain("Not sent: Enzo is still finishing the last reply.");
+    expect(frame).toContain("Esc stops it.");
+    expect(frame).not.toContain("HTTP 409"); // never a raw status or URL
+    await press(s, "ESCAPE");
+    await until(s, "Stopping the reply…");
+    expect(stop).toHaveBeenCalledWith("c1");
+  });
+
+  it("a reopened chat shows the approval left open, and y answers it (#39)", async () => {
+    const decide = mock(async () => {});
+    const conversation = async () => ({
+      ...CONVERSATION,
+      pending_approvals: [
+        {
+          id: "a1",
+          tool: "delete_file",
+          arguments: { path: "plan.md" },
+          summary: "Delete plan.md",
+          detail: null,
+        },
+      ],
+    });
+    await using s = await mount(
+      <App
+        client={fakeClient({ conversation, decide })}
+        memory={memory("c1")}
+        onQuit={() => {}}
+        openUrl={async () => {}}
+      />,
+      30,
+      "Approve this action? (y / n)",
+    );
+    expect(s.captureCharFrame()).toContain("Delete plan.md");
+    await press(s, "y");
+    await until(s, "Approved: Delete plan.md");
+    expect(decide).toHaveBeenCalledWith("c1", "a1", true);
+  });
+
+  it("when the stream ends early, the chat stops waiting and keeps what arrived (#46)", async () => {
+    const send = () => events({ type: "text", text: "Once upon a time" });
+    await using s = await screen(fakeClient({ send }));
+    await enter(s, "a story");
+    const frame = await until(s, "Lost the connection to Enzo mid-reply.");
+    expect(frame).toContain("enzo: Once upon a time");
+    expect(frame).toContain("Message Enzo"); // ready to type again
   });
 
   it("greets a new chat, and says how to connect when nothing is", async () => {

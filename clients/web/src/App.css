@@ -574,3 +574,8 @@ button.chatgpt:hover:not(:disabled) {
 .end {
   scroll-margin-bottom: 120px;
 }
+
+.unsent {
+  color: var(--error);
+  font-size: 12px;
+}
