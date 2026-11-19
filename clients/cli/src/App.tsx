@@ -27,7 +27,7 @@ export function App({
   /** Opens sign-in pages; tests pass a fake. */
   openUrl?: (url: string) => Promise<void>;
 }) {
-  const { state, send, decide, chooseBrain } = useChat(client, memory, "cli");
+  const { state, send, decide, chooseBrain, newChat } = useChat(client, memory, "cli");
   const [reply, setReply] = useState<Reply>(null);
   // Provider whose key is being entered at the hidden prompt.
   const [login, setLogin] = useState<string | null>(null);
@@ -55,6 +55,7 @@ export function App({
     client,
     current: state.brain,
     chooseBrain,
+    newChat,
     startLogin: setLogin,
     signInWithChatGPT: chatGPT,
     quit: onQuit,
