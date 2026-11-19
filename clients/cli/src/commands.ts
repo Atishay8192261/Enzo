@@ -16,6 +16,8 @@ export interface CommandContext {
   /** The conversation's current choice: a model, a tier, or null for smart routing. */
   current: string | null;
   chooseBrain(choice: string | null): Promise<void>;
+  /** Start a new conversation; the current one stays saved. */
+  newChat(): Promise<void>;
   /** Open the hidden key prompt for a provider. */
   startLogin(provider: string): void;
   /** Sign in with ChatGPT in the browser. Shows progress itself; resolves with the outcome. */
@@ -108,6 +110,15 @@ const COMMANDS: Record<string, Command> = {
       if ("error" in picked) return error(picked.error);
       await ctx.chooseBrain(picked.choice);
       return `Model: ${describeChoice(picked.choice, brains)}`;
+    },
+  },
+  "/new": {
+    usage: "/new",
+    summary: "start a new chat (this one stays saved)",
+    args: 0,
+    async run(ctx) {
+      await ctx.newChat();
+      return "New chat started.";
     },
   },
   "/help": {

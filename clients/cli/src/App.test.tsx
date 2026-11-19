@@ -416,6 +416,26 @@ describe("provider accounts", () => {
     expect(connect).not.toHaveBeenCalled();
   });
 
+  it("starts a new chat with /new and remembers it", async () => {
+    let n = 0;
+    const createConversation = mock(async () => ({ ...CONVERSATION, id: `c${++n}` }));
+    const mem = memory();
+    const client = fakeClient({
+      createConversation,
+      messages: async () => [{ role: "user", parts: [{ type: "text", text: "earlier question" }] }],
+    });
+    await using s = await mount(
+      <App client={client} memory={mem} onQuit={() => {}} openUrl={async () => {}} />,
+      30,
+      "earlier question",
+    );
+    await enter(s, "/new");
+    const frame = await until(s, "New chat started.");
+    expect(frame).not.toContain("earlier question");
+    expect(frame).toContain("Hi, I'm Enzo");
+    expect(mem.get()).toBe(`c${n}`);
+  });
+
   it("greets a new chat, and says how to connect when nothing is", async () => {
     await using s = await screen(fakeClient());
     const frame = await until(s, "Hi, I'm Enzo, your personal agent.");
