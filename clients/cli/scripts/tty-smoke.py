@@ -87,6 +87,13 @@ results["provider answered, nothing saved"] = "rejected this key" in screen_text
     "could not check the key" in screen_text()
 )
 results["key never on screen"] = not leaks
+for ch in "/login chatgpt":
+    os.write(fd, ch.encode())
+os.write(fd, b"\r")
+# The browser may not open (no desktop here): the link must be on screen, whole, to click or copy.
+results["chatgpt sign-in link shown"] = wait_for("Finish signing in with ChatGPT") and wait_for(
+    "http://127.0.0.1:8787/auth/chatgpt/"
+)
 for ch in "/models":
     os.write(fd, ch.encode())
 os.write(fd, b"\r")

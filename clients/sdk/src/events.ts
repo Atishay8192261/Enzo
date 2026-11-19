@@ -25,6 +25,8 @@ export type AgentEvent =
       model: string | null;
       /** Why a brain_failure happened, e.g. "not_connected", so each client can word it. */
       failure: string | null;
+      /** The user's ChatGPT plan paid for (part of) this reply, so there is no per-token cost. */
+      plan: boolean;
     }
   | { type: "error"; message: string };
 
@@ -38,7 +40,10 @@ export type StopReason =
   | "over_budget"
   | "cancelled";
 
-type Shape = Record<string, "string" | "number" | "object" | "number|null" | "string|null">;
+type Shape = Record<
+  string,
+  "string" | "number" | "boolean" | "object" | "number|null" | "string|null"
+>;
 
 const SHAPES: Record<AgentEvent["type"], Shape> = {
   text: { text: "string" },
@@ -59,6 +64,7 @@ const SHAPES: Record<AgentEvent["type"], Shape> = {
     brain: "string|null",
     model: "string|null",
     failure: "string|null",
+    plan: "boolean",
   },
   error: { message: "string" },
 };

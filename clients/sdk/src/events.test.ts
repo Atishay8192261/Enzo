@@ -20,9 +20,21 @@ describe("toAgentEvent", () => {
     expect(
       toAgentEvent(
         "done",
-        '{"stop":"final_answer","text":"ok","steps":1,"cost_usd":null,"brain":"gpt-sol","model":"gpt-6.2-sol","failure":null}',
+        '{"stop":"final_answer","text":"ok","steps":1,"cost_usd":null,"brain":"gpt-sol","model":"gpt-6.2-sol","failure":null,"plan":false}',
       ),
     ).toMatchObject({ type: "done", cost_usd: null, brain: "gpt-sol", model: "gpt-6.2-sol" });
+    expect(
+      toAgentEvent(
+        "done",
+        '{"stop":"final_answer","text":"ok","steps":1,"cost_usd":0,"brain":"gpt-sol","model":"m","failure":null,"plan":true}',
+      ),
+    ).toMatchObject({ type: "done", plan: true });
+    expect(() =>
+      toAgentEvent(
+        "done",
+        '{"stop":"final_answer","text":"ok","steps":1,"cost_usd":0,"brain":"b","model":"m","failure":null,"plan":"yes"}',
+      ),
+    ).toThrow("malformed done event");
     // a done event from an older gateway (no brain/model) is malformed, not silently partial
     expect(() =>
       toAgentEvent("done", '{"stop":"final_answer","text":"ok","steps":1,"cost_usd":null}'),

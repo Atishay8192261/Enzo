@@ -58,6 +58,7 @@ const CONNECTIONS: ProviderConnection[] = [
     models: ["claude-opus-5-5"],
     tools: [],
     purpose: null,
+    label: null,
   },
   {
     provider: "xai",
@@ -68,6 +69,7 @@ const CONNECTIONS: ProviderConnection[] = [
     models: ["grok-4.7"],
     tools: [],
     purpose: null,
+    label: null,
   },
 ];
 
@@ -77,8 +79,18 @@ function fakeClient(overrides: Partial<Client> = {}): Client {
   return {
     connections: async () => CONNECTIONS,
     connect: mock(async () => {}),
-    disconnect: mock(async () => {}),
+    disconnect: mock(async () => ({ remote_sign_out: null })),
     checkConnection: async () => ({ ok: true, detail: null }),
+    startChatGPTSignIn: mock(async () => ({
+      login_id: "l1",
+      url: "http://127.0.0.1:8787/auth/chatgpt/l1",
+    })),
+    chatGPTSignIn: async () => ({
+      status: "connected" as const,
+      message: "Signed in with ChatGPT as ada@example.com.",
+      first_time: true,
+      usage_url: "https://chatgpt.com/settings/usage",
+    }),
     health: async () => ({ status: "ok", version: "1", env: "test" }),
     brains: async () => BRAINS,
     createConversation: async () => CONVERSATION,
@@ -92,8 +104,16 @@ function fakeClient(overrides: Partial<Client> = {}): Client {
   };
 }
 
-async function screen(client: Client, onQuit = () => {}) {
-  return mount(<App client={client} memory={memory()} onQuit={onQuit} />, 30, "Message Enzo");
+async function screen(
+  client: Client,
+  onQuit = () => {},
+  openUrl: (url: string) => Promise<void> = async () => {},
+) {
+  return mount(
+    <App client={client} memory={memory()} onQuit={onQuit} openUrl={openUrl} />,
+    30,
+    "Message Enzo",
+  );
 }
 
 /** Render inside act() (start-up work is async), then wait for the first expected screen. */
@@ -156,6 +176,7 @@ describe("terminal chat (OpenTUI)", () => {
             brain: null,
             model: null,
             failure: null,
+            plan: false,
           },
         ),
     });
@@ -177,6 +198,7 @@ describe("terminal chat (OpenTUI)", () => {
         brain: null,
         model: null,
         failure: null,
+        plan: false,
       }),
     );
     await using s = await screen(fakeClient({ send }));
@@ -217,6 +239,7 @@ describe("terminal chat (OpenTUI)", () => {
             brain: null,
             model: null,
             failure: null,
+            plan: false,
           },
         ),
       resume: () =>
@@ -229,6 +252,7 @@ describe("terminal chat (OpenTUI)", () => {
           brain: null,
           model: null,
           failure: null,
+          plan: false,
         }),
     });
     await using s = await screen(client);
@@ -286,6 +310,7 @@ describe("terminal chat (OpenTUI)", () => {
           brain: "claude-sonnet",
           model: "claude-sonnet-5-5",
           failure: null,
+          plan: false,
         }),
     });
     await using s = await screen(client);
@@ -391,8 +416,92 @@ describe("provider accounts", () => {
     expect(connect).not.toHaveBeenCalled();
   });
 
+  it("signs in with ChatGPT in the browser and says the plan is in use", async () => {
+    const opened: string[] = [];
+    let polls = 0;
+    const startChatGPTSignIn = mock(async () => ({
+      login_id: "l1",
+      url: "http://127.0.0.1:8787/auth/chatgpt/l1",
+    }));
+    const client = fakeClient({
+      startChatGPTSignIn,
+      chatGPTSignIn: async () => {
+        polls += 1;
+        return {
+          status: polls < 2 ? ("pending" as const) : ("connected" as const),
+          message: polls < 2 ? null : "Signed in with ChatGPT as ada@example.com.",
+          first_time: polls >= 2,
+          usage_url: "https://chatgpt.com/settings/usage",
+        };
+      },
+    });
+    await using s = await screen(
+      client,
+      () => {},
+      async (url) => {
+        opened.push(url);
+      },
+    );
+    await enter(s, "/login chatgpt");
+    const waiting = await until(s, "Finish signing in with ChatGPT in your browser");
+    expect(opened).toEqual(["http://127.0.0.1:8787/auth/chatgpt/l1"]);
+    // Whole on one line, so a click or a copy gets all of it.
+    expect(
+      waiting.split("\n").some((line) => line.trim() === "http://127.0.0.1:8787/auth/chatgpt/l1"),
+    ).toBe(true);
+    const frame = await until(s, "You're using your ChatGPT plan", 5000);
+    expect(frame).toContain("ada@example.com");
+    expect(startChatGPTSignIn).toHaveBeenCalledWith(false);
+    await enter(s, "/login chatgpt new");
+    await until(s, "Signed in with", 5000);
+    expect(startChatGPTSignIn).toHaveBeenLastCalledWith(true);
+  });
+
+  it("explains a ChatGPT sign-in that did not finish", async () => {
+    const client = fakeClient({
+      chatGPTSignIn: async () => ({
+        status: "failed" as const,
+        message: "The ChatGPT sign-in was cancelled, so nothing was connected.",
+        first_time: false,
+        usage_url: "https://chatgpt.com/settings/usage",
+      }),
+    });
+    await using s = await screen(client);
+    await enter(s, "/login chatgpt");
+    await until(s, "sign-in was cancelled", 5000);
+  });
+
+  it("shows when the ChatGPT plan paid for a reply", async () => {
+    const client = fakeClient({
+      send: () =>
+        events({
+          type: "done",
+          stop: "final_answer",
+          text: "hello",
+          steps: 1,
+          cost_usd: 0,
+          brain: "gpt-sol",
+          model: "gpt-6.2-sol",
+          failure: null,
+          plan: true,
+        }),
+    });
+    await using s = await screen(client);
+    await enter(s, "hi");
+    const frame = await until(s, "Using ChatGPT plan");
+    expect(frame).toContain("manage usage");
+    expect(frame).not.toContain("no charge");
+  });
+
+  it("signing out of ChatGPT says whether OpenAI confirmed it", async () => {
+    const disconnect = mock(async () => ({ remote_sign_out: "not_confirmed" as const }));
+    await using s = await screen(fakeClient({ disconnect }));
+    await enter(s, "/logout openai");
+    await until(s, "OpenAI did not confirm it");
+  });
+
   it("lists, checks and disconnects", async () => {
-    const disconnect = mock(async () => {});
+    const disconnect = mock(async () => ({ remote_sign_out: null }));
     const checkConnection = mock(async () => ({ ok: false, detail: "xai rejected this key" }));
     await using s = await screen(fakeClient({ disconnect, checkConnection }));
     await enter(s, "/connections");

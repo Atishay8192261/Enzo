@@ -44,8 +44,18 @@ function fakeClient(
   return {
     connections: async () => [],
     connect: vi.fn(async () => {}),
-    disconnect: vi.fn(async () => {}),
+    disconnect: vi.fn(async () => ({ remote_sign_out: null })),
     checkConnection: async () => ({ ok: true, detail: null }),
+    startChatGPTSignIn: async () => ({
+      login_id: "l1",
+      url: "http://127.0.0.1:8787/auth/chatgpt/l1",
+    }),
+    chatGPTSignIn: async () => ({
+      status: "pending" as const,
+      message: null,
+      first_time: false,
+      usage_url: "https://chatgpt.com/settings/usage",
+    }),
     health: async () => ({ status: "ok", version: "1", env: "test" }),
     brains: async () => BRAINS,
     createConversation: async () => CONVERSATION,
@@ -86,6 +96,7 @@ describe("App", () => {
             brain: "claude-opus",
             model: "claude-opus-5-5",
             failure: null,
+            plan: false,
           },
         ),
     });
@@ -131,6 +142,7 @@ describe("App", () => {
             brain: null,
             model: null,
             failure: null,
+            plan: false,
           },
         ),
       resume: () =>
@@ -143,6 +155,7 @@ describe("App", () => {
           brain: null,
           model: null,
           failure: null,
+          plan: false,
         }),
     });
     render(<App client={client} />);
@@ -202,6 +215,7 @@ describe("App", () => {
         models: ["grok-4.7"],
         tools: [],
         purpose: null,
+        label: null,
       },
     ];
     render(<App client={fakeClient({ brains, connections })} />);
@@ -225,6 +239,7 @@ describe("App", () => {
           brain: null,
           model: null,
           failure: "not_connected",
+          plan: false,
         }),
     });
     render(<App client={client} />);

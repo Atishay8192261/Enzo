@@ -18,11 +18,15 @@ function row(provider: string, connected: boolean): ProviderConnection {
     models: [`${provider}-model`],
     tools: [],
     purpose: null,
+    label: null,
   };
 }
 
-function fake(overrides: Partial<AccountsClient> = {}): AccountsClient {
-  let rows = [row("anthropic", true), row("xai", false)];
+function fake(
+  overrides: Partial<AccountsClient> = {},
+  start: ProviderConnection[] = [row("anthropic", true), row("xai", false)],
+): AccountsClient {
+  let rows = start;
   return {
     connections: async () => rows,
     connect: vi.fn(async (provider: string) => {
@@ -30,13 +34,53 @@ function fake(overrides: Partial<AccountsClient> = {}): AccountsClient {
     }),
     disconnect: vi.fn(async (provider: string) => {
       rows = rows.map((r) => (r.provider === provider ? row(provider, false) : r));
+      return { remote_sign_out: null };
     }),
     checkConnection: async () => ({ ok: true, detail: null }),
+    startChatGPTSignIn: vi.fn(async () => ({
+      login_id: "l1",
+      url: "http://127.0.0.1:8787/auth/chatgpt/l1",
+    })),
+    chatGPTSignIn: async () => {
+      rows = rows.map((r) =>
+        r.provider === "openai"
+          ? { ...r, connected: true, method: "chatgpt", label: "ada@example.com" }
+          : r,
+      );
+      return {
+        status: "connected" as const,
+        message: "Signed in with ChatGPT as ada@example.com.",
+        first_time: true,
+        usage_url: "https://chatgpt.com/settings/usage",
+      };
+    },
     ...overrides,
   };
 }
 
 describe("Accounts", () => {
+  it("continues with ChatGPT in a new tab and shows the signed-in account", async () => {
+    const tab = { opener: {} as unknown, location: { href: "about:blank" } };
+    const open = vi.spyOn(window, "open").mockReturnValue(tab as unknown as Window);
+    const openai = { ...row("openai", false), methods: ["chatgpt", "api_key"] };
+    render(<Accounts client={fake({}, [openai])} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Continue with ChatGPT" }));
+    expect(open).toHaveBeenCalledWith("about:blank", "_blank"); // inside the click: not blocked
+    expect(tab.opener).toBeNull(); // the new tab cannot reach back into Enzo
+    await waitFor(() => expect(tab.location.href).toBe("http://127.0.0.1:8787/auth/chatgpt/l1"), {
+      timeout: 3000,
+    });
+    await screen.findByText(/You're using your ChatGPT plan/, {}, { timeout: 3000 });
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("Connected (ChatGPT plan, ada@example.com"),
+    );
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Manage usage" }).getAttribute("href")).toBe(
+      "https://chatgpt.com/settings/usage",
+    );
+    open.mockRestore();
+  });
+
   it("connects with a password field and clears it at once", async () => {
     const client = fake();
     render(<Accounts client={client} />);

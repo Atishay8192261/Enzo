@@ -47,6 +47,8 @@ export interface ChatState {
   working: number; // tools running right now
   approvals: PendingApproval[];
   lastCost: number | null | undefined; // undefined: no turn yet; null: unknown
+  /** The last reply was paid by the user's ChatGPT plan (shown instead of a price). */
+  lastPlan: boolean;
 }
 
 export const initialState: ChatState = {
@@ -60,6 +62,7 @@ export const initialState: ChatState = {
   working: 0,
   approvals: [],
   lastCost: undefined,
+  lastPlan: false,
 };
 
 export type ChatAction =
@@ -149,7 +152,15 @@ function onEvent(state: ChatState, event: AgentEvent): ChatState {
         });
       }
       if (notice) items.push({ role: "notice", text: notice });
-      return { ...state, status: "ready", items, draft: "", working: 0, lastCost: event.cost_usd };
+      return {
+        ...state,
+        status: "ready",
+        items,
+        draft: "",
+        working: 0,
+        lastCost: event.cost_usd,
+        lastPlan: event.plan,
+      };
     }
     case "error":
       return { ...state, status: "ready", draft: "", working: 0, error: event.message };
@@ -167,8 +178,10 @@ export function toItems(messages: StoredMessage[]): ChatItem[] {
   });
 }
 
-export function formatCost(cost: number | null | undefined): string {
+/** The last reply's cost. `plan`: the ChatGPT plan paid, so there is no per-token price. */
+export function formatCost(cost: number | null | undefined, plan = false): string {
   if (cost === undefined) return "";
+  if (plan) return cost === 0 ? "Using ChatGPT plan" : `${formatCost(cost)} + ChatGPT plan`;
   if (cost === null) return "cost unknown";
   if (cost === 0) return "no charge";
   return `cost $${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}`;

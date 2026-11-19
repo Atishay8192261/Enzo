@@ -36,14 +36,28 @@ describe("chat reducer", () => {
         brain: "claude-sonnet",
         model: "claude-sonnet-5-5",
         failure: null,
+        plan: false,
       },
     });
     expect(s.items).toEqual([
       { role: "user", text: "hi" },
       { role: "assistant", text: "hello there", by: "claude-sonnet" },
     ]);
-    expect([s.draft, s.lastCost]).toEqual(["", 0.002]);
+    expect([s.draft, s.lastCost, s.lastPlan]).toEqual(["", 0.002, false]);
     expect(s.status).toBe("ready");
+    const done = {
+      type: "done" as const,
+      stop: "final_answer" as const,
+      text: "on the plan",
+      steps: 1,
+      cost_usd: 0,
+      brain: "gpt-sol",
+      model: "gpt-6.2-sol",
+      failure: null,
+      plan: true,
+    };
+    s = reduce(reduce(s, { type: "user_sent", text: "again" }), { type: "event", event: done });
+    expect([s.lastCost, s.lastPlan]).toEqual([0, true]);
   });
 
   it("tracks running tools without naming them in the chat", () => {
@@ -83,6 +97,7 @@ describe("chat reducer", () => {
         brain: null,
         model: null,
         failure: null,
+        plan: false,
       },
     });
     expect(s.approvals).toEqual([
@@ -105,6 +120,7 @@ describe("chat reducer", () => {
         brain: null,
         model: null,
         failure: null,
+        plan: false,
       },
     });
     expect(s.items).toEqual([{ role: "notice", text: "I could not get an answer: no API key" }]);
@@ -147,6 +163,8 @@ describe("formatCost", () => {
     expect(formatCost(undefined)).toBe("");
     expect(formatCost(null)).toBe("cost unknown");
     expect(formatCost(0)).toBe("no charge");
+    expect(formatCost(0, true)).toBe("Using ChatGPT plan");
+    expect(formatCost(0.0021, true)).toBe("cost $0.0021 + ChatGPT plan");
     expect(formatCost(0.0021)).toBe("cost $0.0021");
   });
 });
