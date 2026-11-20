@@ -64,6 +64,23 @@
    - Ctrl+C clears the input, or quits when it is empty. **Quit: `exit`/`quit` typed alone, or
      Ctrl+D.**
 
+## Amendment (2026-11-20, after the v0.1.0 laptop retest)
+
+- **New lines (#58):**
+  - `\` then Enter makes a new line in every terminal. macOS Terminal.app has no kitty
+    protocol, and the retest found that nothing else worked there.
+  - The hint names Shift+Enter only when the terminal reports the kitty keyboard protocol;
+    otherwise it names the backslash.
+- **Answering a card (#55):**
+  - The input stays focused while an approval card is open, so nothing typed is lost.
+  - `y`/`yes` then Enter approves, and `n`/`no` then Enter declines. Anything else is sent as a
+    new message, and the card closes as not approved.
+  - Requiring Enter means a message that starts with "y" can never approve by accident. This
+    replaces the instant y/n keys.
+- **One confirmation (#42):**
+  - The system prompt and every approval-gated tool's description say the card is the only
+    confirmation, so the model calls the tool instead of asking in chat first.
+
 ## Consequences
 
 - One look across surfaces is still to come: the web app shows the step lines, but its Markdown

@@ -21,7 +21,8 @@ export function ApprovalCard({ approval }: { approval: PendingApproval }) {
       <text fg={COLOR.dim}>Exact details: {JSON.stringify(approval.arguments, null, 2)}</text>
       {approval.detail ? <text fg={COLOR.dim}>{clip(approval.detail, 12)}</text> : null}
       <text>
-        <span fg={COLOR.ok}>y</span> approve · <span fg={COLOR.error}>n</span> decline
+        <span fg={COLOR.ok}>y</span> + enter approves · <span fg={COLOR.error}>n</span> + enter
+        declines · or type a new message instead
       </text>
     </box>
   );

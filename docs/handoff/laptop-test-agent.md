@@ -69,8 +69,10 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
     everything. `/model`, `/login` and `/logout` alone open a picker (↑/↓, Enter, Esc). Command
     output is a card titled with the command. New: `/copy` (`/copy code`), `/details on|off`,
     `/retry`, `/sidebar`.
-  - **Keys:** Enter sends. Shift+Enter (terminals with the kitty keyboard protocol: Kitty, Ghostty,
-    WezTerm, iTerm2), Alt+Enter or Ctrl+J make a new line. ↑/↓ bring back earlier messages. Long
+  - **Keys:** Enter sends. **A new line:** `\` then Enter works in every terminal, including macOS
+    Terminal.app (#58). Shift+Enter works where the terminal reports it (Kitty, Ghostty, WezTerm,
+    iTerm2), and the hint under the input names whichever works. Option+Enter works in Terminal.app
+    with "Use Option as Meta key" on. ↑/↓ bring back earlier messages. Long
     pastes show as "[Pasted 42 lines]" and are sent in full. Selecting text with the mouse copies
     it (also over SSH). Esc stops a reply or closes a list. PgUp/PgDn scroll. Ctrl+C clears the
     input, or quits when it is empty. **Quit:** type `exit` or `quit`, or press Ctrl+D.
@@ -100,7 +102,9 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
 - **Approvals.** A risky action (deleting a file, merging a pull request) waits for an approval card
   in plain words, with the exact arguments and, for merges, the diff. A card left open when the
   app closed comes back when it reopens. Each request needs its own yes: approving "delete
-  plan.md" once never approves it again later.
+  plan.md" once never approves it again later. The card is the only confirmation: Enzo should
+  never ask "please confirm" in chat first (#42 retest: "delete t39.txt" must show the card at
+  once, in several wordings).
 - **Stop.** Esc (terminal) or the Stop button (web) ends the reply being written, from any window.
   The words already shown stay. A message sent while a reply runs is marked "(not sent)".
 - **Cost.** Under each reply and for the whole chat, or "cost unknown" when a provider publishes no
@@ -238,8 +242,10 @@ For each journey:
      - While a reply runs, open a second terminal on the same chat. It says "still finishing a
        reply… Esc stops it". Esc there stops it.
    - **Close during an approval (#39 retest):** ask Enzo to delete a file and quit at the card.
-     - Reopen: the card is back. `y` or `n` works, and so does typing a new message instead
-       ("Not approved: … (you sent a new message)").
+     - Reopen: the card is back. Type `y` (or `yes`) and Enter to approve, `n` (or `no`) and
+       Enter to decline. Or type any other message and send it: the card closes with "Not
+       approved: … (you sent a new message)" and the message is sent (#55). A message that only
+       starts with y ("yesterday…") must never approve.
      - The chat must keep working afterwards, with no "No tool output found".
    - Every failure must be explained honestly. Nothing may be invented.
 10. **Tools.** Ask things that need them, and judge the answers.
@@ -277,8 +283,10 @@ For each journey:
       spinner, then ✓ or ✗ and its time, and stays after the reply.
     - Under each reply: time to first word, total time, tokens, cost or plan. Quit and reopen: the
       same facts come back (with "model time"). `/details off` hides them.
-    - Paste a 40-line file: "[Pasted 40 lines]"; it sends in full. Shift+Enter, Alt+Enter or
-      Ctrl+J make new lines. ↑ brings back the last message. Select reply text with the mouse:
+    - Paste a 40-line file: "[Pasted 40 lines]"; it sends in full. In Terminal.app type `line one\`
+      and Enter: a new line, not a send (#58). Shift+Enter in Ghostty or iTerm2. The hint under the
+      input must name a key that really works there. ↑ brings back the last message. Select reply
+      text with the mouse:
       "Copied to clipboard"; paste it elsewhere. `/copy code` copies a code block.
     - Type while a reply streams: the text is kept; Enter then says to wait or press Esc.
     - Quit three ways: `exit`, `quit`, Ctrl+D. Ctrl+C clears typed text first.

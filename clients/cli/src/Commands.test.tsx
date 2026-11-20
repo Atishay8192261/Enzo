@@ -169,6 +169,8 @@ describe("command output (#36)", () => {
     expect(next.slice(0, column).replace(/[│\s]/g, "")).toBe("");
     expect(next.slice(column).trim().length).toBeGreaterThan(0);
     expect(frame).toContain("ctrl+d, or type exit");
+    expect(frame).toContain("\\ then enter"); // a new line that works in any terminal (#58)
+    expect(frame).toContain("y or n, then enter"); // how to answer a card (#55)
   });
 
   it("unknown commands and wrong arguments say what to type", async () => {

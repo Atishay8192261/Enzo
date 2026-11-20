@@ -4,8 +4,8 @@ import {
   stripAnsiSequences,
   type TextareaRenderable,
 } from "@opentui/core";
-import { useKeyboard, usePaste, useTerminalDimensions } from "@opentui/react";
-import { useMemo, useRef, useState } from "react";
+import { useKeyboard, usePaste, useRenderer, useTerminalDimensions } from "@opentui/react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { COMMAND_LIST } from "./commands.ts";
 import { type Sources, type Suggestion, suggest } from "./complete.ts";
 import { expand, normalize, type Paste, shouldCollapse, tagFor } from "./paste.ts";
@@ -24,7 +24,13 @@ export const PROMPT_KEYS: KeyBinding[] = [
   { name: "j", ctrl: true, action: "newline" },
 ];
 
-const HINT = "enter send · shift+enter new line";
+/**
+ * What the line under the input says about new lines. Shift+Enter only where the terminal tells
+ * it apart from Enter (the kitty keyboard protocol); a backslash before Enter works everywhere,
+ * including macOS Terminal.app (#58).
+ */
+export const HINT_KITTY = "enter send · shift+enter new line";
+export const HINT_PLAIN = "enter send · \\ then enter new line";
 
 const clipped = (s: string, n: number) =>
   s.length <= n ? s : `${s.slice(0, Math.max(0, n - 1))}…`;
@@ -45,6 +51,8 @@ export interface PromptProps {
 }
 
 export function Prompt({ focused, placeholder, history, sources, meta, onSubmit }: PromptProps) {
+  const renderer = useRenderer();
+  const kitty = useKittyKeyboard(renderer);
   const area = useRef<TextareaRenderable | null>(null);
   const pastes = useRef<Paste[]>([]);
   const [text, setText] = useState("");
@@ -57,6 +65,7 @@ export function Prompt({ focused, placeholder, history, sources, meta, onSubmit 
   // The line under the input: the hint gives way before the model and account are cut.
   const { width } = useTerminalDimensions();
   const room = Math.max(0, Math.min(width, 84) - 10);
+  const HINT = kitty ? HINT_KITTY : HINT_PLAIN;
   const hint = meta.length + HINT.length + 2 <= room ? HINT : "";
   const popup = focused && suggestions.length > 0 && dismissed !== text;
   const choice = suggestions[Math.min(selected, suggestions.length - 1)];
@@ -76,6 +85,9 @@ export function Prompt({ focused, placeholder, history, sources, meta, onSubmit 
     recall.current = null;
     replace("");
   };
+
+  // Only a backslash at the very end counts, as in Claude Code: "C:\\" mid-text is just text.
+  const endsWithBackslash = () => (area.current?.plainText ?? text).endsWith("\\");
 
   const choose = (s: Suggestion) => {
     if (s.complete) return send(s.value);
@@ -115,6 +127,16 @@ export function Prompt({ focused, placeholder, history, sources, meta, onSubmit 
         key.preventDefault();
         return setDismissed(text);
       }
+    }
+    if ((key.name === "return" || key.name === "kpenter") && plain && endsWithBackslash()) {
+      // A backslash before Enter makes a new line, in any terminal (#58).
+      key.preventDefault();
+      const input = area.current;
+      if (!input) return;
+      input.gotoBufferEnd();
+      input.deleteCharBackward();
+      input.newLine();
+      return setText(input.plainText);
     }
     if (!plain || (key.name !== "up" && key.name !== "down") || popup) return;
     // Up and Down bring back earlier messages, when the input is empty or shows one of them.
@@ -242,4 +264,17 @@ function Popup({ suggestions, selected }: { suggestions: Suggestion[]; selected:
       </box>
     </box>
   );
+}
+
+/** Whether the terminal reports keys with the kitty protocol (known once it has answered). */
+function useKittyKeyboard(renderer: ReturnType<typeof useRenderer>): boolean {
+  const [kitty, setKitty] = useState(renderer.capabilities?.kitty_keyboard === true);
+  useEffect(() => {
+    const update = () => setKitty(renderer.capabilities?.kitty_keyboard === true);
+    renderer.on("capabilities", update);
+    return () => {
+      renderer.off("capabilities", update);
+    };
+  }, [renderer]);
+  return kitty;
 }
