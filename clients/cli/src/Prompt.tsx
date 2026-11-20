@@ -86,9 +86,6 @@ export function Prompt({ focused, placeholder, history, sources, meta, onSubmit 
     replace("");
   };
 
-  // Only a backslash at the very end counts, as in Claude Code: "C:\\" mid-text is just text.
-  const endsWithBackslash = () => (area.current?.plainText ?? text).endsWith("\\");
-
   const choose = (s: Suggestion) => {
     if (s.complete) return send(s.value);
     replace(s.value);
@@ -98,38 +95,46 @@ export function Prompt({ focused, placeholder, history, sources, meta, onSubmit 
   useKeyboard((key) => {
     if (!focused || key.defaultPrevented) return;
     const plain = !key.ctrl && !key.meta && !key.shift;
-    if (key.ctrl && key.name === "c" && text) {
+    // Keys can arrive faster than the screen redraws (fast typing, a paste, a macro): go by what
+    // the input holds now, not by what was last drawn, or Enter runs a stale choice (#56).
+    const typed = area.current?.plainText ?? text;
+    const drawn = typed === text;
+    const options = drawn ? suggestions : suggest(typed, sources);
+    const open = focused && options.length > 0 && dismissed !== typed;
+    const picked = drawn ? choice : options[0];
+    if (key.ctrl && key.name === "c" && typed) {
       // Ctrl+C clears what was typed; on an empty input it quits (the app handles that).
       key.preventDefault();
       pastes.current = [];
       recall.current = null;
       return replace("");
     }
-    if (popup && choice) {
+    if (open && picked) {
       if (key.name === "up" || key.name === "down") {
         key.preventDefault();
         const step = key.name === "up" ? -1 : 1;
-        return setSelected((i) => (i + step + suggestions.length) % suggestions.length);
+        return setSelected((i) => (i + step + options.length) % options.length);
       }
       if (key.name === "tab") {
         key.preventDefault();
-        replace(choice.value);
+        replace(picked.value);
         return setSelected(0);
       }
       if ((key.name === "return" || key.name === "kpenter") && plain) {
         key.preventDefault();
         // A whole command name typed out runs as typed: "/model" opens the model picker.
         // With a space after it, an argument is being chosen from the list instead.
-        if (COMMAND_LIST.some((c) => c.name === text)) return send(text);
-        return choose(choice);
+        if (COMMAND_LIST.some((c) => c.name === typed)) return send(typed);
+        return choose(picked);
       }
       if (key.name === "escape") {
         key.preventDefault();
-        return setDismissed(text);
+        return setDismissed(typed);
       }
     }
-    if ((key.name === "return" || key.name === "kpenter") && plain && endsWithBackslash()) {
-      // A backslash before Enter makes a new line, in any terminal (#58).
+    if ((key.name === "return" || key.name === "kpenter") && plain && typed.endsWith("\\")) {
+      // A backslash before Enter makes a new line, in any terminal (#58). Only one at the very
+      // end counts, as in Claude Code: "C:\\" mid-text is just text.
       key.preventDefault();
       const input = area.current;
       if (!input) return;
@@ -138,25 +143,25 @@ export function Prompt({ focused, placeholder, history, sources, meta, onSubmit 
       input.newLine();
       return setText(input.plainText);
     }
-    if (!plain || (key.name !== "up" && key.name !== "down") || popup) return;
+    if (!plain || (key.name !== "up" && key.name !== "down") || open) return;
     // Up and Down bring back earlier messages, when the input is empty or shows one of them.
-    const now = recall.current;
-    if (now === null && (text !== "" || key.name === "down")) return;
-    if (now !== null && text !== history[now.at]) return; // edited: arrows move the cursor
+    const back = recall.current;
+    if (back === null && (typed !== "" || key.name === "down")) return;
+    if (back !== null && typed !== history[back.at]) return; // edited: arrows move the cursor
     key.preventDefault();
     if (key.name === "up") {
-      const at = now === null ? history.length - 1 : now.at - 1;
+      const at = back === null ? history.length - 1 : back.at - 1;
       if (at < 0) return;
-      recall.current = { at, draft: now?.draft ?? text };
+      recall.current = { at, draft: back?.draft ?? typed };
       return replace(history[at] ?? "");
     }
-    if (now === null) return;
-    const at = now.at + 1;
+    if (back === null) return;
+    const at = back.at + 1;
     if (at >= history.length) {
       recall.current = null;
-      return replace(now.draft);
+      return replace(back.draft);
     }
-    recall.current = { at, draft: now.draft };
+    recall.current = { at, draft: back.draft };
     replace(history[at] ?? "");
   });
 

@@ -1,4 +1,5 @@
 import { describe, expect, it, mock } from "bun:test";
+import { act } from "react";
 import { Picker } from "./Picker.tsx";
 import {
   arrow,
@@ -379,6 +380,26 @@ describe("accounts", () => {
     expect(frame).not.toContain("earlier question");
     expect(mem.get()).toBe(`c${n}`);
   });
+
+  for (const typed of ["new", "ne"]) {
+    it(`/${typed} typed faster than the screen redraws runs /new, not the first command (#56)`, async () => {
+      const client = fakeClient({
+        messages: async () => [
+          { role: "user", parts: [{ type: "text", text: "earlier question" }] },
+        ],
+      });
+      await using s = await screen(client, { ready: "earlier question", start: "last" });
+      await type(s, "/"); // the list of commands opens, /login highlighted
+      await act(async () => {
+        // The rest and Enter arrive before the next redraw, as from a paste or a macro.
+        await s.mockInput.typeText(typed);
+        s.mockInput.pressEnter();
+      });
+      const frame = await until(s, "your personal agent");
+      expect(frame).not.toContain("earlier question");
+      expect(frame).not.toContain("/login");
+    });
+  }
 
   it("a model that needs an account is dimmed in the picker, with how to connect it", async () => {
     await using s = await screen(fakeClient({ brains: async () => BRAINS }));

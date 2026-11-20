@@ -4,11 +4,12 @@ import {
   formatClock,
   formatDuration,
   STEP_MARK,
-  stepLine,
+  stepNote,
 } from "@enzo/chat";
 import type { SyntaxStyle } from "@opentui/core";
 import { useEffect, useState } from "react";
 import type { Reply } from "./commands.ts";
+import { urlsOnTheirOwnLines } from "./links.ts";
 import { COLOR, fg } from "./theme.ts";
 
 /** A command's output, kept in the chat under the command that made it (#36). */
@@ -22,6 +23,9 @@ export interface Card {
 }
 
 const FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+
+/** Only blocks with an address in them go through the link hook. */
+const URL_SCHEMES = ["http://", "https://"] as const;
 
 export function Spinner({ color = COLOR.accent }: { color?: string }) {
   const [frame, setFrame] = useState(0);
@@ -104,7 +108,14 @@ export function ReplyBlock({
   const shown = facts.length > 0 ? facts : model ? [model] : [];
   return (
     <box paddingLeft={2} flexShrink={0} flexDirection="column">
-      <markdown content={item.text} syntaxStyle={markdown} conceal streaming={streaming} />
+      <markdown
+        content={item.text}
+        syntaxStyle={markdown}
+        conceal
+        streaming={streaming}
+        inlineHook={urlsOnTheirOwnLines}
+        inlineHookFilter={URL_SCHEMES}
+      />
       {shown.length > 0 ? <Facts parts={shown} /> : null}
     </box>
   );
@@ -138,20 +149,24 @@ const STEP_COLOR = {
  */
 function Step({ item, details }: { item: ChatItem; details: boolean }) {
   const status = item.status ?? "ok";
-  const took =
-    details && item.ms !== undefined && status !== "running" ? `  ${formatDuration(item.ms)}` : "";
+  const running = status === "running";
+  const took = details && item.ms !== undefined && !running ? `  ${formatDuration(item.ms)}` : "";
+  const after = running ? "" : `${stepNote(item)}${took}`;
+  // How it went and how long it took are one text beside the words: a long step wraps its
+  // words, never the time or "failed" alone onto a line of their own (#56).
   return (
-    <box paddingLeft={2} flexShrink={0}>
-      <text {...fg(status === "running" ? undefined : COLOR.dim)}>
+    <box paddingLeft={2} flexShrink={0} flexDirection="row">
+      <text flexShrink={1} {...fg(running ? undefined : COLOR.dim)}>
         <span fg={COLOR.faint}>│ </span>
-        {status === "running" ? (
-          <Spinner />
-        ) : (
-          <span fg={STEP_COLOR[status]}>{STEP_MARK[status]}</span>
-        )}{" "}
-        {stepLine(item)}
-        <span fg={COLOR.faint}>{took}</span>
+        {running ? <Spinner /> : <span fg={STEP_COLOR[status]}>{STEP_MARK[status]}</span>}{" "}
+        {running ? `${item.text}…` : item.text}
       </text>
+      {after ? (
+        <text flexShrink={0} wrapMode="none">
+          <span fg={COLOR.dim}>{stepNote(item)}</span>
+          <span fg={COLOR.faint}>{took}</span>
+        </text>
+      ) : null}
     </box>
   );
 }

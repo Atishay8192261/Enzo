@@ -177,6 +177,13 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
   check spacing live in a pty. `pressKey("up")` types the letters: use `pressArrow`, `"ESCAPE"`, `"RETURN"`,
   `"TAB"`. Shift+Enter needs `kittyKeyboard: true` (legacy terminals send a bare `\r`; OpenTUI asks real
   terminals for the kitty protocol by default). `testRender` quits on Ctrl+C unless `exitOnCtrlC: false`.
+- Logs (`enzo.logs`, ADR 0019): JSON lines with the chat and `turn` from context variables; never
+  message text. uvicorn needs `log_config=None` or it swaps our handlers out; its `color_message` holds
+  escape codes. Our loggers get `propagate=False`: a test that configures logging must undo it.
+- OpenTUI wraps at `-`, `/` and even no-break spaces: a long URL gets its own line (markdown
+  `inlineHook`, `clients/cli/src/links.ts`), and a step's status and time are their own text.
+- Keys can arrive faster than React redraws (fast typing, a macro): key handlers read the input's
+  live `plainText`, never the last rendered state. Test it: type, then more keys + Enter in one `act()`.
 - Bun's default 5 s test timeout kills a slow test but leaves it running, which breaks the tests after it:
   `clients/cli/bunfig.toml` sets 20 s. Shared terminal test helpers live in `clients/cli/src/testing.tsx`.
 - React reuses a component at the same spot: dialogs get `key={kind}`, or a typed filter carries over.
@@ -259,4 +266,6 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
 - [x] v0.1.0 released (Atishay pushes release tags: this session's git proxy refuses tag pushes).
 - [x] Laptop retest fixes: #58 new lines (`\` + Enter), #55 typing during approvals, #42 one confirmation
   (PR #59); #57 + #38 fresh starts, `enzo -c`, `/chats` (Ctrl+R), `/rename`, `/delete` to trash (ADR 0018).
+- [x] #48 one JSON log per step, rotated file + `enzo logs` (ADR 0019); #43 plan billing on failed calls;
+  #56 first-start message, `enzo update` wording, fast `/new`, long links and step times.
 - Then continue in the order of the spec §17 checklist.

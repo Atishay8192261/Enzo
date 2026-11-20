@@ -51,9 +51,13 @@ def test_the_last_app_to_close_stops_the_gateway_and_its_database(
     installed: tuple[Path, Path, int],
 ) -> None:
     data, state, port = installed
-    gateway = launcher.attach(state, port, say=lambda _m: None)
+    said: list[str] = []
+    gateway = launcher.attach(state, port, say=said.append, first_start=True)
     try:
         assert gateway.started
+        assert said == [
+            "Starting Enzo. First start only: setting up your database (about a minute)…"
+        ]
         assert launcher.health(port) is not None
         assert postgres_running(data)  # the bundled database came up with it
 
@@ -94,6 +98,60 @@ def test_a_port_taken_by_another_program_is_explained(installed: tuple[Path, Pat
         port = busy.getsockname()[1]
         with pytest.raises(launcher.LauncherError, match=f"Port {port} is used by another program"):
             launcher.attach(state, port, say=lambda _m: None)
+
+
+def test_a_first_start_says_why_it_takes_a_minute_and_waits_longer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#56: the first start sat silent for 51 s while the database was set up."""
+    started: list[float] = []
+    monkeypatch.setattr(launcher, "_start", lambda _s, _p, timeout_s: started.append(timeout_s))
+    monkeypatch.setattr(launcher, "health", lambda _p: None)
+    monkeypatch.setattr(launcher, "port_taken", lambda _p: False)
+    said: list[str] = []
+    launcher.attach(tmp_path, 1, say=said.append)
+    launcher.attach(tmp_path, 1, say=said.append, first_start=True)
+    assert said == [
+        "Starting Enzo…",
+        "Starting Enzo. First start only: setting up your database (about a minute)…",
+    ]
+    assert started == [launcher.START_TIMEOUT_S, launcher.FIRST_START_TIMEOUT_S]
+
+
+@pytest.mark.parametrize(
+    ("database_url", "made", "first"),
+    [
+        (None, None, True),
+        (None, "PG_VERSION", False),
+        (None, "", True),  # a first start cut short: the folder is there, the database is not
+        ("postgresql+asyncpg://x/y", None, False),
+    ],
+)
+def test_the_app_knows_when_a_start_is_the_first(
+    installed: tuple[Path, Path, int],
+    monkeypatch: pytest.MonkeyPatch,
+    database_url: str | None,
+    made: str | None,
+    first: bool,
+) -> None:
+    data, _, _ = installed
+    if database_url:
+        monkeypatch.setenv("ENZO_DATABASE_URL", database_url)
+    if made is not None:
+        (data / "postgres").mkdir(parents=True)
+        if made:
+            (data / "postgres" / made).write_text("16\n")
+    seen: list[bool] = []
+
+    def attach(_state: Path, port: int, *, first_start: bool) -> launcher.Gateway:
+        seen.append(first_start)
+        return launcher.Gateway(launcher.url_for(port), True)
+
+    monkeypatch.setattr(launcher, "attach", attach)
+    monkeypatch.setattr(launcher, "release", lambda _s: None)
+    with cli._gateway():
+        pass
+    assert seen == [first]
 
 
 def test_a_gateway_that_dies_at_start_shows_its_last_words(
