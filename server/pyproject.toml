@@ -1,6 +1,6 @@
 [project]
 name = "enzo-agent"
-version = "0.1.0"
+version = "0.1.1"
 description = "Enzo: a private, local-first personal AI agent that runs on your own model accounts"
 readme = "README.md"
 license = "Apache-2.0"
