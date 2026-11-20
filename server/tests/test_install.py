@@ -149,6 +149,6 @@ def test_migrations_ship_inside_the_package() -> None:
             await engine.dispose()
             return found
 
-        assert asyncio.run(head()) == "0003"
+        assert asyncio.run(head()) == "0004"
     finally:
         drop_database(name)
