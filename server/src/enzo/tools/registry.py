@@ -26,6 +26,12 @@ log = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_S = 60.0
 
+#: Added to every approval-gated tool's description (#42).
+APPROVAL_NOTE = (
+    "The user approves the exact call on a card that Enzo shows: call this directly when they "
+    "ask for it, and never ask them to confirm in chat first."
+)
+
 type FailureKind = Literal[
     "invalid_arguments", "unknown_tool", "failed", "timeout", "bad_result", "declined", "not_run"
 ]
@@ -87,9 +93,14 @@ class Tool[P: BaseModel, R: BaseModel]:
     group: str | None = None
 
     def spec(self) -> ToolSpec:
+        # The card is the one confirmation: a model that asks in chat first makes the user
+        # confirm twice (#42).
+        about = (
+            f"{self.description} {APPROVAL_NOTE}" if self.requires_approval else self.description
+        )
         if self.schema is not None:
-            return ToolSpec(name=self.name, description=self.description, parameters=self.schema)
-        return ToolSpec.from_model(self.name, self.description, self.params)
+            return ToolSpec(name=self.name, description=about, parameters=self.schema)
+        return ToolSpec.from_model(self.name, about, self.params)
 
 
 def tool[P: BaseModel, R: BaseModel](  # noqa: PLR0913 - keyword-only tool options
