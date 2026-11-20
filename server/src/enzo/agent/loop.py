@@ -47,11 +47,14 @@ type StopReason = Literal[
 @dataclass(frozen=True, slots=True)
 class ToolStarted:
     call: ToolCall
+    #: The step in plain words for the chat, e.g. "Reading plan.md" (#40).
+    label: str
 
 
 @dataclass(frozen=True, slots=True)
 class ToolFinished:
     outcome: ToolOutcome
+    label: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,11 +379,11 @@ async def _execute(
             continue
         runnable.append(gate.run)
     for call in runnable:
-        yield ToolStarted(call)
+        yield ToolStarted(call, registry.activity(call))
     ran = {o.call.id: o for o in await registry.execute_all(runnable)}
     outcomes = [ran.get(c.id) or declined[c.id] for c in calls]
     for outcome in outcomes:
-        yield ToolFinished(outcome)
+        yield ToolFinished(outcome, registry.activity(outcome.call))
     turn.tool_outcomes.extend(outcomes)
     turn.messages.append(Message.tool(*(o.result for o in outcomes)))
 

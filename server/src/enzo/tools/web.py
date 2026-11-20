@@ -23,7 +23,7 @@ import httpx2
 from pydantic import BaseModel, ConfigDict, Field
 from urllib3.exceptions import DependencyWarning
 
-from enzo.tools.registry import Tool, tool
+from enzo.tools.registry import Tool, plain_words, tool
 
 with warnings.catch_warnings():
     # trafilatura probes urllib3's optional SOCKS support on import, and urllib3 warns when
@@ -96,6 +96,7 @@ def web_tools(*, tavily_key: KeyLookup, http: httpx2.AsyncClient) -> list[Tool[A
         ),
         timeout_s=30,
         untrusted_output=True,
+        activity=_search_activity,
     )
     async def web_search(params: SearchParams) -> SearchResults:
         return await search(params, http=http, key=tavily_key())
@@ -108,11 +109,27 @@ def web_tools(*, tavily_key: KeyLookup, http: httpx2.AsyncClient) -> list[Tool[A
         ),
         timeout_s=30,
         untrusted_output=True,
+        activity=_read_activity,
     )
     async def read_page(params: ReadParams) -> Page:
         return await fetch_page(params, http=http)
 
     return [web_search, read_page]
+
+
+def _search_activity(params: SearchParams) -> str:
+    return f"Searching the web for “{plain_words(params.query, 60)}”"
+
+
+def _read_activity(params: ReadParams) -> str:
+    return f"Reading {page_name(params.url)}"
+
+
+def page_name(url: str) -> str:
+    """An address as people say it: ``https://www.bbc.com/news/`` is ``bbc.com/news``."""
+    rest = url.split("://", 1)[-1].split("#", 1)[0].split("?", 1)[0]
+    rest = rest.removeprefix("www.").rstrip("/")
+    return plain_words(rest, 60) or url
 
 
 async def search(

@@ -208,6 +208,26 @@ class Store:
             )
             return list(rows)
 
+    async def saves(self, conversation_id: uuid.UUID) -> list[tuple[datetime, bool]]:
+        """When each part of the transcript was saved, in order, and whether it holds a user
+        message (a new turn) or continues one (a resume after an approval).
+
+        A turn's messages are written in one transaction, so they share its timestamp.
+        """
+        async with self._sessions() as session:
+            rows = await session.execute(
+                select(MessageRow.created_at, MessageRow.role)
+                .where(MessageRow.conversation_id == conversation_id)
+                .order_by(MessageRow.seq)
+            )
+            saves: list[tuple[datetime, bool]] = []
+            for at, role in rows:
+                if saves and saves[-1][0] == at:
+                    saves[-1] = (at, saves[-1][1] or role == "user")
+                else:
+                    saves.append((at, role == "user"))
+            return saves
+
     async def tool_calls(self, conversation_id: uuid.UUID) -> list[ToolCallRow]:
         async with self._sessions() as session:
             rows = await session.scalars(

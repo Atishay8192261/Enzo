@@ -9,6 +9,7 @@ comes back as an error result the brain can read and fix. A tool failure never c
 import asyncio
 import dataclasses
 import json
+import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -20,6 +21,8 @@ from pydantic import BaseModel, ConfigDict
 from enzo.brain.models import ToolCall, ToolResult, ToolSpec
 from enzo.brain.toolcall import ToolCallRejection, ValidatedCall, validate_call
 from enzo.tools.fence import fence
+
+log = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_S = 60.0
 
@@ -72,6 +75,8 @@ class Tool[P: BaseModel, R: BaseModel]:
     #: For approval-gated tools: the exact action in plain words, shown on the approval card
     #: (§10.3: no tool names in user-facing text; §12.3: approve the exact action).
     summary: Callable[[P], str] | None = None
+    #: What the chat shows while the call runs, in plain words: "Reading plan.md" (#40).
+    activity: Callable[[P], str] | None = None
     #: For approval-gated tools: look up what the call will really do and pin it before asking.
     #: The approval covers the prepared arguments, so if the target changes, the user is asked
     #: again (§12.3 "if the content changes after approval, ask again").
@@ -87,7 +92,7 @@ class Tool[P: BaseModel, R: BaseModel]:
         return ToolSpec.from_model(self.name, self.description, self.params)
 
 
-def tool[P: BaseModel, R: BaseModel](
+def tool[P: BaseModel, R: BaseModel](  # noqa: PLR0913 - keyword-only tool options
     *,
     name: str,
     description: str,
@@ -95,6 +100,7 @@ def tool[P: BaseModel, R: BaseModel](
     timeout_s: float = DEFAULT_TIMEOUT_S,
     untrusted_output: bool = False,
     summary: Callable[[P], str] | None = None,
+    activity: Callable[[P], str] | None = None,
     prepare: Callable[[P], Awaitable[Prepared[P]]] | None = None,
 ) -> Callable[[Handler[P, R]], Tool[P, R]]:
     """Declare a tool from an async function; parameter and result models come from its hints."""
@@ -116,6 +122,7 @@ def tool[P: BaseModel, R: BaseModel](
             timeout_s=timeout_s,
             untrusted_output=untrusted_output,
             summary=summary,
+            activity=activity,
             prepare=prepare,
         )
 
@@ -171,6 +178,24 @@ class ToolRegistry:
         """Specs for the brain; ``names`` loads only the tools a task needs (§3 step 2)."""
         chosen = self._tools if names is None else {n: self._tools[n] for n in names}
         return [t.spec() for t in chosen.values()]
+
+    def activity(self, call: ToolCall) -> str:
+        """The step in plain words for the chat (#40), never the tool's name (§10.3).
+
+        Arguments come from the brain, so the words are made safe to print: one line, no control
+        characters (a terminal would run escape sequences), and not too long.
+        """
+        t = self._tools.get(call.name)
+        describe = (t.activity or t.summary) if t else None
+        checked = self.validate(call) if describe else None
+        if describe is None or not isinstance(checked, ValidatedCall):
+            return GENERIC_ACTIVITY
+        try:
+            words = describe(checked.args)
+        except Exception:  # a describer bug must never break the turn
+            log.exception("tool activity failed", extra={"tool": call.name})
+            return GENERIC_ACTIVITY
+        return plain_words(words) or GENERIC_ACTIVITY
 
     def validate(self, call: ToolCall) -> ValidatedCall | ToolCallRejection:
         t = self._tools.get(call.name)
@@ -248,6 +273,16 @@ def _validate_schema(call: ToolCall, schema: dict[str, Any]) -> ValidatedCall | 
         )
         return ToolCallRejection(call, f"Invalid arguments for {call.name}: {problems}.")
     return ValidatedCall(call, JsonArgs(**data))
+
+
+GENERIC_ACTIVITY = "Working on a step"
+MAX_ACTIVITY = 90
+
+
+def plain_words(text: str, limit: int = MAX_ACTIVITY) -> str:
+    """One printable line, cut at ``limit`` characters with an ellipsis."""
+    line = " ".join("".join(c if c.isprintable() else " " for c in text).split())
+    return line if len(line) <= limit else f"{line[: limit - 1].rstrip()}…"
 
 
 def _since(started: float) -> float:

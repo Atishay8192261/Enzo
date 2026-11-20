@@ -19,7 +19,11 @@ class Out(BaseModel):
 ran: list[tuple[str, str]] = []
 
 
-@tool(name="step", description="Record a step.")
+def doing(args: Args) -> str:
+    return f"Doing {args.value}"
+
+
+@tool(name="step", description="Record a step.", activity=doing)
 async def step(args: Args) -> Out:
     ran.append(("step", args.value))
     await asyncio.sleep(0.1)
