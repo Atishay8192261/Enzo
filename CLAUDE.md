@@ -171,7 +171,23 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
 - Every tool call must be answered in the next message, or providers refuse the whole history (#39):
   `enzo.agent.history` closes calls the user moved on from and repairs older chats.
 - An approval id covers the call id too (ADR 0014): a decision never applies to a later request.
-- OpenTUI drops keys typed while the input is unfocused (during a reply or an approval card).
+- OpenTUI drops keys typed while the input is unfocused (an approval card or a dialog is up). The input
+  stays focused while a reply streams; Enter then keeps the text instead of sending it.
+- OpenTUI tests: the test renderer ignores flex `gap` (a real terminal draws it), so test content and order;
+  check spacing live in a pty. `pressKey("up")` types the letters: use `pressArrow`, `"ESCAPE"`, `"RETURN"`,
+  `"TAB"`. Shift+Enter needs `kittyKeyboard: true` (legacy terminals send a bare `\r`; OpenTUI asks real
+  terminals for the kitty protocol by default). `testRender` quits on Ctrl+C unless `exitOnCtrlC: false`.
+- Bun's default 5 s test timeout kills a slow test but leaves it running, which breaks the tests after it:
+  `clients/cli/bunfig.toml` sets 20 s. Shared terminal test helpers live in `clients/cli/src/testing.tsx`.
+- React reuses a component at the same spot: dialogs get `key={kind}`, or a typed filter carries over.
+- Tree-sitter code highlighting fails inside `bun test` (it warns and falls back) but works from source and
+  in compiled binaries.
+- Step words come from `Tool.activity` (then the approval `summary`, then a generic line), made printable
+  and short by the registry: arguments come from the brain, so escape codes must never reach a terminal.
+- Per-turn usage groups brain calls by save: a turn's messages share one transaction `now()`, and each
+  call belongs to the first save after it started (`enzo.gateway.usage.per_turn`).
+- A command card's title echoes arguments only when the command takes them (`echoOf`): a key pasted after
+  `/login xai` must never be drawn.
 - Uvicorn re-raises SIGTERM after shutting down: without a handler that exits normally, atexit hooks (the
   bundled Postgres stop) never run (`enzo serve`). The launcher also catches SIGHUP/SIGTERM to release.
 - A child process that exited stays a zombie until reaped and still "exists" to `os.kill(pid, 0)`: use
@@ -234,4 +250,7 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
   (bundled Postgres, verified terminal-app download, web app served by the gateway), tag → Release workflow →
   GitHub release + PyPI `enzo-agent` (trusted publishing). First release pending Atishay's PyPI publisher setup.
 - [x] GitHub connector: issue #2 (live write flow on a sandbox repo still to verify with a real token)
+- [x] Terminal redesign (ADR 0017): #35 layout, #34 slash popup + palette, #36 rendering, #40 steps, #44
+  offline, #49 usage per reply and per chat (also for reopened chats), `exit`/`quit`/Ctrl+D. Images (#35's
+  lower-priority part) still to do.
 - Then continue in the order of the spec §17 checklist.

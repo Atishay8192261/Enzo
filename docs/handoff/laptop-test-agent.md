@@ -31,7 +31,7 @@ GitHub issue.
 - Spending: every real message costs money on Atishay's own accounts. Prefer the fast and balanced
   tiers for routine tests, and tell him before a test that sends long prompts or many turns.
 
-## What Enzo is today (2026-11-19)
+## What Enzo is today (2026-11-20)
 
 Enzo is a personal AI agent with a swappable model "brain". There are three running pieces:
 
@@ -51,9 +51,35 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
   - Keys and sign-in tokens are kept in the macOS Keychain under service `enzo`.
   - Terminal: `/login <provider>`, `/logout <provider>`, `/connections`, `/check <provider>`.
   - Web: the **Accounts** panel.
+- **Terminal app (redesigned 2026-11-20: #34, #35, #36, #40, #44, #49).** Full screen, in
+  Enzo's own style:
+  - **Opening screen:** a big ENZO wordmark (a plain title under 60 columns or 20 rows), the
+    version, the account and model, key hints, and the input under it. It gives way to the chat
+    at the first message. With no account it says how to connect.
+  - **The chat:** a header (Enzo, the chat's title, ● connected / ○ offline). Your messages are
+    cards with the time sent; Enzo's turn starts with "◆ enzo". Replies are formatted Markdown
+    (bold, lists, code, links). Each step Enzo takes is a line with a spinner, then ✓/✗ and its
+    time ("│ ✓ Reading plan.md  40ms"). Under each reply: model · first word · total time ·
+    tokens in/out · cost or "ChatGPT plan".
+  - **Status bar:** model · account · what this chat used, plus key hints. **Side panel** (shown
+    at 120+ columns, `/sidebar` toggles): tokens in/out/cached, model calls, model time, paid,
+    models, accounts.
+  - **Commands:** typing `/` lists every command and filters as you type; Tab or Enter completes,
+    and arguments complete too (`/login `, `/model `, `/logout `). **Ctrl+P** opens a palette of
+    everything. `/model`, `/login` and `/logout` alone open a picker (↑/↓, Enter, Esc). Command
+    output is a card titled with the command. New: `/copy` (`/copy code`), `/details on|off`,
+    `/retry`, `/sidebar`.
+  - **Keys:** Enter sends. Shift+Enter (terminals with the kitty keyboard protocol: Kitty, Ghostty,
+    WezTerm, iTerm2), Alt+Enter or Ctrl+J make a new line. ↑/↓ bring back earlier messages. Long
+    pastes show as "[Pasted 42 lines]" and are sent in full. Selecting text with the mouse copies
+    it (also over SSH). Esc stops a reply or closes a list. PgUp/PgDn scroll. Ctrl+C clears the
+    input, or quits when it is empty. **Quit:** type `exit` or `quit`, or press Ctrl+D.
+  - **Enzo unreachable:** the header says "offline · retrying", a red line says "Can't reach Enzo
+    at 127.0.0.1:8787", and a message sent then is marked not sent. It reconnects by itself and
+    says "Connected to Enzo again. /retry sends your message again."
 - **Chat.** Streaming replies. The conversation survives a restart.
   - Terminal: the conversation id is kept in `~/.config/enzo/conversation`. `/new` starts a new
-    chat; a new chat greets you and says how to connect when nothing is.
+    chat on the opening screen.
   - Web (redesigned 2026-11-19): a welcome screen with suggestions, **New chat**, an **Accounts**
     side panel, Enter sends and Shift+Enter makes a new line. Light and dark follow the system.
   - Old chats stay saved, but there is no list of them yet (only the latest is reopened).
@@ -68,16 +94,21 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
   each model needs). `/model <name|fast|balanced|powerful|auto>` picks a model, any model of a tier,
   or smart routing. Web: the Model menu, grouped by tier. Models without a connected account are
   shown but cannot be picked.
-- **Which model answered.** Every live reply shows the model that wrote it (terminal: `· name` after
-  the reply; web: small text under it). Replies loaded from history don't show it yet.
+- **Which model answered, and what it used (#49).** Every reply shows its model, tokens and cost,
+  live and in a reopened chat (terminal: the line under the reply; web: the model only, so far).
+  A reopened chat shows "model time" instead of first-word and total time.
 - **Approvals.** A risky action (deleting a file, merging a pull request) waits for an approval card
   in plain words, with the exact arguments and, for merges, the diff. A card left open when the
   app closed comes back when it reopens. Each request needs its own yes: approving "delete
   plan.md" once never approves it again later.
 - **Stop.** Esc (terminal) or the Stop button (web) ends the reply being written, from any window.
   The words already shown stay. A message sent while a reply runs is marked "(not sent)".
-- **Cost.** Shown after each reply, or "cost unknown" when a provider publishes no price. With a
-  ChatGPT sign-in: "Using ChatGPT plan" and a Manage usage link.
+- **Cost.** Under each reply and for the whole chat, or "cost unknown" when a provider publishes no
+  price (never 0). With a ChatGPT sign-in: "ChatGPT plan". The Manage usage link is in the sign-in
+  card.
+- **Steps (#40).** Each thing Enzo does shows in plain words, never a tool name: "Searching the web
+  for “…”", "Reading bbc.com/news", "Editing plan.md", "GitHub: Merge pull request (…)". The web
+  app shows the same lines (its full redesign is parked).
 
 **Not built yet** (don't file these as bugs; do note how much their absence hurts real use):
 
@@ -159,7 +190,8 @@ For each journey:
      ChatGPT plan… Signed in with ChatGPT as <email>".
    - `/connections` shows `openai: connected (ChatGPT plan, <email>, …)`. `/models` marks models
      the plan doesn't include as unavailable.
-   - Send a few messages. Each reply ends with `· gpt-…` and the footer says "Using ChatGPT plan".
+   - Send a few messages. Each reply has a line under it: `└ gpt-… · … · ChatGPT plan`, and the
+     status bar says "this chat: … tokens · ChatGPT plan".
      Check the brain_calls query below: `billing` is `plan`, `cost_usd` empty.
    - Then the web app: Accounts → **Continue with ChatGPT** works the same in a new tab.
    - Failure paths:
@@ -192,7 +224,10 @@ For each journey:
 8. **Restart.** Stop and start the gateway and both apps.
    - The conversation and its history must still be there.
 9. **Failures.**
-   - Stop the gateway while an app is open. Expect a plain "Gateway unreachable" message.
+   - Stop the gateway while the terminal app is open (#44 retest). Within a few seconds the header
+     says "○ offline · retrying" and a red line names the address. Send a message: it is marked
+     not sent, with no raw error (no "ECONNREFUSED"). Start the gateway again: "Connected to Enzo
+     again", then `/retry` sends it.
    - Disconnect a provider with `/logout`, then send a message to a conversation that used it.
    - **Wi-Fi off mid-reply (#46 retest):** ask for a long story, turn Wi-Fi off once words
      stream.
@@ -232,7 +267,23 @@ For each journey:
    - ChatGPT tokens are JWTs (they start with `eyJ`). List files that contain one, without printing
      anything: `grep -rl eyJ ~/.config/enzo .dev/gateway.log`. Expect no files: tokens are only in
      the Keychain.
-13. **Usability verdict.** After a session, write 5 to 10 bullets with Atishay:
+13. **Terminal redesign retest (#34, #35, #36, #40, #44, #49).** At 80 and at 140 columns:
+    - Opening screen: wordmark, version, account, hints; under 60 columns a plain title.
+    - Type `/`, `/lo`, Tab: the list filters and `/login ` lists accounts. `/model` + Enter opens
+      the picker. Ctrl+P opens the palette; type to filter; Esc closes.
+    - Ask "explain a mutex in 3 bullets": bold and lists render, no `**`. The model line sits on
+      its own line under the reply. `/help` columns line up. Long links stay whole on one line.
+    - Ask something that searches the web and reads a page: each step appears live with a
+      spinner, then ✓ or ✗ and its time, and stays after the reply.
+    - Under each reply: time to first word, total time, tokens, cost or plan. Quit and reopen: the
+      same facts come back (with "model time"). `/details off` hides them.
+    - Paste a 40-line file: "[Pasted 40 lines]"; it sends in full. Shift+Enter, Alt+Enter or
+      Ctrl+J make new lines. ↑ brings back the last message. Select reply text with the mouse:
+      "Copied to clipboard"; paste it elsewhere. `/copy code` copies a code block.
+    - Type while a reply streams: the text is kept; Enter then says to wait or press Esc.
+    - Quit three ways: `exit`, `quit`, Ctrl+D. Ctrl+C clears typed text first.
+    - Note what still feels unlike Claude Code / Codex, and what feels better.
+14. **Usability verdict.** After a session, write 5 to 10 bullets with Atishay:
     - Could he use this every day?
     - What is missing first?
     - What annoyed him?
@@ -249,6 +300,12 @@ Accounts (never shows keys):
 
 ```bash
 curl -s http://127.0.0.1:8787/connections
+```
+
+What one chat used, in total and per message (the id is in `~/.config/enzo/conversation`):
+
+```bash
+curl -s "http://127.0.0.1:8787/conversations/$(cat ~/.config/enzo/conversation)/usage"
 ```
 
 The catalog by tier, and what is available right now:
