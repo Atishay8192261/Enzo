@@ -1,6 +1,7 @@
 """``enzo``: the one command an installed Enzo needs (#23, ADR 0016).
 
-enzo           the terminal app (the gateway and its database start with it)
+enzo           the terminal app, in a new chat (the gateway and its database start with it)
+enzo -c        the terminal app, in the last chat (--continue)
 enzo web       the web app in your browser
 enzo doctor    check this installation, with a fix for each problem
 enzo update    update to the latest release
@@ -34,8 +35,14 @@ OK, BAD, NOTE = "✓", "✗", "·"
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="enzo", description="Enzo, your personal AI agent.")
     parser.add_argument("--version", action="version", version=f"enzo {__version__}")
+    parser.add_argument(
+        "-c", "--continue", dest="last", action="store_true", help="reopen your last chat"
+    )
     commands = parser.add_subparsers(dest="command", metavar="command")
-    commands.add_parser("chat", help="open the terminal app (what `enzo` alone does)")
+    chat_parser = commands.add_parser("chat", help="open the terminal app (what `enzo` alone does)")
+    chat_parser.add_argument(
+        "-c", "--continue", dest="last", action="store_true", help="reopen your last chat"
+    )
     commands.add_parser("web", help="open the web app in your browser")
     commands.add_parser("doctor", help="check this installation and say how to fix problems")
     commands.add_parser("update", help="update Enzo to the latest release")
@@ -43,8 +50,8 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("--managed", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     run: dict[str | None, Callable[[], int]] = {
-        None: chat,
-        "chat": chat,
+        None: lambda: chat(last=args.last),
+        "chat": lambda: chat(last=args.last),
         "web": web,
         "doctor": doctor,
         "update": update,
@@ -57,12 +64,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
-def chat() -> int:
+def chat(*, last: bool = False) -> int:
+    """The terminal app: a new chat, or with ``last`` the chat used last (#57)."""
     with httpx2.Client(timeout=httpx2.Timeout(30.0, connect=15.0)) as http:
         app = tui.ensure(data_dir(), http, progress=print)
     with _gateway() as gateway, _ignoring_interrupts():
         env = {**os.environ, "ENZO_GATEWAY_URL": gateway.url}
-        return subprocess.call([str(app)], env=env)  # noqa: S603 - our own verified binary
+        argv = [str(app), "--continue"] if last else [str(app)]
+        return subprocess.call(argv, env=env)  # noqa: S603 - our own verified binary
 
 
 def web() -> int:

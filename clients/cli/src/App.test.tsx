@@ -117,7 +117,7 @@ describe("a chat in the terminal", () => {
         turns: [{ ...USED, started_at: "2026-11-20T09:05:00Z" }],
       }),
     });
-    await using s = await screen(client, { ready: "Tidied." });
+    await using s = await screen(client, { ready: "Tidied.", start: "last" });
     const frame = await until(s, "model time");
     expect(frame).toContain("✓ Reading notes.md  40ms");
     expect(frame).toContain("3.1s model time");
@@ -289,6 +289,7 @@ describe("a chat in the terminal", () => {
     });
     await using s = await screen(fakeClient({ conversation, decide }), {
       memory: memory("c1"),
+      start: "last",
       ready: "Approve this action?",
     });
     expect(s.captureCharFrame()).toContain("Delete plan.md");

@@ -1,6 +1,12 @@
 /** Helpers for the terminal app's tests: a fake gateway, and driving the screen like a user. */
 import { mock } from "bun:test";
-import type { AccountsClient, ChatClient, ConversationMemory } from "@enzo/chat";
+import type {
+  AccountsClient,
+  ChatClient,
+  ChatsClient,
+  ConversationMemory,
+  Start,
+} from "@enzo/chat";
 import type {
   AgentEvent,
   Brain,
@@ -128,7 +134,7 @@ export function memory(start: string | null = null): ConversationMemory {
   };
 }
 
-export type Client = ChatClient & AccountsClient;
+export type Client = ChatClient & AccountsClient & ChatsClient;
 
 export function fakeClient(overrides: Partial<Client> = {}): Client {
   const usage: ConversationUsage = { total: NONE, turns: [] };
@@ -153,6 +159,9 @@ export function fakeClient(overrides: Partial<Client> = {}): Client {
     conversation: async () => CONVERSATION,
     messages: async () => [],
     usage: async () => usage,
+    conversations: async () => [],
+    renameConversation: mock(async () => {}),
+    deleteConversation: mock(async () => {}),
     chooseBrain: mock(async () => {}),
     send: () => events(),
     resume: () => events(),
@@ -176,6 +185,8 @@ export interface ScreenOptions {
   healthEveryMs?: number;
   /** A terminal that reports keys with the kitty protocol (Shift+Enter told apart from Enter). */
   kitty?: boolean;
+  /** A fresh chat (`enzo`, the default) or the last one (`enzo --continue`). */
+  start?: Start;
   /** What the terminal says it supports once it answers (e.g. the kitty keyboard protocol). */
   terminal?: Partial<TerminalCapabilities>;
 }
@@ -191,6 +202,7 @@ export async function screen(client: Client, options: ScreenOptions = {}): Promi
       copy={options.copy ?? (async () => true)}
       version="0.1.0"
       healthEveryMs={options.healthEveryMs ?? 60_000}
+      start={options.start ?? "fresh"}
     />,
     {
       width: options.width ?? 90,

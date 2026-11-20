@@ -1,11 +1,13 @@
 import {
   type AccountsClient,
   type ChatClient,
+  type ChatsClient,
   type ConversationMemory,
+  type Start,
   signInWithChatGPT,
   useChat,
 } from "@enzo/chat";
-import type { ProviderConnection } from "@enzo/sdk";
+import type { ChatSummary, ProviderConnection } from "@enzo/sdk";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -13,6 +15,8 @@ import { ApprovalCard } from "./Approval.tsx";
 import { openInBrowser } from "./browser.ts";
 import {
   accountWords,
+  ago,
+  chatTitle,
   Header,
   Home,
   modelWords,
@@ -57,6 +61,8 @@ const PICKER_TITLE: Record<PickerKind | "palette", string> = {
   model: "Choose a model",
   login: "Connect an account",
   logout: "Disconnect an account",
+  chats: "Your chats",
+  delete: "Move this chat to the trash?",
 };
 
 /** Typed alone and sent with Enter while an approval card is open: the answer to the card. */
@@ -79,8 +85,9 @@ export function App({
   version = "dev",
   gatewayUrl = "http://127.0.0.1:8787",
   healthEveryMs,
+  start = "fresh",
 }: {
-  client: ChatClient & AccountsClient;
+  client: ChatClient & AccountsClient & ChatsClient;
   memory: ConversationMemory;
   onQuit: () => void;
   /** Opens sign-in pages; tests pass a fake. */
@@ -92,9 +99,14 @@ export function App({
   gatewayUrl?: string;
   /** How often to check the gateway; tests make it short. */
   healthEveryMs?: number;
+  /** A fresh chat (`enzo`), or the last one (`enzo --continue`) (#57). */
+  start?: Start;
 }) {
-  const chat = useChat(client, memory, "cli", healthEveryMs ? { healthEveryMs } : {});
-  const { state, send, resend, decide, chooseBrain, refreshBrains, newChat, stop } = chat;
+  const chat = useChat(client, memory, "cli", {
+    start,
+    ...(healthEveryMs ? { healthEveryMs } : {}),
+  });
+  const { state, send, resend, decide, chooseBrain, refreshBrains, newChat, openChat, stop } = chat;
   const renderer = useRenderer();
   const { width, height } = useTerminalDimensions();
   const markdown = useMemo(() => markdownStyle(renderer.nativeScene), [renderer]);
@@ -107,6 +119,8 @@ export function App({
   const [sidebar, setSidebar] = useState<boolean | null>(null); // null: by terminal width
   const [details, setDetails] = useState(true);
   const [connections, setConnections] = useState<ProviderConnection[]>([]);
+  // Past chats: the newest one for the opening screen's "continue" line, all of them for /chats.
+  const [chats, setChats] = useState<ChatSummary[]>([]);
   const [flash, setFlash] = useState<string | null>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -125,9 +139,17 @@ export function App({
   const loadAccounts = useCallback(() => {
     client.connections().then(setConnections, () => {});
   }, [client]);
+  const opened = state.status !== "connecting" && state.status !== "offline";
   useEffect(() => {
-    if (state.conversationId && state.online) loadAccounts();
-  }, [state.conversationId, state.online, loadAccounts]);
+    if (opened && state.online) loadAccounts();
+  }, [opened, state.online, loadAccounts]);
+  const loadChats = useCallback(() => {
+    client.conversations(30).then(setChats, () => {});
+  }, [client]);
+  useEffect(() => {
+    if (opened && state.online) loadChats();
+  }, [opened, state.online, loadChats]);
+  const lastChat = chats.find((c) => c.id !== state.conversationId);
   const accountsChanged = useCallback(() => {
     loadAccounts();
     refreshBrains().catch(() => {});
@@ -166,6 +188,7 @@ export function App({
   const contextFor = (card: CardHandle): CommandContext => ({
     client,
     current: state.brain,
+    chatId: state.conversationId,
     chooseBrain,
     newChat: async () => {
       await newChat();
@@ -187,7 +210,35 @@ export function App({
       accountsChanged();
       return result.usageUrl ? `${result.text}\nManage usage:\n${result.usageUrl}` : result.text;
     },
-    pick: setPicker,
+    pick: (kind) => {
+      if (kind === "chats") loadChats();
+      setPicker(kind);
+    },
+    openChat: async (id) => {
+      await openChat(id);
+      setCards([]);
+    },
+    renameChat: async (title) => {
+      const id = state.conversationId;
+      if (!id) return "Send a message first: a new chat is named after its first message.";
+      const name = title.split(/\s+/).join(" ");
+      await client.renameConversation(id, name);
+      chat.renamed(name);
+      loadChats();
+      return `Renamed this chat “${name}”.`;
+    },
+    deleteChat: async () => {
+      const id = state.conversationId;
+      if (!id) return "Nothing to delete: this chat has no messages yet.";
+      const name = chatTitle(state, 40);
+      await client.deleteConversation(id);
+      await newChat();
+      setCards([]);
+      loadChats();
+      // The fresh chat's opening screen shows; a card would hide it.
+      say(`Moved “${name}” to the trash`);
+      return null;
+    },
     copy: copyLast,
     toggleSidebar: () => setSidebar(!showSidebar),
     setDetails: (on) => {
@@ -266,6 +317,12 @@ export function App({
       key.preventDefault();
       return setPicker("palette");
     }
+    if (key.ctrl && key.name === "r") {
+      // Past chats, like Claude Code's /resume (#38).
+      key.preventDefault();
+      loadChats();
+      return setPicker("chats");
+    }
     if (key.ctrl && key.name === "c") {
       key.preventDefault();
       const selected = renderer.getSelection()?.getSelectedText();
@@ -291,6 +348,20 @@ export function App({
 
   const choices = (kind: PickerKind | "palette"): Choice[] => {
     if (kind === "palette") return PALETTE;
+    if (kind === "chats") {
+      return chats.map((c) => ({
+        label: c.title ?? "Untitled chat",
+        description: `${ago(c.last_active)} · ${c.messages} message${c.messages === 1 ? "" : "s"}${c.id === state.conversationId ? " · open now" : ""}`,
+        value: `/open ${c.id}`,
+      }));
+    }
+    if (kind === "delete") {
+      // Keeping it is first: a stray Enter never deletes anything.
+      return [
+        { label: "No, keep it", value: "/delete keep" },
+        { label: `Yes, move “${chatTitle(state, 30)}” to the trash`, value: "/delete confirm" },
+      ];
+    }
     const sources = { connections, brains: state.brains };
     return suggest(`/${kind} `, sources).map((s) => {
       const brain = state.brains.find((b) => b.name === s.label);
@@ -342,7 +413,9 @@ export function App({
     />
   );
 
+  // `enzo --continue` waits for its chat instead of drawing the opening screen first (#57).
   const empty =
+    !(start === "last" && state.status === "connecting") &&
     state.items.length === 0 &&
     !state.draft &&
     cards.length === 0 &&
@@ -399,6 +472,7 @@ export function App({
             <Home
               state={state}
               connections={connections}
+              lastChat={lastChat ?? null}
               version={version}
               width={width}
               height={height}

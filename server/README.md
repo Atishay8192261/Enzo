@@ -23,7 +23,8 @@ with it. macOS (Apple silicon or Intel) and Linux (x64 or arm64). On Windows, us
 ## Use
 
 ```bash
-enzo            # the terminal app
+enzo            # the terminal app, in a new chat
+enzo -c         # the terminal app, in your last chat (ctrl+r there lists them all)
 enzo web        # the web app, in your browser
 enzo doctor     # check the installation; each problem comes with a fix
 enzo update     # the latest release

@@ -188,6 +188,9 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
   call belongs to the first save after it started (`enzo.gateway.usage.per_turn`).
 - A command card's title echoes arguments only when the command takes them (`echoOf`): a key pasted after
   `/login xai` must never be drawn.
+- Tests share one database per session: list endpoints must be checked against the test's own ids.
+- A fresh terminal chat has no id until its first message (`useChat` `start: "fresh"`): code that waits for
+  "connected" must use the status, not `conversationId`.
 - Uvicorn re-raises SIGTERM after shutting down: without a handler that exits normally, atexit hooks (the
   bundled Postgres stop) never run (`enzo serve`). The launcher also catches SIGHUP/SIGTERM to release.
 - A child process that exited stays a zombie until reaped and still "exists" to `os.kill(pid, 0)`: use
@@ -253,4 +256,7 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
 - [x] Terminal redesign (ADR 0017): #35 layout, #34 slash popup + palette, #36 rendering, #40 steps, #44
   offline, #49 usage per reply and per chat (also for reopened chats), `exit`/`quit`/Ctrl+D. Images (#35's
   lower-priority part) still to do.
+- [x] v0.1.0 released (Atishay pushes release tags: this session's git proxy refuses tag pushes).
+- [x] Laptop retest fixes: #58 new lines (`\` + Enter), #55 typing during approvals, #42 one confirmation
+  (PR #59); #57 + #38 fresh starts, `enzo -c`, `/chats` (Ctrl+R), `/rename`, `/delete` to trash (ADR 0018).
 - Then continue in the order of the spec §17 checklist.

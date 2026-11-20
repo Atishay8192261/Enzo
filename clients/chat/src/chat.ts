@@ -24,6 +24,12 @@ export type ChatClient = Pick<
   | "usage"
 >;
 
+/** Listing and tidying past chats (#38): not every surface has these yet. */
+export type ChatsClient = Pick<
+  GatewayClient,
+  "conversations" | "renameConversation" | "deleteConversation"
+>;
+
 /** How a step went: running now, done, failed, not run (declined, moved on) or stopped. */
 export type StepStatus = "running" | "ok" | "failed" | "skipped" | "stopped";
 
@@ -104,6 +110,8 @@ export interface ChatState {
   status: "connecting" | "ready" | "streaming" | "offline";
   error: string | null;
   conversationId: string | null;
+  /** The chat's name: set by the gateway from its first message, or renamed by the user. */
+  title: string | null;
   brains: Brain[];
   brain: string | null;
   items: ChatItem[];
@@ -126,6 +134,7 @@ export const initialState: ChatState = {
   status: "connecting",
   error: null,
   conversationId: null,
+  title: null,
   brains: [],
   brain: null,
   items: [],
@@ -143,7 +152,9 @@ export const initialState: ChatState = {
 export type ChatAction =
   | {
       type: "connected";
-      conversationId: string;
+      /** Null: a fresh chat, created when its first message is sent. */
+      conversationId: string | null;
+      title?: string | null;
       brains: Brain[];
       brain: string | null;
       items: ChatItem[];
@@ -155,6 +166,9 @@ export type ChatAction =
       totals?: Usage;
     }
   | { type: "offline"; error: string }
+  /** A fresh chat was created by its first message. */
+  | { type: "created"; conversationId: string }
+  | { type: "renamed"; title: string }
   /** The gateway stopped answering mid-session, or answers again. */
   | { type: "gateway"; online: boolean }
   | { type: "unsent"; reason: "busy" | "failed" | "unreachable"; message?: string }
@@ -238,6 +252,7 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
         status: "ready",
         error: null,
         conversationId: action.conversationId,
+        title: action.title ?? null,
         brains: action.brains,
         brain: action.brain,
         items: action.running
@@ -253,6 +268,10 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
         turnStartedAt: null,
         firstWordAt: null,
       };
+    case "created":
+      return { ...state, conversationId: action.conversationId };
+    case "renamed":
+      return { ...state, title: action.title };
     case "offline":
       return {
         ...state,
