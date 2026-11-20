@@ -553,6 +553,8 @@ async def test_each_plan_request_asks_for_a_fresh_token_and_is_paid_by_the_plan(
     assert (
         await brain(streaming(response([TEXT]))).chat([Message.user("x")], max_output_tokens=5)
     ).billing == "usage"
+    # Known before any reply: a call that fails is still the plan's (#43).
+    assert (b.billing, brain(streaming(response([]))).billing) == ("plan", "usage")
 
 
 @pytest.mark.parametrize(

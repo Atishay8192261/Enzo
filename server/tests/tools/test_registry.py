@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -122,6 +123,21 @@ async def test_independent_calls_run_concurrently_in_call_order() -> None:
     elapsed = time.perf_counter() - started
     assert [o.result.call_id for o in outcomes] == ["ca", "cb", "cc"]
     assert elapsed < 0.45  # sequential would take 0.6s
+
+
+@pytest.mark.parametrize(
+    ("name", "args"),
+    [("echo", {"text": "x", "delay_s": 0.1}), ("slow", {"text": "x"})],
+)
+async def test_an_outcome_records_when_the_call_started(name: str, args: object) -> None:
+    """#43: a turn's tool rows all carried the save time; a timeline needs each start."""
+    before = datetime.now(UTC)
+    outcome = await REGISTRY.execute(call(name, args))
+    after = datetime.now(UTC)
+    assert before <= outcome.started_at
+    # The start, not the end: a call that took 50 ms or more started that long before now.
+    assert outcome.started_at <= after - timedelta(milliseconds=45)
+    assert outcome.latency_ms >= 45
 
 
 async def test_cancellation_is_not_swallowed_as_a_tool_error() -> None:

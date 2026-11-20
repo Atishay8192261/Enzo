@@ -302,7 +302,10 @@ def _sse(event: ServiceEvent) -> ServerSentEvent:
             costs = [c.cost_usd for c in o.brain_calls if c.billing != "plan"]
             # No call made: nothing was spent (#25). Any unpriced call: unknown, never 0 (§1.3.5).
             cost = None if any(c is None for c in costs) else sum(c or 0 for c in costs)
-            answered = next((c for c in reversed(o.brain_calls) if c.outcome == "ok"), None)
+            # Who answered; when none did, the last one tried, so a failure names its model (#43).
+            answered = next((c for c in reversed(o.brain_calls) if c.outcome == "ok"), None) or (
+                o.brain_calls[-1] if o.brain_calls else None
+            )
             data = {
                 "stop": o.stop,
                 "text": o.text,

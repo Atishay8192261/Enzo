@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
@@ -233,6 +234,59 @@ async def test_no_fallback_once_text_reached_the_user() -> None:
         await drain()
     assert [e.text for e in seen] == ["half an answer"]
     assert backup.calls == []
+
+
+class CutOffOnPlan(TalksThenFails):
+    """A ChatGPT plan reply cut off half-way, as by a Wi-Fi drop (#43)."""
+
+    billing = "plan"
+
+
+class StoppedOnPlan(ScriptedBrain):
+    """A ChatGPT plan reply still streaming when the user stops it."""
+
+    billing = "plan"
+
+    async def stream(
+        self,
+        messages: Sequence[Message],
+        *,
+        tools: Sequence[ToolSpec] = (),
+        tool_choice: ToolChoice = "auto",
+        max_output_tokens: int,
+    ) -> AsyncIterator[StreamEvent]:
+        yield TextDelta(text="thinking")
+        await asyncio.Event().wait()
+
+
+async def test_a_failed_or_stopped_plan_call_is_still_the_plans() -> None:
+    """#43: a cut-off ChatGPT plan reply was recorded as per-token use of unknown cost, so the
+    whole chat then read "ChatGPT plan + cost unknown"."""
+    r = router({"m-main": CutOffOnPlan([])})
+    with pytest.raises(ProviderServerError):
+        async for _ in r.stream("hard", [Message.user("x")], max_output_tokens=10):
+            pass
+    r2 = router({"m-main": StoppedOnPlan([])})
+    started = asyncio.Event()
+
+    async def drain() -> None:
+        async for _ in r2.stream("hard", [Message.user("x")], max_output_tokens=10):
+            started.set()
+
+    task = asyncio.create_task(drain())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    r3 = router({"m-main": failing(err(ProviderServerError))}, cfg(with_backup=False))
+    with pytest.raises(ProviderServerError):
+        await r3.chat("hard", [Message.user("x")], max_output_tokens=10)
+    rows = [rec for x in (r, r2, r3) for rec in x.ledger.records]  # type: ignore[attr-defined]
+    assert [(rec.outcome, rec.billing, rec.cost_usd) for rec in rows] == [
+        ("server_error", "plan", None),
+        ("cancelled", "plan", None),
+        ("server_error", "usage", None),  # on an API key: unknown, as it should be
+    ]
 
 
 class EndsSilently(ScriptedBrain):

@@ -1,13 +1,29 @@
 """What each reply and each chat used (#49): from the ledger, the same live and after reopening."""
 
+import asyncio
+import uuid
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from enzo.brain import Message, ToolCall
+import asyncpg
+from alembic import command
+
+from enzo.brain import (
+    Message,
+    ProviderConnectionError,
+    StreamDone,
+    TextDelta,
+    ToolCall,
+    ToolChoice,
+    ToolSpec,
+)
 from enzo.brain.fake import ScriptedBrain
+from enzo.brain.models import StreamEvent
 from enzo.gateway.usage import per_turn, usage_of
 from enzo.store.repository import Store
 from tests.gateway.test_api import client, events, new_conversation, service
+from tests.pg import alembic_config, create_database, drop_database
 
 T0 = datetime(2026, 11, 20, 9, 0, tzinfo=UTC)
 
@@ -123,3 +139,116 @@ async def test_usage_of_an_unknown_chat_is_not_found(store: Store) -> None:
     async with client(service(store, {})) as c:
         missing = "00000000-0000-0000-0000-000000000000"
         assert (await c.get(f"/conversations/{missing}/usage")).status_code == 404
+
+
+class OnThePlan(ScriptedBrain):
+    """Signed in with ChatGPT: the plan pays. Its second reply is cut off by a Wi-Fi drop."""
+
+    billing = "plan"
+
+    async def stream(
+        self,
+        messages: Sequence[Message],
+        *,
+        tools: Sequence[ToolSpec] = (),
+        tool_choice: ToolChoice = "auto",
+        max_output_tokens: int,
+    ) -> AsyncIterator[StreamEvent]:
+        if self.calls:
+            yield TextDelta(text="first word")
+            raise ProviderConnectionError("connection lost", provider="openai", model="gpt-x")
+        async for event in super().stream(
+            messages, tools=tools, tool_choice=tool_choice, max_output_tokens=max_output_tokens
+        ):
+            if isinstance(event, StreamDone):
+                yield StreamDone(response=event.response.model_copy(update={"billing": "plan"}))
+            else:
+                yield event
+
+
+async def test_a_cut_off_plan_reply_leaves_the_chat_on_the_plan(store: Store) -> None:
+    """#43: the cut-off reply read "cost unknown", and the whole chat "ChatGPT plan + cost
+    unknown" from then on, though nothing was billed outside the plan."""
+    async with client(service(store, {"m-main": OnThePlan([Message.assistant("ok")])})) as c:
+        cid = await new_conversation(c)
+        await c.post(f"/conversations/{cid}/turns", json={"message": "hi"})
+        kind, done = events(
+            (await c.post(f"/conversations/{cid}/turns", json={"message": "more"})).text
+        )[-1]
+        assert kind == "done"
+        assert (done["plan"], done["cost_usd"]) == (True, 0)  # "Using ChatGPT plan"
+        assert (done["brain"], done["model"]) == ("main", "gpt-x")  # names the brain that failed
+        chat = (await c.get(f"/conversations/{cid}/usage")).json()
+        assert [(u["plan"], u["cost_usd"]) for u in [chat["total"], *chat["turns"]]] == [
+            (True, 0),
+            (True, 0),
+            (True, 0),
+        ]
+
+
+async def test_tool_calls_keep_when_each_started(store: Store) -> None:
+    """#43: a turn's tool calls were all stamped with the time the turn was saved."""
+    a = ToolCall(id="a", name="step", arguments_json='{"value": "one"}')
+    b = ToolCall(id="b", name="step", arguments_json='{"value": "two"}')
+    brain = ScriptedBrain(
+        [
+            Message.assistant(tool_calls=(a,)),
+            Message.assistant(tool_calls=(b,)),
+            Message.assistant("done"),
+        ]
+    )
+    async with client(service(store, {"m-main": brain})) as c:
+        cid = await new_conversation(c)
+        await c.post(f"/conversations/{cid}/turns", json={"message": "go"})
+    conv = uuid.UUID(cid)
+    tools = await store.tool_calls(conv)
+    brains = await store.brain_calls(conv)
+    assert [t.call_id for t in tools] == ["a", "b"]
+    # brain, tool a, brain, tool b, brain: each step after the one before it.
+    order = [brains[0].started_at, tools[0].created_at, brains[1].started_at]
+    order += [tools[1].created_at, brains[2].started_at]
+    assert order == sorted(order)
+    assert tools[0].created_at < tools[1].created_at
+
+
+def test_chats_tainted_before_the_fix_are_repaired() -> None:
+    """A failed call by a brain the same chat used on the plan becomes the plan's; a failed call
+    on an API key keeps its unknown cost."""
+    name, url = create_database()
+    raw = url.replace("postgresql+asyncpg://", "postgresql://")
+
+    async def run(sql: str, *args: object) -> list[asyncpg.Record]:
+        conn = await asyncpg.connect(raw)
+        try:
+            return await conn.fetch(sql, *args)
+        finally:
+            await conn.close()
+
+    call = (
+        "INSERT INTO brain_calls (conversation_id, brain, provider, model, task, attempt, "
+        "started_at, latency_ms, outcome, input_tokens, output_tokens, cached_input_tokens, "
+        "cache_write_input_tokens, cost_usd, billing) "
+        "VALUES ($1, $2, 'openai', 'm', 'streaming', 1, now(), 1, $3, 0, 0, 0, 0, NULL, $4)"
+    )
+    try:
+        cfg = alembic_config(url)
+        command.upgrade(cfg, "0004")
+        plan_chat, key_chat = uuid.uuid4(), uuid.uuid4()
+        for cid in (plan_chat, key_chat):
+            asyncio.run(run("INSERT INTO conversations (id, kind) VALUES ($1, 'main')", cid))
+        asyncio.run(run(call, plan_chat, "gpt-sol", "ok", "plan"))
+        asyncio.run(run(call, plan_chat, "gpt-sol", "connection", "usage"))  # the #43 row
+        asyncio.run(run(call, plan_chat, "claude", "server_error", "usage"))  # another brain
+        asyncio.run(run(call, key_chat, "gpt-sol", "connection", "usage"))
+        command.upgrade(cfg, "head")
+        rows = asyncio.run(
+            run("SELECT conversation_id, brain, outcome, billing FROM brain_calls ORDER BY id")
+        )
+        assert [tuple(r) for r in rows] == [
+            (plan_chat, "gpt-sol", "ok", "plan"),
+            (plan_chat, "gpt-sol", "connection", "plan"),
+            (plan_chat, "claude", "server_error", "usage"),
+            (key_chat, "gpt-sol", "connection", "usage"),
+        ]
+    finally:
+        drop_database(name)

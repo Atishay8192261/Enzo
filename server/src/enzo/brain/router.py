@@ -17,7 +17,7 @@ import hashlib
 import logging
 import time
 from collections.abc import AsyncIterator, Callable, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Literal, Protocol
 
@@ -160,6 +160,11 @@ def classify(config: BrainsConfig, messages: Sequence[Message]) -> tuple[TaskKin
     return "streaming", "live reply"
 
 
+def billing_of(brain: BrainProvider) -> Literal["usage", "plan"]:
+    """ "plan" for a brain on the user's subscription (Sign in with ChatGPT), else "usage"."""
+    return "plan" if getattr(brain, "billing", "usage") == "plan" else "usage"
+
+
 @dataclass(frozen=True, slots=True)
 class _Attempt:
     brain: str
@@ -168,6 +173,9 @@ class _Attempt:
     primary: str
     started_at: datetime
     started: float
+    #: Who pays for this brain, known before the call: a failed or stopped call on the
+    #: user's ChatGPT plan is still the plan's, never an unknown per-token cost (#43).
+    billing: Literal["usage", "plan"] = "usage"
 
     @property
     def fallback_from(self) -> str | None:
@@ -333,6 +341,7 @@ class Router:
             try:
                 # Inside the try: a fallback brain with no key must still be recorded as tried.
                 brain = self.brain(name)
+                attempt = replace(attempt, billing=billing_of(brain))
                 if budget_tokens is not None:
                     await self._check_budget(
                         name, brain, messages, tools, max_output_tokens, budget_tokens
@@ -422,6 +431,7 @@ class Router:
             outcome=exc.kind,
             error=str(exc),
             fallback_from=attempt.fallback_from,
+            billing=attempt.billing,
         )
         self._emit(record)
         return record
@@ -438,6 +448,7 @@ class Router:
             latency_ms=(time.perf_counter() - attempt.started) * 1000,
             outcome="cancelled",
             fallback_from=attempt.fallback_from,
+            billing=attempt.billing,
         )
         self._emit(record)
         return record
