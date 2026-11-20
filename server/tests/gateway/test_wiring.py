@@ -101,5 +101,7 @@ async def test_the_app_registers_the_core_tools(
         ]
         gated = [n for n in names if registry.get(n).requires_approval]
         fenced = [n for n in names if registry.get(n).untrusted_output]
+        # The brain knows where the user's files are (#41), as the user would type it.
+        assert "Enzo folder is" in app.state.service._developer
     assert gated == ["delete_file"]
     assert fenced == ["web_search", "read_page", "read_file"]

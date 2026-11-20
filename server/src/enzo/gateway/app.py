@@ -22,6 +22,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from enzo import __version__
 from enzo.accounts.chatgpt import host_id
 from enzo.accounts.service import AccountsService
+from enzo.agent.prompt import install_note
 from enzo.agent.service import ConversationService
 from enzo.brain.config import Tier, load_config
 from enzo.brain.factory import build_brain, has_key
@@ -95,7 +96,9 @@ def create_app(
                 *file_tools(cfg.workspace_dir),
             ]
         )
-        app.state.service = ConversationService(store, router, tools)
+        app.state.service = ConversationService(
+            store, router, tools, developer=install_note(cfg.workspace_dir)
+        )
         connectors = Connectors(tools, acct, http)
         await connectors.refresh("github")
         acct.on_change(connectors.changed)

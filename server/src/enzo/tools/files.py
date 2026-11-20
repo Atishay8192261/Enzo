@@ -20,6 +20,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from enzo.paths import shown
 from enzo.tools.registry import Tool, tool
 
 HIDDEN = ".enzo"
@@ -55,6 +56,8 @@ class Entry(BaseModel):
 
 class Listing(BaseModel):
     path: str
+    #: Where it is on the user's computer, as they would type it: ~/Enzo/notes (#41).
+    location: str
     entries: list[Entry]
 
 
@@ -65,6 +68,7 @@ class ReadFileParams(_Params):
 
 class FileText(BaseModel):
     path: str
+    location: str
     text: str
     truncated: bool
 
@@ -76,6 +80,7 @@ class CreateParams(_Params):
 
 class Written(BaseModel):
     path: str
+    location: str
     chars: int
 
 
@@ -89,6 +94,7 @@ class EditParams(_Params):
 
 class Edited(BaseModel):
     path: str
+    location: str
     previous_version: str  # inside the hidden folder, for undo
 
 
@@ -210,7 +216,7 @@ class Workspace:
             for child in sorted(folder.iterdir(), key=lambda p: p.name.lower())
             if not (folder == self._root() and child.name == HIDDEN)
         ]
-        return Listing(path=self._show(folder), entries=entries)
+        return Listing(path=self._show(folder), location=shown(folder), entries=entries)
 
     def read(self, relative: str, max_chars: int) -> FileText:
         path = self._existing_file(relative)
@@ -223,7 +229,10 @@ class Workspace:
             msg = f"{relative} is not a text file; only text files can be read"
             raise FileToolError(msg) from exc
         return FileText(
-            path=self._show(path), text=text[:max_chars], truncated=len(text) > max_chars
+            path=self._show(path),
+            location=shown(path),
+            text=text[:max_chars],
+            truncated=len(text) > max_chars,
         )
 
     def create(self, relative: str, content: str) -> Written:
@@ -233,7 +242,7 @@ class Workspace:
             raise FileToolError(msg)
         path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(path, content)
-        return Written(path=self._show(path), chars=len(content))
+        return Written(path=self._show(path), location=shown(path), chars=len(content))
 
     def edit(self, relative: str, old_text: str, new_text: str) -> Edited:
         path = self._existing_file(relative)
@@ -247,7 +256,9 @@ class Workspace:
         backup.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(backup, text)
         _atomic_write(path, text.replace(old_text, new_text, 1))
-        return Edited(path=self._show(path), previous_version=self._show(backup))
+        return Edited(
+            path=self._show(path), location=shown(path), previous_version=self._show(backup)
+        )
 
     def delete(self, relative: str) -> Deleted:
         path = self._existing_file(relative)

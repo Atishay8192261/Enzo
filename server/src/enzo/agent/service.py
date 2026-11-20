@@ -66,12 +66,15 @@ class ConversationService:
         registry: ToolRegistry,
         *,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        developer: str | None = None,
         max_steps: int = 16,
     ) -> None:
         self.store = store
         self.router = router
         self.registry = registry
         self._system = system_prompt
+        #: Facts about this install the brain needs, such as where the user's Enzo folder is.
+        self._developer = developer
         self._max_steps = max_steps
         self._running: dict[uuid.UUID, asyncio.Task[None]] = {}
         self._stops: dict[uuid.UUID, asyncio.Event] = {}
@@ -100,7 +103,7 @@ class ConversationService:
         user = _user_message(text, meta or TurnMeta())
         prompt = compose_prompt(
             system=self._system,
-            developer=None,
+            developer=self._developer,
             memory=[],
             history=repair(history),
             user_message=user,
@@ -113,7 +116,11 @@ class ConversationService:
         info = await self._claim(conversation_id)
         history = repair(await self.store.history(conversation_id))
         prompt = compose_prompt(
-            system=self._system, developer=None, memory=[], history=history, user_message=None
+            system=self._system,
+            developer=self._developer,
+            memory=[],
+            history=history,
+            user_message=None,
         )
         return self._start(info, prompt, first_new=len(prompt))
 
