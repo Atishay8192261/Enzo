@@ -150,6 +150,7 @@ class Store:
         brain_calls: Sequence[CallRecord] = (),
         tool_outcomes: Sequence[ToolOutcome] = (),
         pending: Sequence[ApprovalRequest] = (),
+        turn_id: str | None = None,
     ) -> None:
         """Persist one turn atomically: all of it or none of it."""
         async with self._sessions.begin() as session:
@@ -182,7 +183,7 @@ class Store:
                 )
                 for i, m in enumerate(messages)
             )
-            session.add_all(_brain_call_row(conversation_id, c) for c in brain_calls)
+            session.add_all(_brain_call_row(conversation_id, c, turn_id) for c in brain_calls)
             session.add_all(
                 ToolCallRow(
                     conversation_id=conversation_id,
@@ -193,6 +194,7 @@ class Store:
                     is_error=o.result.is_error,
                     result=o.result.content,
                     latency_ms=o.latency_ms,
+                    turn_id=turn_id,
                     # When the call started, not when the turn was saved (#43).
                     created_at=o.started_at,
                 )
@@ -308,9 +310,10 @@ class Store:
             return list(rows)
 
 
-def _brain_call_row(conversation_id: uuid.UUID, c: CallRecord) -> BrainCallRow:
+def _brain_call_row(conversation_id: uuid.UUID, c: CallRecord, turn_id: str | None) -> BrainCallRow:
     return BrainCallRow(
         conversation_id=conversation_id,
+        turn_id=turn_id,
         brain=c.brain,
         provider=c.provider,
         model=c.model,

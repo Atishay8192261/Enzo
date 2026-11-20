@@ -9,6 +9,7 @@
 """
 
 import asyncio
+import logging
 from collections import Counter
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -29,6 +30,8 @@ from enzo.brain.router import (
 )
 from enzo.brain.toolcall import ValidatedCall
 from enzo.tools.registry import ToolOutcome, ToolRegistry
+
+log = logging.getLogger(__name__)
 
 DEFAULT_MAX_STEPS = 16
 
@@ -383,6 +386,16 @@ async def _execute(
     ran = {o.call.id: o for o in await registry.execute_all(runnable)}
     outcomes = [ran.get(c.id) or declined[c.id] for c in calls]
     for outcome in outcomes:
+        # What ran and how it went; never its arguments or result, which may be private (#48).
+        log.info(
+            "tool.call",
+            extra={
+                "tool": outcome.call.name,
+                "call": outcome.call.id,
+                "status": outcome.status,
+                "ms": round(outcome.latency_ms),
+            },
+        )
         yield ToolFinished(outcome, registry.activity(outcome.call))
     turn.tool_outcomes.extend(outcomes)
     turn.messages.append(Message.tool(*(o.result for o in outcomes)))

@@ -14,6 +14,11 @@ from enzo.paths import private_dir
 DATABASE = "enzo"
 
 
+def set_up(data: Path) -> bool:
+    """The database exists already: a start takes seconds, not the first start's minute (#56)."""
+    return (data / "postgres" / "PG_VERSION").is_file()
+
+
 def start(data: Path) -> str:
     """Start (or reuse) the bundled server and return the ``asyncpg`` URL of Enzo's database."""
     with warnings.catch_warnings():

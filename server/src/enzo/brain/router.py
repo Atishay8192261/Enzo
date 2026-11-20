@@ -17,7 +17,7 @@ import hashlib
 import logging
 import time
 from collections.abc import AsyncIterator, Callable, Sequence
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Literal, Protocol
 
@@ -455,7 +455,25 @@ class Router:
 
     def _emit(self, record: CallRecord) -> None:
         self.ledger.record(record)
-        log.info("brain call", extra={"call": asdict(record)})
+        # The spec §1.4 log line: provider, model, tokens and latency, one per call (#48).
+        log.info(
+            "brain.call",
+            extra={
+                "brain": record.brain,
+                "provider": record.provider,
+                "model": record.model,
+                "task": record.task,
+                "attempt": record.attempt,
+                "outcome": record.outcome,
+                "billing": record.billing,
+                "in": record.input_tokens,
+                "out": record.output_tokens,
+                "cached": record.cached_input_tokens,
+                "ms": round(record.latency_ms),
+                "cost_usd": record.cost_usd,
+                **({"fallback_from": record.fallback_from} if record.fallback_from else {}),
+            },
+        )
 
 
 def _nothing_connected(config: BrainsConfig) -> str:
