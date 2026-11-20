@@ -46,6 +46,29 @@ export interface ChatSummary {
   messages: number;
 }
 
+/** One thing Enzo remembers about the user, with where it came from (spec §6.2). */
+export interface Remembered {
+  id: number;
+  text: string;
+  kind: "about" | "preference" | "person" | "decision" | "fact";
+  /** Who or what it is about, when not the user: a person's name. */
+  about: string | null;
+  said_by: "user" | "inferred";
+  happened_on: string | null;
+  learned_at: string;
+  /** The chat it was learned in, when that chat still exists. */
+  chat: string | null;
+  conversation_id: string | null;
+  /** All of it in words: "you said, 20 Nov 2026, in “Trip to NYC”". */
+  source: string;
+}
+
+export interface MemoryList {
+  memories: Remembered[];
+  /** Where the readable copy is, as the user types it: ~/Enzo/Memory.md. */
+  file: string | null;
+}
+
 export interface ApprovalCard {
   id: string;
   tool: string;
@@ -208,6 +231,16 @@ export class GatewayClient {
   /** Moves a chat to the trash: out of the list, never destroyed. */
   async deleteConversation(id: string): Promise<void> {
     await this.#json("DELETE", `/conversations/${enc(id)}`);
+  }
+
+  /** Everything Enzo remembers, newest first. */
+  memories(): Promise<MemoryList> {
+    return this.#json("GET", "/memory") as Promise<MemoryList>;
+  }
+
+  /** Forgets a memory for good, with its earlier versions. */
+  async forgetMemory(id: number): Promise<void> {
+    await this.#json("DELETE", `/memory/${id}`);
   }
 
   conversation(id: string): Promise<Conversation> {

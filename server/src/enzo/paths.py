@@ -32,3 +32,9 @@ def private_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     path.chmod(0o700)
     return path
+
+
+def shown(path: Path) -> str:
+    """A path as the user would type it: ``~/Enzo/plan.md`` under their home, else in full."""
+    home = Path.home()
+    return f"~/{path.relative_to(home).as_posix()}" if path.is_relative_to(home) else str(path)

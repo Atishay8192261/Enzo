@@ -1,11 +1,13 @@
 """The files workspace: useful inside one folder, impossible to escape, reversible by default."""
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from enzo.agent.loop import ApprovalNeeded, run_turn
+from enzo.agent.prompt import install_note
 from enzo.brain import Message, ToolCall
 from enzo.brain.config import BrainsConfig
 from enzo.brain.fake import ScriptedBrain
@@ -161,3 +163,49 @@ async def test_deleting_waits_for_approval_described_in_plain_words(tmp_path: Pa
     assert asked.request.summary == "Delete old.txt from your Enzo folder (it stays recoverable)"
     assert asked.request.arguments == {"path": "old.txt"}  # the exact action, still shown
     assert (root / "old.txt").read_text() == "keep me"  # nothing ran without approval
+
+
+def test_results_say_where_the_file_is_as_the_user_would_type_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#41: Enzo said "plan.md" and could not tell where that was."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    ws = Workspace(tmp_path / "Enzo")
+    assert ws.create("plan.md", "milk").location == "~/Enzo/plan.md"
+    assert ws.edit("plan.md", "milk", "eggs").location == "~/Enzo/plan.md"
+    assert ws.read("plan.md", 100).location == "~/Enzo/plan.md"
+    assert ws.list(".").location == "~/Enzo"
+    elsewhere = Workspace(tmp_path.parent / "elsewhere")
+    assert elsewhere.create("a.md", "x").location == str(
+        (tmp_path.parent / "elsewhere/a.md").resolve()
+    )
+
+
+def test_the_brain_is_told_where_the_enzo_folder_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    note = install_note(tmp_path / "Enzo")
+    assert "The user's Enzo folder is ~/Enzo." in note
+    assert "“Saved to ~/Enzo/plan.md”" in note
+    assert str(tmp_path) not in note  # never the account name in the full path
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda ws: ws.create("Memory.md", "I am your memory now"),
+        lambda ws: ws.edit("Memory.md", "Nothing yet.", "all yours"),
+        lambda ws: ws.delete("Memory.md"),
+    ],
+)
+def test_file_tools_leave_the_memory_copy_alone(
+    ws: Workspace, change: Callable[[Workspace], object]
+) -> None:
+    """Memory.md is written from the memory table: changing it by hand would be lost, and a page
+    that talks Enzo into editing it must not change what Enzo remembers."""
+    ws.root.mkdir(parents=True, exist_ok=True)
+    (ws.root / "Memory.md").write_text("# What Enzo remembers\n\nNothing yet.\n")
+    with pytest.raises(FileToolError, match="use remember \\(with replaces\\) or forget"):
+        change(ws)
+    assert ws.read("Memory.md", 1000).text.endswith("Nothing yet.\n")  # reading is fine

@@ -22,6 +22,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from enzo import __version__
 from enzo.accounts.chatgpt import host_id
 from enzo.accounts.service import AccountsService
+from enzo.agent.prompt import install_note
 from enzo.agent.service import ConversationService
 from enzo.brain.config import Tier, load_config
 from enzo.brain.factory import build_brain, has_key
@@ -31,6 +32,8 @@ from enzo.connectors.github import github_tools
 from enzo.gateway.chatgpt import RedactAuthQuery, chatgpt_routes
 from enzo.gateway.connections import build_accounts, connection_routes
 from enzo.gateway.conversations import ServiceDep, conversation_routes
+from enzo.gateway.memory import memory_routes
+from enzo.memory import Memory, memory_tools
 from enzo.store.repository import Store
 from enzo.tools.files import file_tools
 from enzo.tools.registry import ToolRegistry
@@ -89,13 +92,17 @@ def create_app(
         )
         acct.on_change(router.forget)
         app.state.accounts = acct
+        memory = Memory(store.engine, cfg.workspace_dir)
         tools = ToolRegistry(
             [
                 *web_tools(tavily_key=lambda: acct.api_key("tavily"), http=http),
                 *file_tools(cfg.workspace_dir),
+                *memory_tools(memory),
             ]
         )
-        app.state.service = ConversationService(store, router, tools)
+        app.state.service = ConversationService(
+            store, router, tools, developer=install_note(cfg.workspace_dir), memory=memory
+        )
         connectors = Connectors(tools, acct, http)
         await connectors.refresh("github")
         acct.on_change(connectors.changed)
@@ -146,6 +153,7 @@ def create_app(
         ]
 
     app.include_router(conversation_routes(auth))
+    app.include_router(memory_routes(auth))
     app.include_router(connection_routes(auth))
     app.include_router(chatgpt_routes(auth, cfg.port))
     _finish(app, cfg)

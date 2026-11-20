@@ -1,13 +1,15 @@
 """Tables. Migrations are generated from these and reviewed by hand; a test proves they match."""
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
+    Computed,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -19,7 +21,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 # Stable constraint names, so migrations can always find and drop what they created.
@@ -148,3 +150,45 @@ class ApprovalRow(Base):
     approved: Mapped[bool | None]
     requested_at: Mapped[datetime] = _created_at()
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MemoryRow(Base):
+    """One durable fact about the user, with where it came from (spec §6.2, §6.5).
+
+    A correction is a new row that names the one it ``replaces``; the old row is kept, marked
+    replaced, and never recalled again. Forgetting deletes the row and the versions before it.
+    """
+
+    __tablename__ = "memories"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('about', 'preference', 'person', 'decision', 'fact')", name="kind"
+        ),
+        CheckConstraint("said_by IN ('user', 'inferred')", name="said_by"),
+        CheckConstraint("status IN ('active', 'replaced')", name="status"),
+        Index(None, "search", postgresql_using="gin"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    text: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(Text)
+    #: Who or what it is about, when not the user: a person's name, a project.
+    about: Mapped[str | None] = mapped_column(Text)
+    #: "user": they said it. "inferred": Enzo concluded it (labelled as such, §6.5).
+    said_by: Mapped[str] = mapped_column(Text)
+    #: When it happened, if it is an event and the date is known (§6.5).
+    happened_on: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(Text, server_default="active")
+    replaces: Mapped[int | None] = mapped_column(
+        ForeignKey("memories.id", ondelete="CASCADE"), index=True
+    )
+    #: Where it was learned: the chat and the run (the same id as its log lines and ledger rows).
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    turn_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+    search: Mapped[Any] = mapped_column(
+        TSVECTOR,
+        Computed("to_tsvector('english', coalesce(about, '') || ' ' || text)", persisted=True),
+    )

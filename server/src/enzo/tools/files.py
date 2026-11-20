@@ -20,6 +20,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from enzo.memory.store import MEMORY_FILE
+from enzo.paths import shown
 from enzo.tools.registry import Tool, tool
 
 HIDDEN = ".enzo"
@@ -55,6 +57,8 @@ class Entry(BaseModel):
 
 class Listing(BaseModel):
     path: str
+    #: Where it is on the user's computer, as they would type it: ~/Enzo/notes (#41).
+    location: str
     entries: list[Entry]
 
 
@@ -65,6 +69,7 @@ class ReadFileParams(_Params):
 
 class FileText(BaseModel):
     path: str
+    location: str
     text: str
     truncated: bool
 
@@ -76,6 +81,7 @@ class CreateParams(_Params):
 
 class Written(BaseModel):
     path: str
+    location: str
     chars: int
 
 
@@ -89,6 +95,7 @@ class EditParams(_Params):
 
 class Edited(BaseModel):
     path: str
+    location: str
     previous_version: str  # inside the hidden folder, for undo
 
 
@@ -210,7 +217,7 @@ class Workspace:
             for child in sorted(folder.iterdir(), key=lambda p: p.name.lower())
             if not (folder == self._root() and child.name == HIDDEN)
         ]
-        return Listing(path=self._show(folder), entries=entries)
+        return Listing(path=self._show(folder), location=shown(folder), entries=entries)
 
     def read(self, relative: str, max_chars: int) -> FileText:
         path = self._existing_file(relative)
@@ -223,20 +230,23 @@ class Workspace:
             msg = f"{relative} is not a text file; only text files can be read"
             raise FileToolError(msg) from exc
         return FileText(
-            path=self._show(path), text=text[:max_chars], truncated=len(text) > max_chars
+            path=self._show(path),
+            location=shown(path),
+            text=text[:max_chars],
+            truncated=len(text) > max_chars,
         )
 
     def create(self, relative: str, content: str) -> Written:
-        path = self.resolve(relative)
+        path = self._writable(relative)
         if path.exists():
             msg = f"{relative} already exists; use edit_file to change it"
             raise FileToolError(msg)
         path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(path, content)
-        return Written(path=self._show(path), chars=len(content))
+        return Written(path=self._show(path), location=shown(path), chars=len(content))
 
     def edit(self, relative: str, old_text: str, new_text: str) -> Edited:
-        path = self._existing_file(relative)
+        path = self._existing_file(relative, write=True)
         text = path.read_text(encoding="utf-8")
         count = text.count(old_text)
         if count != 1:
@@ -247,19 +257,32 @@ class Workspace:
         backup.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(backup, text)
         _atomic_write(path, text.replace(old_text, new_text, 1))
-        return Edited(path=self._show(path), previous_version=self._show(backup))
+        return Edited(
+            path=self._show(path), location=shown(path), previous_version=self._show(backup)
+        )
 
     def delete(self, relative: str) -> Deleted:
-        path = self._existing_file(relative)
+        path = self._existing_file(relative, write=True)
         target = self._internal("trash", relative, prefix=_stamp())
         target.parent.mkdir(parents=True, exist_ok=True)
         path.replace(target)
         return Deleted(path=relative, recoverable_from=self._show(target))
 
-    def _existing_file(self, relative: str) -> Path:
-        path = self.resolve(relative)
+    def _existing_file(self, relative: str, *, write: bool = False) -> Path:
+        path = self._writable(relative) if write else self.resolve(relative)
         if not path.is_file():
             msg = f"{relative} is not a file in the workspace"
+            raise FileToolError(msg)
+        return path
+
+    def _writable(self, relative: str) -> Path:
+        """A path a file tool may change: anything inside, except Enzo's own memory file."""
+        path = self.resolve(relative)
+        if path == self._root() / MEMORY_FILE:
+            msg = (
+                f"{MEMORY_FILE} is written by Enzo from its memory; to change a memory, use "
+                "remember (with replaces) or forget instead"
+            )
             raise FileToolError(msg)
         return path
 

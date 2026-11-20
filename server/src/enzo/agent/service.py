@@ -15,10 +15,11 @@ from importlib import resources
 
 from enzo.agent.history import close_open_calls, open_calls, repair
 from enzo.agent.loop import AgentEvent, TurnDone, TurnOutcome, run_turn
-from enzo.agent.prompt import compose_prompt
+from enzo.agent.prompt import MemorySnippet, compose_prompt
 from enzo.brain.models import Message, TextPart
 from enzo.brain.router import Router, classify
-from enzo.logs import conversation_var, new_turn_id, turn_var
+from enzo.context import conversation_var, new_turn_id, turn_var
+from enzo.memory import Fact, Memory
 from enzo.store.repository import ConversationInfo, Store
 from enzo.store.schema import ApprovalRow
 from enzo.tools.registry import ToolRegistry
@@ -66,12 +67,17 @@ class ConversationService:
         registry: ToolRegistry,
         *,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        developer: str | None = None,
+        memory: Memory | None = None,
         max_steps: int = 16,
     ) -> None:
         self.store = store
         self.router = router
         self.registry = registry
+        self.memory = memory
         self._system = system_prompt
+        #: Facts about this install the brain needs, such as where the user's Enzo folder is.
+        self._developer = developer
         self._max_steps = max_steps
         self._running: dict[uuid.UUID, asyncio.Task[None]] = {}
         self._stops: dict[uuid.UUID, asyncio.Event] = {}
@@ -98,10 +104,14 @@ class ConversationService:
             dropped = await self.store.drop_pending(conversation_id)
             log.info("moved on", extra={"conversation": str(conversation_id), "dropped": dropped})
         user = _user_message(text, meta or TurnMeta())
+        # Spec §3 step 2: what Enzo remembers that this message is about. (The chat is set for
+        # this request too, so the recall's log line names it.)
+        conversation_var.set(str(conversation_id))
+        recalled = await self.memory.recall(text) if self.memory else []
         prompt = compose_prompt(
             system=self._system,
-            developer=None,
-            memory=[],
+            developer=self._developer,
+            memory=[_snippet(f) for f in recalled],
             history=repair(history),
             user_message=user,
         )
@@ -113,7 +123,11 @@ class ConversationService:
         info = await self._claim(conversation_id)
         history = repair(await self.store.history(conversation_id))
         prompt = compose_prompt(
-            system=self._system, developer=None, memory=[], history=history, user_message=None
+            system=self._system,
+            developer=self._developer,
+            memory=[],
+            history=history,
+            user_message=None,
         )
         return self._start(info, prompt, first_new=len(prompt))
 
@@ -243,6 +257,13 @@ def _log_end(outcome: TurnOutcome, began: float) -> None:
 async def _drain(queue: "asyncio.Queue[ServiceEvent | object]") -> AsyncGenerator[ServiceEvent]:
     while (item := await queue.get()) is not _END:
         yield item  # type: ignore[misc]  # everything but the sentinel is a ServiceEvent
+
+
+def _snippet(fact: Fact) -> MemorySnippet:
+    who = "the user said it" if fact.said_by == "user" else "Enzo inferred it"
+    where = f" in “{fact.chat}”" if fact.chat else ""
+    text = f"{fact.about}: {fact.text}" if fact.about else fact.text
+    return MemorySnippet(text, f"{who}{where}", fact.learned_at.date(), fact.id)
 
 
 def _user_message(text: str, meta: TurnMeta) -> Message:
