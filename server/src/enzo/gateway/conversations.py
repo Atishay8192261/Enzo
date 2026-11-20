@@ -2,9 +2,10 @@
 
 import uuid
 from collections.abc import AsyncIterator, Awaitable
+from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, params
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, params
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -39,6 +40,24 @@ class _In(BaseModel):
 class NewConversation(_In):
     kind: ConversationKind = "main"
     title: str | None = Field(default=None, max_length=200)
+    #: A model or tier chosen before the first message (the chat is created with it).
+    brain: str | None = None
+
+
+class Rename(_In):
+    title: str = Field(min_length=1, max_length=200)
+
+
+class ChatOut(BaseModel):
+    """One past chat, for the list (#38)."""
+
+    id: uuid.UUID
+    title: str | None
+    brain: str | None
+    created_at: datetime
+    last_active: datetime
+    #: How many messages the user sent in it.
+    messages: int
 
 
 class ApprovalOut(BaseModel):
@@ -87,8 +106,39 @@ def conversation_routes(auth: params.Depends) -> APIRouter:
 
     @router.post("", status_code=201)
     async def create_conversation(body: NewConversation, s: ServiceDep) -> ConversationOut:
-        conversation_id = await s.store.create_conversation(body.kind, body.title)
-        return ConversationOut(id=conversation_id, kind=body.kind, title=body.title, brain=None)
+        _known_brain(s, body.brain)
+        conversation_id = await s.store.create_conversation(body.kind, body.title, body.brain)
+        return ConversationOut(
+            id=conversation_id, kind=body.kind, title=body.title, brain=body.brain
+        )
+
+    @router.get("")
+    async def list_conversations(
+        s: ServiceDep, limit: Annotated[int, Query(ge=1, le=100)] = 30
+    ) -> list[ChatOut]:
+        """Past chats with at least one message, most recently active first (#38)."""
+        return [
+            ChatOut(
+                id=c.id,
+                title=c.title,
+                brain=c.brain,
+                created_at=c.created_at,
+                last_active=c.last_active,
+                messages=c.messages,
+            )
+            for c in await s.store.chats(limit)
+        ]
+
+    @router.patch("/{conversation_id}", status_code=204)
+    async def rename(conversation_id: uuid.UUID, body: Rename, s: ServiceDep) -> None:
+        await _require(s, conversation_id)
+        await s.store.rename(conversation_id, " ".join(body.title.split()))
+
+    @router.delete("/{conversation_id}", status_code=204)
+    async def move_to_trash(conversation_id: uuid.UUID, s: ServiceDep) -> None:
+        """Out of the list, never destroyed: it can still be opened by id."""
+        await _require(s, conversation_id)
+        await s.store.move_to_trash(conversation_id)
 
     @router.get("/{conversation_id}")
     async def get_conversation(conversation_id: uuid.UUID, s: ServiceDep) -> ConversationOut:
@@ -116,8 +166,7 @@ def conversation_routes(auth: params.Depends) -> APIRouter:
 
     @router.put("/{conversation_id}/brain", status_code=204)
     async def choose_brain(conversation_id: uuid.UUID, body: BrainChoice, s: ServiceDep) -> None:
-        if body.brain is not None and body.brain not in (*s.router.config.brains, *TIERS):
-            raise HTTPException(422, f"unknown model or tier {body.brain!r}")
+        _known_brain(s, body.brain)
         await _require(s, conversation_id)
         await s.store.set_brain(conversation_id, body.brain)
 
@@ -202,6 +251,11 @@ async def _guard(
             409, "Enzo is still finishing the last reply in this chat. Stop it, or wait."
         ) from exc
     return stream
+
+
+def _known_brain(s: ConversationService, brain: str | None) -> None:
+    if brain is not None and brain not in (*s.router.config.brains, *TIERS):
+        raise HTTPException(422, f"unknown model or tier {brain!r}")
 
 
 def _shown(message: Message, registry: ToolRegistry, took: dict[str, float]) -> dict[str, Any]:

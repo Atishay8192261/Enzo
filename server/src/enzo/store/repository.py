@@ -12,7 +12,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from enzo.agent.approvals import ApprovalRequest
-from enzo.brain.models import Message
+from enzo.brain.models import Message, TextPart
 from enzo.brain.router import CallRecord
 from enzo.store.schema import ApprovalRow, BrainCallRow, Conversation, MessageRow, ToolCallRow
 from enzo.tools.registry import ToolOutcome
@@ -33,6 +33,33 @@ class ConversationInfo:
     created_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class ChatSummary:
+    """One chat in the list of past chats (#38)."""
+
+    id: uuid.UUID
+    title: str | None
+    brain: str | None
+    created_at: datetime
+    #: When its last message was saved.
+    last_active: datetime
+    #: The user's messages in it.
+    messages: int
+
+
+#: A chat's title: the first line of its first message, cut to this many characters.
+TITLE_CHARS = 60
+
+
+def title_from(text: str) -> str | None:
+    """The first non-empty line of a message, as one plain line."""
+    for line in text.splitlines():
+        words = " ".join("".join(c if c.isprintable() else " " for c in line).split())
+        if words:
+            return words if len(words) <= TITLE_CHARS else f"{words[: TITLE_CHARS - 1]}…"
+    return None
+
+
 class Store:
     def __init__(self, engine: AsyncEngine) -> None:
         self.engine = engine
@@ -46,10 +73,10 @@ class Store:
         await self.engine.dispose()
 
     async def create_conversation(
-        self, kind: ConversationKind = "main", title: str | None = None
+        self, kind: ConversationKind = "main", title: str | None = None, brain: str | None = None
     ) -> uuid.UUID:
         async with self._sessions.begin() as session:
-            row = Conversation(kind=kind, title=title)
+            row = Conversation(kind=kind, title=title, brain=brain)
             session.add(row)
             await session.flush()
             return row.id
@@ -61,6 +88,40 @@ class Store:
             return None
         kind: ConversationKind = row.kind  # type: ignore[assignment]  # enforced by a CHECK
         return ConversationInfo(row.id, kind, row.title, row.brain, row.created_at)
+
+    async def chats(self, limit: int = 30) -> list[ChatSummary]:
+        """Chats with at least one message, most recently active first; the trash is left out."""
+        last = func.max(MessageRow.created_at)
+        users = func.count(MessageRow.id).filter(MessageRow.role == "user")
+        query = (
+            select(Conversation, last, users)
+            .join(MessageRow, MessageRow.conversation_id == Conversation.id)
+            .where(Conversation.archived_at.is_(None))
+            .group_by(Conversation.id)
+            .order_by(last.desc(), Conversation.id)
+            .limit(limit)
+        )
+        async with self._sessions() as session:
+            rows = (await session.execute(query)).all()
+        return [
+            ChatSummary(c.id, c.title, c.brain, c.created_at, active, count)
+            for c, active, count in rows
+        ]
+
+    async def rename(self, conversation_id: uuid.UUID, title: str) -> None:
+        await self._update(conversation_id, title=title)
+
+    async def move_to_trash(self, conversation_id: uuid.UUID) -> None:
+        await self._update(conversation_id, archived_at=datetime.now(UTC))
+
+    async def _update(self, conversation_id: uuid.UUID, **values: object) -> None:
+        async with self._sessions.begin() as session:
+            result = await session.execute(
+                update(Conversation).where(Conversation.id == conversation_id).values(**values)
+            )
+            if result.rowcount != 1:  # type: ignore[attr-defined]
+                msg = f"no conversation {conversation_id}"
+                raise KeyError(msg)
 
     async def set_brain(self, conversation_id: uuid.UUID, brain: str | None) -> None:
         """Store the user's brain choice for this conversation (spec §1.3.6)."""
@@ -93,12 +154,19 @@ class Store:
         """Persist one turn atomically: all of it or none of it."""
         async with self._sessions.begin() as session:
             # Lock the conversation so two turns cannot interleave their message numbers.
-            locked = await session.scalar(
-                select(Conversation.id).where(Conversation.id == conversation_id).with_for_update()
-            )
+            locked = await session.get(Conversation, conversation_id, with_for_update=True)
             if locked is None:
                 msg = f"no conversation {conversation_id}"
                 raise KeyError(msg)
+            if locked.title is None:
+                # A new chat is named after its first message (#38); a rename is never undone.
+                first = next((m for m in messages if m.role == "user"), None)
+                text = (
+                    next((p.text for p in first.parts if isinstance(p, TextPart)), "")
+                    if first
+                    else ""
+                )
+                locked.title = title_from(text)
             last = await session.scalar(
                 select(func.coalesce(func.max(MessageRow.seq), -1)).where(
                     MessageRow.conversation_id == conversation_id

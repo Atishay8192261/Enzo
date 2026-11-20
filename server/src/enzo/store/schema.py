@@ -54,6 +54,8 @@ class Conversation(Base):
     #: The brain the user selected for this conversation (spec §1.3.6); None = routing decides.
     brain: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = _created_at()
+    #: Moved to the trash by the user (#38): left out of the list, still openable by id.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class MessageRow(Base):
