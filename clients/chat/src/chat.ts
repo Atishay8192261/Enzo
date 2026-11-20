@@ -1,4 +1,12 @@
-import type { AgentEvent, Brain, GatewayClient, StoredMessage } from "@enzo/sdk";
+import type {
+  AgentEvent,
+  Brain,
+  ConversationUsage,
+  GatewayClient,
+  StoredMessage,
+  StoredPart,
+  Usage,
+} from "@enzo/sdk";
 
 /** What the chat UI needs from the gateway. A narrow interface keeps the UI testable. */
 export type ChatClient = Pick<
@@ -13,19 +21,70 @@ export type ChatClient = Pick<
   | "resume"
   | "decide"
   | "stop"
+  | "usage"
 >;
 
+/** How a step went: running now, done, failed, not run (declined, moved on) or stopped. */
+export type StepStatus = "running" | "ok" | "failed" | "skipped" | "stopped";
+
 export interface ChatItem {
-  role: "user" | "assistant" | "notice";
+  /** A step is one thing Enzo did for the reply, in plain words: "Reading plan.md" (#40). */
+  role: "user" | "assistant" | "notice" | "step";
   text: string;
+  /** For a step: the tool call it was, how it went, and how long it took. */
+  callId?: string;
+  status?: StepStatus;
+  ms?: number;
+  /** For a user message: when it was sent (ISO time). */
+  at?: string;
+  /** For the last item of a turn: what the reply used and how long it took (#49). */
+  stats?: ReplyStats;
   /** The brain that wrote this reply (live replies; stored history does not record it). */
   by?: string;
   /** For a notice about a failed turn: why, so each surface can say what to do. */
   failure?: string;
   /** A message of the user's that the gateway did not accept (it never reached Enzo). */
   unsent?: true;
-  /** A notice that should offer to stop the running reply (Esc in the terminal, a button on web). */
-  offer?: "stop";
+  /**
+   * What a notice offers: stop the running reply (Esc in the terminal, a button on web), or
+   * send the message that did not go through again once Enzo is reachable (#44).
+   */
+  offer?: "stop" | "resend";
+}
+
+/** The facts behind one reply (#49). */
+export interface ReplyStats {
+  usage: Usage;
+  /** Live replies only: from sending to the first word, and to the end, as the user waited. */
+  firstWordMs?: number;
+  totalMs?: number;
+}
+
+export const NO_USAGE: Usage = {
+  input_tokens: 0,
+  output_tokens: 0,
+  cached_input_tokens: 0,
+  calls: 0,
+  cost_usd: 0,
+  plan: false,
+  models: [],
+  model_ms: 0,
+  started_at: null,
+};
+
+/** Two usages together: an unknown cost stays unknown, never counted as zero. */
+export function addUsage(a: Usage, b: Usage): Usage {
+  return {
+    input_tokens: a.input_tokens + b.input_tokens,
+    output_tokens: a.output_tokens + b.output_tokens,
+    cached_input_tokens: a.cached_input_tokens + b.cached_input_tokens,
+    calls: a.calls + b.calls,
+    cost_usd: a.cost_usd === null || b.cost_usd === null ? null : a.cost_usd + b.cost_usd,
+    plan: a.plan || b.plan,
+    models: [...a.models, ...b.models.filter((m) => !a.models.includes(m))],
+    model_ms: a.model_ms + b.model_ms,
+    started_at: a.started_at ?? b.started_at,
+  };
 }
 
 export interface PendingApproval {
@@ -49,11 +108,18 @@ export interface ChatState {
   brain: string | null;
   items: ChatItem[];
   draft: string; // the assistant reply as it streams in
-  working: number; // tools running right now
+  working: number; // steps running right now
+  /** The gateway answers. False while it can't be reached; clients keep checking (#44). */
+  online: boolean;
   approvals: PendingApproval[];
   lastCost: number | null | undefined; // undefined: no turn yet; null: unknown
   /** The last reply was paid by the user's ChatGPT plan (shown instead of a price). */
   lastPlan: boolean;
+  /** Everything this chat used: from the gateway when it opens, then each reply added. */
+  totals: Usage;
+  /** When the running turn started and its first word arrived (ms since 1970), for timing. */
+  turnStartedAt: number | null;
+  firstWordAt: number | null;
 }
 
 export const initialState: ChatState = {
@@ -65,9 +131,13 @@ export const initialState: ChatState = {
   items: [],
   draft: "",
   working: 0,
+  online: true,
   approvals: [],
   lastCost: undefined,
   lastPlan: false,
+  totals: NO_USAGE,
+  turnStartedAt: null,
+  firstWordAt: null,
 };
 
 export type ChatAction =
@@ -81,22 +151,64 @@ export type ChatAction =
       approvals?: PendingApproval[];
       /** A reply is still being written by an earlier session. */
       running?: boolean;
+      /** What this chat used before it was opened here. */
+      totals?: Usage;
     }
   | { type: "offline"; error: string }
-  | { type: "unsent"; reason: "busy" | "failed"; message?: string }
+  /** The gateway stopped answering mid-session, or answers again. */
+  | { type: "gateway"; online: boolean }
+  | { type: "unsent"; reason: "busy" | "failed" | "unreachable"; message?: string }
   | { type: "stream_lost" }
-  | { type: "user_sent"; text: string }
-  | { type: "resuming" }
+  /** `at`: when (ms since 1970), so the chat can say how long replies took. */
+  | { type: "user_sent"; text: string; at?: number }
+  | { type: "resuming"; at?: number }
   | { type: "brain_chosen"; brain: string | null }
   | { type: "brains_loaded"; brains: Brain[] }
   | { type: "approval_decided"; id: string; approved: boolean }
-  | { type: "event"; event: AgentEvent };
+  | { type: "event"; event: AgentEvent; at?: number };
 
 /** Said when a message is refused because a reply is still being written (HTTP 409). */
 export const BUSY = "Not sent: Enzo is still finishing the last reply.";
 export const STILL_RUNNING = "Enzo is still finishing a reply in this chat.";
 export const LOST =
   "Lost the connection to Enzo mid-reply. What arrived is kept above; send again to continue.";
+/** Said when a message could not be sent because the gateway did not answer at all (#44). */
+export const UNREACHABLE = "Not sent: Enzo can't be reached right now.";
+export const BACK_ONLINE = "Connected to Enzo again.";
+
+/** Steps still running when a turn ends early did not finish. */
+function stopSteps(items: ChatItem[]): ChatItem[] {
+  return items.map((i) => (i.status === "running" ? { ...i, status: "stopped" } : i));
+}
+
+/** The mark before a step line (a terminal animates the running one instead). */
+export const STEP_MARK: Record<StepStatus, string> = {
+  running: "•",
+  ok: "✓",
+  failed: "✗",
+  skipped: "–",
+  stopped: "■",
+};
+
+const STEP_NOTE: Record<StepStatus, string> = {
+  running: "",
+  ok: "",
+  failed: " · failed",
+  skipped: " · not run",
+  stopped: " · stopped",
+};
+
+/** A step's line, the same on every surface: "Reading plan.md…", "Editing plan.md · failed". */
+export function stepLine(item: ChatItem): string {
+  const status = item.status ?? "ok";
+  return status === "running" ? `${item.text}…` : `${item.text}${STEP_NOTE[status]}`;
+}
+
+/** A finished call's status as the chat says it. */
+function stepStatus(status: string): StepStatus {
+  if (status === "ok") return "ok";
+  return status === "declined" || status === "not_run" ? "skipped" : "failed";
+}
 
 /** Words that streamed before a turn ended early are never thrown away (#46). */
 function keepDraft(
@@ -133,12 +245,33 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
           : action.items,
         draft: "",
         working: 0,
+        online: true,
         approvals: action.approvals ?? [],
         lastCost: undefined,
         lastPlan: false,
+        totals: action.totals ?? NO_USAGE,
+        turnStartedAt: null,
+        firstWordAt: null,
       };
     case "offline":
-      return { ...state, status: "offline", error: action.error, draft: "", working: 0 };
+      return {
+        ...state,
+        status: "offline",
+        online: false,
+        error: action.error,
+        draft: "",
+        working: 0,
+      };
+    case "gateway": {
+      if (action.online === state.online) return state;
+      if (!action.online) return { ...state, online: false };
+      // Back: if a message did not go through, offer to send it again.
+      const unsent = state.items.some((i) => i.unsent);
+      const notice: ChatItem = unsent
+        ? { role: "notice", text: BACK_ONLINE, offer: "resend" }
+        : { role: "notice", text: BACK_ONLINE };
+      return { ...state, online: true, items: [...state.items, notice] };
+    }
     case "user_sent": {
       // Sending a message instead of answering a card means "not this": the gateway closes it
       // as not run (#39), and the chat says so.
@@ -146,12 +279,18 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
         role: "notice",
         text: `Not approved: ${describeApproval(a)} (you sent a new message)`,
       }));
+      const sent: ChatItem =
+        action.at === undefined
+          ? { role: "user", text: action.text }
+          : { role: "user", text: action.text, at: new Date(action.at).toISOString() };
       return {
         ...state,
         status: "streaming",
         error: null,
         approvals: [],
-        items: [...state.items, ...skipped, { role: "user", text: action.text }],
+        items: [...state.items, ...skipped, sent],
+        turnStartedAt: action.at ?? null,
+        firstWordAt: null,
       };
     }
     case "unsent": {
@@ -162,21 +301,36 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
       const why =
         action.reason === "busy"
           ? BUSY
-          : `Not sent: ${action.message ?? "the gateway did not answer"}.`;
+          : action.reason === "unreachable"
+            ? UNREACHABLE
+            : `Not sent: ${action.message ?? "the gateway did not answer"}.`;
       items.push(
         action.reason === "busy"
           ? { role: "notice", text: why, offer: "stop" }
           : { role: "notice", text: why },
       );
-      return { ...state, status: "ready", draft: "", working: 0, items };
+      return {
+        ...state,
+        status: "ready",
+        draft: "",
+        working: 0,
+        items,
+        online: action.reason === "unreachable" ? false : state.online,
+      };
     }
     case "stream_lost": {
-      const items = keepDraft(state, [...state.items]);
+      const items = keepDraft(state, stopSteps(state.items));
       items.push({ role: "notice", text: LOST });
       return { ...state, status: "ready", draft: "", working: 0, items };
     }
     case "resuming":
-      return { ...state, status: "streaming", error: null };
+      return {
+        ...state,
+        status: "streaming",
+        error: null,
+        turnStartedAt: action.at ?? null,
+        firstWordAt: null,
+      };
     case "brain_chosen":
       return { ...state, brain: action.brain };
     case "brains_loaded":
@@ -196,22 +350,38 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
       return { ...state, items, approvals: state.approvals.filter((a) => a.id !== action.id) };
     }
     case "event":
-      return onEvent(state, action.event);
+      return onEvent(state, action.event, action.at);
   }
 }
 
-function onEvent(state: ChatState, event: AgentEvent): ChatState {
+function onEvent(state: ChatState, event: AgentEvent, at?: number): ChatState {
   switch (event.type) {
     case "text":
       // Chunks carry their own spacing (even mid-word): join them exactly as they arrive.
-      return { ...state, draft: state.draft + event.text };
+      return {
+        ...state,
+        draft: state.draft + event.text,
+        firstWordAt: state.firstWordAt ?? at ?? null,
+      };
     case "tool_started": {
-      // The next text comes from a new step of the turn: start it on its own line.
-      const draft = state.draft && !state.draft.endsWith("\n") ? `${state.draft}\n` : state.draft;
-      return { ...state, draft, working: state.working + 1 };
+      // Words written before this step stay above it, in the order they happened.
+      const items = keepDraft(state, [...state.items]);
+      items.push({ role: "step", text: event.label, callId: event.id, status: "running" });
+      return { ...state, items, draft: "", working: state.working + 1 };
     }
-    case "tool_finished":
-      return { ...state, working: Math.max(0, state.working - 1) };
+    case "tool_finished": {
+      const status = stepStatus(event.status);
+      const index = state.items.findIndex((i) => i.role === "step" && i.callId === event.id);
+      if (index < 0) {
+        // A call that never started: declined (the chat already says so) or not checkable.
+        if (event.status === "declined") return state;
+        const step: ChatItem = { role: "step", text: event.label, callId: event.id, status };
+        return { ...state, items: [...state.items, step] };
+      }
+      const items = [...state.items];
+      items[index] = { ...(items[index] as ChatItem), status, ms: event.latency_ms };
+      return { ...state, items, working: Math.max(0, state.working - 1) };
+    }
     case "approval_needed": {
       const { id, tool, summary, detail } = event;
       return {
@@ -224,8 +394,8 @@ function onEvent(state: ChatState, event: AgentEvent): ChatState {
       const answer = event.stop === "final_answer";
       // Words that streamed before the turn stopped early stay, before the reason it stopped.
       const items = answer
-        ? [...state.items]
-        : keepDraft(state, [...state.items], event.brain, event.text);
+        ? stopSteps(state.items)
+        : keepDraft(state, stopSteps(state.items), event.brain, event.text);
       if (event.text && !notice) {
         items.push({
           role: answer ? "assistant" : "notice",
@@ -235,6 +405,9 @@ function onEvent(state: ChatState, event: AgentEvent): ChatState {
         });
       }
       if (notice) items.push({ role: "notice", text: notice });
+      const last = items.at(-1);
+      if (last && last.role !== "user")
+        items[items.length - 1] = { ...last, stats: statsOf(state, event, at) };
       return {
         ...state,
         status: "ready",
@@ -243,22 +416,92 @@ function onEvent(state: ChatState, event: AgentEvent): ChatState {
         working: 0,
         lastCost: event.cost_usd,
         lastPlan: event.plan,
+        totals: addUsage(state.totals, event.usage),
+        turnStartedAt: null,
+        firstWordAt: null,
       };
     }
     case "error":
-      return { ...state, status: "ready", draft: "", working: 0, error: event.message };
+      return {
+        ...state,
+        status: "ready",
+        items: stopSteps(state.items),
+        draft: "",
+        working: 0,
+        error: event.message,
+      };
   }
 }
 
-/** Stored transcript → chat bubbles. Tool traffic stays out of the chat (spec §10.3). */
-export function toItems(messages: StoredMessage[]): ChatItem[] {
-  return messages.flatMap((m): ChatItem[] => {
-    if (m.role !== "user" && m.role !== "assistant") return [];
+function statsOf(state: ChatState, event: { usage: Usage }, at?: number): ReplyStats {
+  const started = state.turnStartedAt;
+  if (started === null || at === undefined) return { usage: event.usage };
+  const stats: ReplyStats = { usage: event.usage, totalMs: at - started };
+  if (state.firstWordAt !== null) stats.firstWordMs = state.firstWordAt - started;
+  return stats;
+}
+
+/** Said for a stored step the gateway could not put into words. */
+export const SOME_STEP = "Working on a step";
+
+/**
+ * Stored transcript → the chat as it looked live: words, and each step Enzo took in plain words.
+ * Tool names, arguments and results stay out of the chat (spec §10.3).
+ */
+export function toItems(messages: StoredMessage[], usage?: ConversationUsage | null): ChatItem[] {
+  const results = new Map<string, StepStatus>();
+  for (const m of messages) {
+    for (const p of m.parts) {
+      if (p.type === "tool_result" && p.call_id) results.set(p.call_id, storedStatus(p));
+    }
+  }
+  const items: ChatItem[] = [];
+  // Where each turn starts in `items`: a turn is a user message and everything until the next.
+  const starts: number[] = [];
+  for (const m of messages) {
+    if (m.role !== "user" && m.role !== "assistant") continue;
     const texts = m.parts.filter((p) => p.type === "text" && p.text).map((p) => p.text as string);
-    // A user message's second text part is delivery context (time, device), not words.
-    const text = m.role === "user" ? (texts[0] ?? "") : texts.join("");
-    return text ? [{ role: m.role, text }] : [];
+    if (m.role === "user") {
+      // A user message's second text part is delivery context (time, device), not words.
+      const text = texts[0] ?? "";
+      const sent = usage?.turns[starts.length]?.started_at;
+      starts.push(items.length);
+      if (text) items.push(sent ? { role: "user", text, at: sent } : { role: "user", text });
+      continue;
+    }
+    const text = texts.join("");
+    if (text) items.push({ role: "assistant", text });
+    for (const p of m.parts) {
+      // A call with no result yet is waiting for approval: its card shows it, not a step.
+      const status = p.type === "tool_call" && p.id ? results.get(p.id) : undefined;
+      if (status && p.id) {
+        const step: ChatItem = { role: "step", text: p.label ?? SOME_STEP, callId: p.id, status };
+        if (p.latency_ms !== undefined) step.ms = p.latency_ms;
+        items.push(step);
+      }
+    }
+  }
+  // Each turn's facts go on its last reply, as they did live (#49).
+  starts.forEach((start, turn) => {
+    const used = usage?.turns[turn];
+    const end = starts[turn + 1] ?? items.length;
+    const at = items.slice(start, end).findLastIndex((i) => i.role === "assistant");
+    if (used && at >= 0) {
+      const item = items[start + at] as ChatItem;
+      items[start + at] = { ...item, stats: { usage: used } };
+    }
   });
+  return items;
+}
+
+function storedStatus(result: StoredPart): StepStatus {
+  if (!result.is_error) return "ok";
+  try {
+    const kind = (JSON.parse(result.content ?? "") as { error?: unknown }).error;
+    return typeof kind === "string" ? stepStatus(kind) : "failed";
+  } catch {
+    return "failed";
+  }
 }
 
 /** The last reply's cost. `plan`: the ChatGPT plan paid, so there is no per-token price. */

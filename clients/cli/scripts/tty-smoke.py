@@ -71,7 +71,8 @@ for ch in "hello enzo":  # fast, like a paste-happy human
     os.write(fd, ch.encode())
 os.write(fd, b"\r")
 results["honest failure shown"] = wait_for("/login anthropic")  # how to connect, either way
-results["typed line kept"] = "you: hello enzo" in screen_text()
+# Kept whole in its own message card ("│ hello enzo"), not lost to the fast typing.
+results["typed line kept"] = any(line.strip().startswith("│ hello enzo") for line in term.display)
 for ch in "/login anthropic":
     os.write(fd, ch.encode())
 os.write(fd, b"\r")

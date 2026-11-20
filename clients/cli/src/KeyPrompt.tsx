@@ -23,7 +23,7 @@ export function KeyPrompt({
   };
 
   useKeyboard((e) => {
-    if (e.name === "escape") return onCancel();
+    if (e.name === "escape" || (e.ctrl && e.name === "c")) return onCancel();
     if (e.name === "return" || e.name === "enter" || e.name === "linefeed") {
       const value = key.current.trim();
       update("");

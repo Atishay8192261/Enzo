@@ -20,13 +20,13 @@ describe("toAgentEvent", () => {
     expect(
       toAgentEvent(
         "done",
-        '{"stop":"final_answer","text":"ok","steps":1,"cost_usd":null,"brain":"gpt-sol","model":"gpt-6.2-sol","failure":null,"plan":false}',
+        '{"stop":"final_answer","text":"ok","steps":1,"cost_usd":null,"brain":"gpt-sol","model":"gpt-6.2-sol","failure":null,"plan":false,"usage":{}}',
       ),
     ).toMatchObject({ type: "done", cost_usd: null, brain: "gpt-sol", model: "gpt-6.2-sol" });
     expect(
       toAgentEvent(
         "done",
-        '{"stop":"final_answer","text":"ok","steps":1,"cost_usd":0,"brain":"gpt-sol","model":"m","failure":null,"plan":true}',
+        '{"stop":"final_answer","text":"ok","steps":1,"cost_usd":0,"brain":"gpt-sol","model":"m","failure":null,"plan":true,"usage":{}}',
       ),
     ).toMatchObject({ type: "done", plan: true });
     expect(() =>
@@ -39,6 +39,22 @@ describe("toAgentEvent", () => {
     expect(() =>
       toAgentEvent("done", '{"stop":"final_answer","text":"ok","steps":1,"cost_usd":null}'),
     ).toThrow("malformed done event");
+  });
+
+  it("carries each step in plain words (#40)", () => {
+    expect(
+      toAgentEvent("tool_started", '{"id":"c1","tool":"read_file","label":"Reading plan.md"}'),
+    ).toEqual({ type: "tool_started", id: "c1", tool: "read_file", label: "Reading plan.md" });
+    expect(
+      toAgentEvent(
+        "tool_finished",
+        '{"id":"c1","tool":"read_file","label":"Reading plan.md","status":"ok","latency_ms":3}',
+      ),
+    ).toMatchObject({ type: "tool_finished", label: "Reading plan.md", status: "ok" });
+    // without its words the chat could only show the tool's name, which people never see
+    expect(() => toAgentEvent("tool_started", '{"id":"c1","tool":"read_file"}')).toThrow(
+      "malformed tool_started event",
+    );
   });
 
   it("skips events this client does not know (forward compatible)", () => {

@@ -1,4 +1,5 @@
 import type { AccountsClient, ChatClient } from "@enzo/chat";
+import { NO_USAGE } from "@enzo/chat";
 import {
   type AgentEvent,
   type Brain,
@@ -72,6 +73,7 @@ function fakeClient(
     resume: () => events(),
     decide: vi.fn(async () => {}),
     stop: vi.fn(async () => false),
+    usage: async () => ({ total: NO_USAGE, turns: [] }),
     ...overrides,
   };
 }
@@ -104,6 +106,7 @@ describe("App", () => {
             model: "claude-opus-5-5",
             failure: null,
             plan: false,
+            usage: NO_USAGE,
           },
         ),
     });
@@ -150,6 +153,7 @@ describe("App", () => {
             model: null,
             failure: null,
             plan: false,
+            usage: NO_USAGE,
           },
         ),
       resume: () =>
@@ -163,6 +167,7 @@ describe("App", () => {
           model: null,
           failure: null,
           plan: false,
+          usage: NO_USAGE,
         }),
     });
     render(<App client={client} />);
@@ -248,6 +253,7 @@ describe("App", () => {
           model: null,
           failure: "not_connected",
           plan: false,
+          usage: NO_USAGE,
         }),
     });
     render(<App client={client} />);
@@ -327,6 +333,7 @@ describe("App", () => {
           model: "m",
           failure: null,
           plan: false,
+          usage: NO_USAGE,
         };
       })();
     render(<App client={fakeClient({ send, stop })} />);
