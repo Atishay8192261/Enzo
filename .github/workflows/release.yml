@@ -97,8 +97,10 @@ jobs:
       - name: Smoke test under Rosetta
         if: matrix.run == 'rosetta'
         run: |
+          lipo -archs dist/enzo-tui-${{ matrix.target }} | grep -qx x86_64
+          # Python here is arm64-only; macOS runs the x64 binary it starts under Rosetta by itself.
           if arch -x86_64 /usr/bin/true 2>/dev/null; then
-            arch -x86_64 python3 .github/release/smoke_tui.py dist/enzo-tui-${{ matrix.target }} "$VERSION"
+            python3 .github/release/smoke_tui.py dist/enzo-tui-${{ matrix.target }} "$VERSION"
           else
             echo "::warning::Rosetta is not available on this runner: darwin-x64 was built and signed but not run"
           fi
