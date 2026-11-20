@@ -300,7 +300,8 @@ async def test_failed_brain_calls_are_persisted(store: Store) -> None:
             -1
         ][1]
         assert done["stop"] == "brain_failure"
-        assert (done["brain"], done["model"]) == (None, None)  # nothing answered
+        # Nothing answered: the done event names the one that failed (#43).
+        assert (done["brain"], done["model"]) == ("main", "m-main")
     (row,) = await store.brain_calls(uuid.UUID(cid))
     assert (row.brain, row.outcome, row.cost_usd) == ("main", "rate_limit", None)
     assert row.error is not None

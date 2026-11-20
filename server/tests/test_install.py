@@ -4,6 +4,7 @@ migrations shipped inside the package."""
 import asyncio
 import hashlib
 import json
+from importlib import resources
 from pathlib import Path
 
 import httpx2
@@ -149,6 +150,9 @@ def test_migrations_ship_inside_the_package() -> None:
             await engine.dispose()
             return found
 
-        assert asyncio.run(head()) == "0004"
+        # The newest migration in the package: every one of them ran.
+        versions = resources.files("enzo") / "migrations" / "versions"
+        newest = max(f.name.split("_", 1)[0] for f in versions.iterdir() if f.name[:4].isdigit())
+        assert asyncio.run(head()) == newest
     finally:
         drop_database(name)

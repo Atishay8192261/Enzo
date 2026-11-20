@@ -12,7 +12,8 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Literal, cast, get_type_hints
 
 import jsonschema
@@ -152,6 +153,8 @@ class ToolOutcome:
     result: ToolResult
     status: Literal["ok"] | FailureKind
     latency_ms: float
+    #: When the call started, so the ledger keeps the real order and timing of steps (#43).
+    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 class ToolRegistry:
@@ -217,24 +220,25 @@ class ToolRegistry:
     async def execute(self, call: ToolCall) -> ToolOutcome:
         """Validate, then run with a timeout. Tool problems become results; cancellation passes."""
         started = time.perf_counter()
+        began = datetime.now(UTC)
         checked = self.validate(call)
         if isinstance(checked, ToolCallRejection):
             kind: FailureKind = "invalid_arguments" if self.get(call.name) else "unknown_tool"
-            return self._failed(call, kind, checked.reason, started)
+            return self._failed(call, kind, checked.reason, started, began)
         t = self._tools[call.name]
         try:
             async with asyncio.timeout(t.timeout_s):
                 value = await t.handler(checked.args)
         except TimeoutError:
             return self._failed(
-                call, "timeout", f"{call.name} timed out after {t.timeout_s}s", started
+                call, "timeout", f"{call.name} timed out after {t.timeout_s}s", started, began
             )
         except Exception as exc:  # any tool bug becomes data for the brain (§4.2)
-            return self._failed(call, "failed", f"{type(exc).__name__}: {exc}", started)
+            return self._failed(call, "failed", f"{type(exc).__name__}: {exc}", started, began)
         if not isinstance(value, t.returns):
             got = type(value).__name__
             msg = f"{call.name} returned {got}, expected {t.returns.__name__}"
-            return self._failed(call, "bad_result", msg, started)
+            return self._failed(call, "bad_result", msg, started, began)
         content = value.model_dump_json()
         if t.untrusted_output:
             content = fence(content, source=call.name)
@@ -243,6 +247,7 @@ class ToolRegistry:
             result=ToolResult(call_id=call.id, name=call.name, content=content),
             status="ok",
             latency_ms=_since(started),
+            started_at=began,
         )
 
     async def execute_all(self, calls: Sequence[ToolCall]) -> list[ToolOutcome]:
@@ -262,10 +267,17 @@ class ToolRegistry:
         kind: FailureKind,
         message: str,
         started: float,
+        began: datetime | None = None,
     ) -> ToolOutcome:
         content = ToolError(error=kind, message=message).model_dump_json()
         result = ToolResult(call_id=call.id, name=call.name, content=content, is_error=True)
-        return ToolOutcome(call=call, result=result, status=kind, latency_ms=_since(started))
+        return ToolOutcome(
+            call=call,
+            result=result,
+            status=kind,
+            latency_ms=_since(started),
+            started_at=began or datetime.now(UTC),
+        )
 
 
 def _validate_schema(call: ToolCall, schema: dict[str, Any]) -> ValidatedCall | ToolCallRejection:

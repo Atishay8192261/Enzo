@@ -120,6 +120,7 @@ class ToolCallRow(Base):
     is_error: Mapped[bool]
     result: Mapped[str] = mapped_column(Text)
     latency_ms: Mapped[float]
+    #: When the call started (rows are saved at the end of a turn, #43).
     created_at: Mapped[datetime] = _created_at()
 
 

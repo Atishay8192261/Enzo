@@ -7,7 +7,7 @@ encrypted reasoning, in its original order (OpenAI's guidance for tool loops wit
 import time
 from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Literal
 
 import openai
 from openai.types.responses import (
@@ -103,6 +103,11 @@ class OpenAIBrain:
         self._provider = provider
         #: Signed in with ChatGPT: the plan pays, and OpenAI's plan-route rules apply (ADR 0013).
         self._plan = plan
+
+    @property
+    def billing(self) -> Literal["usage", "plan"]:
+        """Who pays: the user's ChatGPT plan when signed in with it, else per-token usage."""
+        return "plan" if self._plan else "usage"
 
     @property
     def provider(self) -> str:

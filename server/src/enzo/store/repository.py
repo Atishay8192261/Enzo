@@ -193,6 +193,8 @@ class Store:
                     is_error=o.result.is_error,
                     result=o.result.content,
                     latency_ms=o.latency_ms,
+                    # When the call started, not when the turn was saved (#43).
+                    created_at=o.started_at,
                 )
                 for o in tool_outcomes
             )
