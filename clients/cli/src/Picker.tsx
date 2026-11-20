@@ -40,6 +40,8 @@ export function Picker({
     return words.every((w) => hay.includes(w));
   });
   const at = Math.min(selected, Math.max(0, shown.length - 1));
+  // A list of plain choices (yes / no) gives its labels the whole width.
+  const wide = choices.every((c) => !c.description);
 
   useKeyboard((key) => {
     if (key.defaultPrevented) return;
@@ -102,7 +104,12 @@ export function Picker({
                 paddingLeft={1}
                 flexShrink={0}
               >
-                <box width={28} flexShrink={0} overflow="hidden" paddingRight={1}>
+                <box
+                  {...(wide ? { flexGrow: 1 } : { width: 28 })}
+                  flexShrink={0}
+                  overflow="hidden"
+                  paddingRight={1}
+                >
                   <text
                     {...fg(on ? COLOR.selectedFg : c.muted ? COLOR.dim : undefined)}
                     wrapMode="none"

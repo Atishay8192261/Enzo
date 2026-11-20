@@ -14,6 +14,7 @@ import {
   paste,
   press,
   screen,
+  sender,
   settle,
   type,
   until,
@@ -27,9 +28,9 @@ describe("the slash-command list (#34)", () => {
     for (const name of ["/login", "/logout", "/models", "/model ", "/new"]) {
       expect(all).toContain(name);
     }
-    expect(all).toContain(" 1/13 "); // more below: the list scrolls with the selection
-    for (let i = 0; i < 12; i++) await arrow(s, "down");
-    expect(await until(s, " 13/13 ")).toContain("/quit");
+    expect(all).toContain(" 1/16 "); // more below: the list scrolls with the selection
+    for (let i = 0; i < 15; i++) await arrow(s, "down");
+    expect(await until(s, " 16/16 ")).toContain("/quit");
     expect(all).toContain("↑↓ choose · tab complete · enter run · esc close");
     await type(s, "lo");
     const filtered = await until(s, "/logout [provider]");
@@ -53,7 +54,11 @@ describe("the slash-command list (#34)", () => {
 
   it("Enter runs the chosen line; Up/Down choose; Esc closes the list", async () => {
     const chooseBrain = mock(async (_id: string, _choice: string | null) => {});
-    await using s = await screen(fakeClient({ chooseBrain }));
+    const createConversation = mock(
+      async (_kind?: string, _title?: string, _brain?: string | null) => CONVERSATION,
+    );
+    const send = sender();
+    await using s = await screen(fakeClient({ chooseBrain, createConversation, send }));
     await type(s, "/model ");
     const list = await until(s, "smart routing across your accounts");
     expect(list).toContain("claude-sonnet");
@@ -65,7 +70,11 @@ describe("the slash-command list (#34)", () => {
     await until(s, "any balanced model: everyday default");
     await press(s, "RETURN");
     await until(s, "Model: any balanced model");
-    expect(chooseBrain.mock.calls).toEqual([["c1", "balanced"]]);
+    // A fresh chat holds the choice, and is created with it by its first message (#57).
+    expect(chooseBrain).not.toHaveBeenCalled();
+    await enter(s, "hello");
+    await until(s, "◆ enzo");
+    expect(createConversation.mock.calls).toEqual([["main", undefined, "balanced"]]);
     await type(s, "/");
     await until(s, "/connections");
     await press(s, "ESCAPE");
@@ -83,7 +92,8 @@ describe("the slash-command list (#34)", () => {
 
   it("a whole command typed out runs as typed: /model alone opens the model picker", async () => {
     const chooseBrain = mock(async (_id: string, _choice: string | null) => {});
-    await using s = await screen(fakeClient({ chooseBrain }));
+    // An open chat (`enzo --continue`): the choice is saved on it right away.
+    await using s = await screen(fakeClient({ chooseBrain }), { start: "last" });
     await enter(s, "/model");
     const picker = await until(s, "Choose a model");
     expect(picker).toContain("Routing");
@@ -363,7 +373,7 @@ describe("accounts", () => {
       createConversation,
       messages: async () => [{ role: "user", parts: [{ type: "text", text: "earlier question" }] }],
     });
-    await using s = await screen(client, { memory: mem, ready: "earlier question" });
+    await using s = await screen(client, { memory: mem, ready: "earlier question", start: "last" });
     await enter(s, "/new");
     const frame = await until(s, "your personal agent");
     expect(frame).not.toContain("earlier question");

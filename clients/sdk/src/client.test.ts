@@ -94,6 +94,30 @@ describe("GatewayClient", () => {
     await expect(client.health(stop.signal)).rejects.toBe(aborted);
   });
 
+  it("lists, renames and trashes chats, and can start one with a model (#38)", async () => {
+    const seen: Seen[] = [];
+    const client = new GatewayClient({
+      baseUrl: "http://enzo",
+      fetch: fakeFetch((_url, init) => {
+        if (init.method === "GET") return Response.json([{ id: "c1", title: "Plan" }]);
+        if (init.method === "POST") return Response.json({ id: "c2", brain: "fast" });
+        return new Response(null, { status: 204 });
+      }, seen),
+    });
+    expect(await client.conversations(5)).toEqual([{ id: "c1", title: "Plan" }]);
+    await client.renameConversation("c 1", "Weekly plan");
+    await client.deleteConversation("c1");
+    await client.createConversation("main", undefined, "fast");
+    await client.createConversation("main");
+    expect(seen.map((x) => `${x.init.method} ${x.url} ${x.init.body ?? ""}`)).toEqual([
+      "GET http://enzo/conversations?limit=5 ",
+      'PATCH http://enzo/conversations/c%201 {"title":"Weekly plan"}',
+      "DELETE http://enzo/conversations/c1 ",
+      'POST http://enzo/conversations {"kind":"main","brain":"fast"}',
+      'POST http://enzo/conversations {"kind":"main"}',
+    ]);
+  });
+
   it("handles empty 204 replies", async () => {
     const client = new GatewayClient({
       baseUrl: "http://enzo",

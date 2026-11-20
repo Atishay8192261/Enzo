@@ -15,12 +15,14 @@ import {
 export type Reply = string | { text: string; error: true } | { rows: [string, string][] } | null;
 
 /** The pickers a command can open instead of asking for an argument. */
-export type PickerKind = "login" | "logout" | "model";
+export type PickerKind = "login" | "logout" | "model" | "chats" | "delete";
 
 export interface CommandContext {
   client: ChatClient & AccountsClient;
   /** The conversation's current choice: a model, a tier, or null for smart routing. */
   current: string | null;
+  /** This chat's id; null while it is fresh (created by its first message). */
+  chatId: string | null;
   chooseBrain(choice: string | null): Promise<void>;
   /** Start a new conversation; the current one stays saved. */
   newChat(): Promise<void>;
@@ -39,6 +41,12 @@ export interface CommandContext {
   resend(): Promise<boolean>;
   /** Accounts changed (connected, disconnected): reload what depends on them. */
   accountsChanged(): void;
+  /** Reopen a past chat (#38). */
+  openChat(conversationId: string): Promise<void>;
+  /** Rename this chat, or say why it can't be yet. */
+  renameChat(title: string): Promise<Reply>;
+  /** Move this chat to the trash (after the user confirmed) and start a fresh one. */
+  deleteChat(): Promise<Reply>;
   quit(): void;
 }
 
@@ -55,6 +63,8 @@ interface Command {
   tooMany?: string;
   /** Not listed in /help or the popup (another name for a listed command). */
   hidden?: true;
+  /** With `args: 1`, the rest of the line is the argument (a name with spaces). */
+  rest?: true;
   run(ctx: CommandContext, arg: string): Reply | Promise<Reply>;
 }
 
@@ -66,6 +76,16 @@ const quit: Command = {
   args: 0,
   run(ctx) {
     ctx.quit();
+    return null;
+  },
+};
+
+const chats: Command = {
+  usage: "/chats",
+  summary: "your past chats: reopen one (also /resume, ctrl+r)",
+  args: 0,
+  run(ctx) {
+    ctx.pick("chats");
     return null;
   },
 };
@@ -204,6 +224,38 @@ const COMMANDS: Record<string, Command> = {
       return null;
     },
   },
+  "/chats": chats,
+  "/resume": { ...chats, usage: "/resume", hidden: true },
+  "/open": {
+    usage: "/open <chat>",
+    summary: "reopen a chat (the /chats list uses it)",
+    args: 1,
+    hidden: true,
+    async run(ctx, id) {
+      await ctx.openChat(id);
+      return null;
+    },
+  },
+  "/rename": {
+    usage: "/rename <name>",
+    summary: "give this chat a name",
+    args: 1,
+    rest: true,
+    run: (ctx, title) => ctx.renameChat(title),
+  },
+  "/delete": {
+    usage: "/delete",
+    summary: "move this chat to the trash (asks first)",
+    args: 0,
+    also: ["confirm", "keep"],
+    async run(ctx, answer) {
+      if (answer === "confirm") return ctx.deleteChat();
+      if (answer === "keep") return null;
+      if (!ctx.chatId) return "Nothing to delete: this chat has no messages yet.";
+      ctx.pick("delete");
+      return null;
+    },
+  },
   "/help": {
     usage: "/help",
     summary: "commands and keys",
@@ -226,6 +278,7 @@ export const KEYS: [string, string][] = [
   ["option+enter, ctrl+j", "new line (Terminal.app: Use Option as Meta key)"],
   ["y or n, then enter", "answer an approval card (or type a new message)"],
   ["↑ / ↓", "your earlier messages"],
+  ["ctrl+r", "your past chats"],
   ["/", "commands (tab or enter completes)"],
   ["ctrl+p", "all commands"],
   ["esc", "stop the reply · close a list"],
@@ -250,6 +303,8 @@ export function echoOf(line: string): string {
   const command = COMMANDS[name];
   if (!command) return name.slice(0, 30);
   const joined = args.join(" ");
+  // A name typed for /rename is the user's own words, shown as written (cut short).
+  if (command.rest) return `${name} ${joined}`.trim().slice(0, 60);
   const fits = args.length <= command.args || (command.also?.includes(joined) ?? false);
   return fits ? [name, ...args].join(" ") : name;
 }
@@ -260,12 +315,20 @@ export async function runCommand(line: string, ctx: CommandContext): Promise<Rep
   const command = COMMANDS[name];
   if (!command) return error(`Unknown command: ${name}. Type / to see the commands.`);
   const joined = args.join(" ");
+  if (command.rest) {
+    if (!joined) return error(`Usage: ${command.usage}`);
+    return safely(() => command.run(ctx, joined));
+  }
   const allowed = command.also?.includes(joined) ?? false;
   const count = command.optional && args.length === 0 ? command.args : args.length;
   if (!allowed && count > command.args && command.tooMany) return error(command.tooMany);
   if (!allowed && count !== command.args) return error(`Usage: ${command.usage}`);
+  return safely(() => command.run(ctx, allowed ? joined : (args[0] ?? "")));
+}
+
+async function safely(run: () => Reply | Promise<Reply>): Promise<Reply> {
   try {
-    return await command.run(ctx, allowed ? joined : (args[0] ?? ""));
+    return await run();
   } catch (e: unknown) {
     return error(e instanceof Error ? e.message : String(e));
   }

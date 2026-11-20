@@ -14,6 +14,8 @@ if (process.argv.includes("--version")) {
 }
 
 const version = typeof ENZO_VERSION === "string" ? ENZO_VERSION : "dev";
+// `enzo` starts a fresh chat; `enzo --continue` reopens the last one (#57).
+const start = process.argv.includes("--continue") || process.argv.includes("-c") ? "last" : "fresh";
 const baseUrl = process.env.ENZO_GATEWAY_URL ?? "http://127.0.0.1:8787";
 const token = process.env.ENZO_API_TOKEN;
 const client = new GatewayClient({ baseUrl, ...(token ? { token } : {}) });
@@ -31,5 +33,6 @@ createRoot(renderer).render(
     copy={clipboard(renderer)}
     version={version}
     gatewayUrl={baseUrl}
+    start={start}
   />,
 );

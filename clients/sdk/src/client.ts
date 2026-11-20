@@ -34,6 +34,18 @@ export interface Conversation {
   running?: boolean;
 }
 
+/** One past chat in the list (#38). */
+export interface ChatSummary {
+  id: string;
+  /** The first line of its first message, or the user's own name for it. */
+  title: string | null;
+  brain: string | null;
+  created_at: string;
+  last_active: string;
+  /** How many messages the user sent in it. */
+  messages: number;
+}
+
 export interface ApprovalCard {
   id: string;
   tool: string;
@@ -171,11 +183,31 @@ export class GatewayClient {
     return this.#json("GET", "/brains") as Promise<Brain[]>;
   }
 
-  createConversation(kind: Conversation["kind"] = "main", title?: string): Promise<Conversation> {
+  /** A new chat; `brain` is a model or tier chosen before its first message. */
+  createConversation(
+    kind: Conversation["kind"] = "main",
+    title?: string,
+    brain?: string | null,
+  ): Promise<Conversation> {
     return this.#json("POST", "/conversations", {
       kind,
       ...(title ? { title } : {}),
+      ...(brain ? { brain } : {}),
     }) as Promise<Conversation>;
+  }
+
+  /** Past chats with at least one message, most recently active first (#38). */
+  conversations(limit = 30): Promise<ChatSummary[]> {
+    return this.#json("GET", `/conversations?limit=${limit}`) as Promise<ChatSummary[]>;
+  }
+
+  async renameConversation(id: string, title: string): Promise<void> {
+    await this.#json("PATCH", `/conversations/${enc(id)}`, { title });
+  }
+
+  /** Moves a chat to the trash: out of the list, never destroyed. */
+  async deleteConversation(id: string): Promise<void> {
+    await this.#json("DELETE", `/conversations/${enc(id)}`);
   }
 
   conversation(id: string): Promise<Conversation> {

@@ -6,7 +6,7 @@ import {
   formatSpend,
   formatTokens,
 } from "@enzo/chat";
-import type { ProviderConnection } from "@enzo/sdk";
+import type { ChatSummary, ProviderConnection } from "@enzo/sdk";
 import type { ReactNode } from "react";
 import { accountName } from "./complete.ts";
 import { Logo } from "./Logo.tsx";
@@ -28,13 +28,25 @@ export function accountWords(connections: ProviderConnection[]): string {
   return first ? `${accountName(first)}${more}` : "";
 }
 
-/** The chat's title: its first message, cut to fit. */
+/** The chat's title: its name, or else its first message, cut to fit. */
 export function chatTitle(state: ChatState, width: number): string {
   const first = state.items
     .find((i) => i.role === "user")
     ?.text.split("\n")[0]
     ?.trim();
-  return first ? clip(first, width) : "New chat";
+  const name = state.title ?? first;
+  return name ? clip(name, width) : "New chat";
+}
+
+/** When something happened, roughly: "just now", "5 min ago", "3 h ago", "2 days ago". */
+export function ago(iso: string, now = Date.now()): string {
+  const minutes = Math.max(0, Math.round((now - Date.parse(iso)) / 60_000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  const days = Math.round(hours / 24);
+  return days === 1 ? "yesterday" : `${days} days ago`;
 }
 
 export const isOnline = (state: ChatState) => state.online && state.status !== "offline";
@@ -229,6 +241,7 @@ const clip = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n - 1)
 export function Home({
   state,
   connections,
+  lastChat,
   version,
   width,
   height,
@@ -236,6 +249,8 @@ export function Home({
 }: {
   state: ChatState;
   connections: ProviderConnection[];
+  /** The most recent past chat, offered to continue (#57). */
+  lastChat: ChatSummary | null;
   version: string;
   width: number;
   height: number;
@@ -260,6 +275,12 @@ export function Home({
           <text fg={COLOR.warn}>your ChatGPT plan, no key needed: /login chatgpt</text>
           <text fg={COLOR.warn}>an API key: /login anthropic, openai, xai or moonshot</text>
         </box>
+      ) : null}
+      {lastChat ? (
+        <text fg={COLOR.dim} wrapMode="none">
+          Continue “{clip(lastChat.title ?? "Untitled chat", 40)}” ({ago(lastChat.last_active)}):{" "}
+          <span fg={COLOR.accent}>ctrl+r</span> or /chats
+        </text>
       ) : null}
       <text fg={COLOR.faint}>
         / commands · ctrl+p palette · /new new chat · /help · ctrl+d quit

@@ -80,11 +80,18 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
     at 127.0.0.1:8787", and a message sent then is marked not sent. It reconnects by itself and
     says "Connected to Enzo again. /retry sends your message again."
 - **Chat.** Streaming replies. The conversation survives a restart.
-  - Terminal: the conversation id is kept in `~/.config/enzo/conversation`. `/new` starts a new
-    chat on the opening screen.
+  - **Terminal (#57, #38):** `enzo` opens a new chat on the opening screen. The chat is created by
+    its first message, so nothing jumps and no empty chats pile up, and each window has its own
+    chat.
+    - `enzo -c` (`--continue`) reopens the last chat. The opening screen also offers it.
+    - Ctrl+R or `/chats` (also `/resume`) lists past chats, newest first, with when and how many
+      messages. Type to filter, Enter reopens.
+    - Chats are named after their first message. `/rename <name>` renames one; `/delete` asks
+      first, then moves it to the trash.
+    - The last chat used is kept in `~/.config/enzo/conversation`.
   - Web (redesigned 2026-11-19): a welcome screen with suggestions, **New chat**, an **Accounts**
     side panel, Enter sends and Shift+Enter makes a new line. Light and dark follow the system.
-  - Old chats stay saved, but there is no list of them yet (only the latest is reopened).
+  - Web: still reopens the latest chat; its list of chats comes with the web pass (#37).
   - After an approval, a line in the chat keeps what was approved or declined.
 - **Routing (ADR 0010).** Models are grouped fast / balanced / powerful.
   - Normal messages go to balanced: Claude Sonnet 5.5 or GPT-6.2 Sol.
@@ -273,7 +280,16 @@ For each journey:
    - ChatGPT tokens are JWTs (they start with `eyJ`). List files that contain one, without printing
      anything: `grep -rl eyJ ~/.config/enzo .dev/gateway.log`. Expect no files: tokens are only in
      the Keychain.
-13. **Terminal redesign retest (#34, #35, #36, #40, #44, #49).** At 80 and at 140 columns:
+13. **Past chats (#57, #38 retest).**
+    - Run `enzo` in two windows: each opens a new chat on the opening screen, with no flash and
+      no jump. Send a message in each: they stay separate chats.
+    - The opening screen says "Continue “<last chat>” … ctrl+r or /chats". `enzo -c` opens that
+      chat directly, without showing the opening screen first.
+    - Ctrl+R: chats newest first with "2 h ago · 3 messages"; type to filter; Enter reopens one,
+      steps and usage included. `/rename Weekly plan` changes the header at once.
+    - `/delete`: "No, keep it" is first; choose yes and the chat leaves the list, and a new chat
+      opens. A new chat that has no message yet says there is nothing to delete.
+14. **Terminal redesign retest (#34, #35, #36, #40, #44, #49).** At 80 and at 140 columns:
     - Opening screen: wordmark, version, account, hints; under 60 columns a plain title.
     - Type `/`, `/lo`, Tab: the list filters and `/login ` lists accounts. `/model` + Enter opens
       the picker. Ctrl+P opens the palette; type to filter; Esc closes.
@@ -291,7 +307,7 @@ For each journey:
     - Type while a reply streams: the text is kept; Enter then says to wait or press Esc.
     - Quit three ways: `exit`, `quit`, Ctrl+D. Ctrl+C clears typed text first.
     - Note what still feels unlike Claude Code / Codex, and what feels better.
-14. **Usability verdict.** After a session, write 5 to 10 bullets with Atishay:
+15. **Usability verdict.** After a session, write 5 to 10 bullets with Atishay:
     - Could he use this every day?
     - What is missing first?
     - What annoyed him?
