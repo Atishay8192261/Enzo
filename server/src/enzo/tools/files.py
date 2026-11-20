@@ -20,6 +20,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from enzo.memory.store import MEMORY_FILE
 from enzo.paths import shown
 from enzo.tools.registry import Tool, tool
 
@@ -236,7 +237,7 @@ class Workspace:
         )
 
     def create(self, relative: str, content: str) -> Written:
-        path = self.resolve(relative)
+        path = self._writable(relative)
         if path.exists():
             msg = f"{relative} already exists; use edit_file to change it"
             raise FileToolError(msg)
@@ -245,7 +246,7 @@ class Workspace:
         return Written(path=self._show(path), location=shown(path), chars=len(content))
 
     def edit(self, relative: str, old_text: str, new_text: str) -> Edited:
-        path = self._existing_file(relative)
+        path = self._existing_file(relative, write=True)
         text = path.read_text(encoding="utf-8")
         count = text.count(old_text)
         if count != 1:
@@ -261,16 +262,27 @@ class Workspace:
         )
 
     def delete(self, relative: str) -> Deleted:
-        path = self._existing_file(relative)
+        path = self._existing_file(relative, write=True)
         target = self._internal("trash", relative, prefix=_stamp())
         target.parent.mkdir(parents=True, exist_ok=True)
         path.replace(target)
         return Deleted(path=relative, recoverable_from=self._show(target))
 
-    def _existing_file(self, relative: str) -> Path:
-        path = self.resolve(relative)
+    def _existing_file(self, relative: str, *, write: bool = False) -> Path:
+        path = self._writable(relative) if write else self.resolve(relative)
         if not path.is_file():
             msg = f"{relative} is not a file in the workspace"
+            raise FileToolError(msg)
+        return path
+
+    def _writable(self, relative: str) -> Path:
+        """A path a file tool may change: anything inside, except Enzo's own memory file."""
+        path = self.resolve(relative)
+        if path == self._root() / MEMORY_FILE:
+            msg = (
+                f"{MEMORY_FILE} is written by Enzo from its memory; to change a memory, use "
+                "remember (with replaces) or forget instead"
+            )
             raise FileToolError(msg)
         return path
 

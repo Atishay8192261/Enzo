@@ -5,6 +5,7 @@ import type {
   ChatClient,
   ChatsClient,
   ConversationMemory,
+  MemoryClient,
   Start,
 } from "@enzo/chat";
 import type {
@@ -134,7 +135,7 @@ export function memory(start: string | null = null): ConversationMemory {
   };
 }
 
-export type Client = ChatClient & AccountsClient & ChatsClient;
+export type Client = ChatClient & AccountsClient & ChatsClient & MemoryClient;
 
 export function fakeClient(overrides: Partial<Client> = {}): Client {
   const usage: ConversationUsage = { total: NONE, turns: [] };
@@ -162,6 +163,8 @@ export function fakeClient(overrides: Partial<Client> = {}): Client {
     conversations: async () => [],
     renameConversation: mock(async () => {}),
     deleteConversation: mock(async () => {}),
+    memories: async () => ({ memories: [], file: "~/Enzo/Memory.md" }),
+    forgetMemory: mock(async () => {}),
     chooseBrain: mock(async () => {}),
     send: () => events(),
     resume: () => events(),

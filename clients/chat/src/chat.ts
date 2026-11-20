@@ -30,6 +30,9 @@ export type ChatsClient = Pick<
   "conversations" | "renameConversation" | "deleteConversation"
 >;
 
+/** What Enzo remembers (spec §6.2): seeing it and forgetting a part of it. */
+export type MemoryClient = Pick<GatewayClient, "memories" | "forgetMemory">;
+
 /** How a step went: running now, done, failed, not run (declined, moved on) or stopped. */
 export type StepStatus = "running" | "ok" | "failed" | "skipped" | "stopped";
 

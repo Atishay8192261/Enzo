@@ -1,6 +1,7 @@
 """The files workspace: useful inside one folder, impossible to escape, reversible by default."""
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -188,3 +189,23 @@ def test_the_brain_is_told_where_the_enzo_folder_is(
     assert "The user's Enzo folder is ~/Enzo." in note
     assert "“Saved to ~/Enzo/plan.md”" in note
     assert str(tmp_path) not in note  # never the account name in the full path
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda ws: ws.create("Memory.md", "I am your memory now"),
+        lambda ws: ws.edit("Memory.md", "Nothing yet.", "all yours"),
+        lambda ws: ws.delete("Memory.md"),
+    ],
+)
+def test_file_tools_leave_the_memory_copy_alone(
+    ws: Workspace, change: Callable[[Workspace], object]
+) -> None:
+    """Memory.md is written from the memory table: changing it by hand would be lost, and a page
+    that talks Enzo into editing it must not change what Enzo remembers."""
+    ws.root.mkdir(parents=True, exist_ok=True)
+    (ws.root / "Memory.md").write_text("# What Enzo remembers\n\nNothing yet.\n")
+    with pytest.raises(FileToolError, match="use remember \\(with replaces\\) or forget"):
+        change(ws)
+    assert ws.read("Memory.md", 1000).text.endswith("Nothing yet.\n")  # reading is fine

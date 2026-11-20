@@ -35,14 +35,20 @@ In the app, connect a model account first: `/login chatgpt` uses your ChatGPT pl
 or `/login anthropic`, `/login openai`, `/login xai`, `/login moonshot` with a key. Keys and
 sign-ins are kept in your system keychain, never in files or chats.
 
+Enzo remembers what you tell it about yourself across chats (preferences, people, decisions).
+`/memory` shows what it remembers and where each fact came from, `/forget` removes one, and
+`~/Enzo/Memory.md` is a readable copy. To change a memory, just tell Enzo. It never keeps
+passwords, keys, codes or card numbers.
+
 ## Where things live
 
 | What | Where |
 | --- | --- |
 | Your files | `~/Enzo` |
-| Conversations (database) | `~/.local/share/enzo/postgres` |
+| What Enzo remembers (readable copy) | `~/Enzo/Memory.md` |
+| Conversations and memory (database) | `~/.local/share/enzo/postgres` |
 | Settings, accounts index | `~/.config/enzo` |
-| Gateway log | `~/.local/state/enzo/gateway.log` |
+| Log (`enzo logs`) | `~/.local/state/enzo/logs/gateway.log` |
 
 To remove Enzo: `uv tool uninstall enzo-agent`, then delete the folders above if you want your
 data gone too.

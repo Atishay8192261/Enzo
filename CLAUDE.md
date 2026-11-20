@@ -39,6 +39,19 @@ Read this first in every session. It carries the context from earlier sessions.
 - Core tools hand-built; services via MCP. Order: GitHub connector (MCP), one-line install, then
   memory/background; **laptop use** (computer control with per-action approval) and a web agent after the core.
 
+## Decisions from Atishay (2026-11-20)
+
+- **Laptop use: approve once per task**, not every step. Enzo shows the task (what, which apps) once,
+  then clicks and types on its own. It still pauses, with the exact action, before anything
+  irreversible (send, buy, delete, post, enter a password or card; spec §12.3). A visible "Enzo is
+  using your computer" sign and one key that stops it. macOS Screen Recording + Accessibility are
+  granted once in System Settings; `enzo doctor` checks them.
+- **Browser use is part of laptop use:** a real browser driven directly (its own profile; the
+  user's logged-in one only with permission), for research, price comparison and checkout (the
+  purchase waits for approval). Screen control is for desktop apps.
+- Order after memory: reminders/scheduling + goals → Gmail/Calendar (MCP) → compaction (§5) →
+  laptop + browser use → `enzo deploy`.
+
 ## Git and GitHub
 
 - Branch from `main`: `feat/…`, `fix/…`, `chore/…`, `docs/…`.
@@ -184,6 +197,9 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
   `inlineHook`, `clients/cli/src/links.ts`), and a step's status and time are their own text.
 - Keys can arrive faster than React redraws (fast typing, a macro): key handlers read the input's
   live `plainText`, never the last rendered state. Test it: type, then more keys + Enter in one `act()`.
+- Memory (`enzo.memory`, ADR 0020): full-text search only (the bundled Postgres has pgvector but no
+  `pg_trgm`). Tools read the chat and run from `enzo.context`. `mkstemp` files are already 0600.
+- SQLAlchemy 2.1 deprecates `Result.tuples()` (warnings are errors here): iterate rows directly.
 - Bun's default 5 s test timeout kills a slow test but leaves it running, which breaks the tests after it:
   `clients/cli/bunfig.toml` sets 20 s. Shared terminal test helpers live in `clients/cli/src/testing.tsx`.
 - React reuses a component at the same spot: dialogs get `key={kind}`, or a typed filter carries over.
@@ -239,7 +255,7 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
   `read_page` (own fetch + SSRF guard), workspace files (list/read/create/edit/delete with approval),
   untrusted-output fence, plain-language approval summaries; [x] batch 2 MCP connectors + GitHub (ADR 0012,
   `docs/connectors/github.md`): schema tools, prepare-before-approval (merge pinned to head + diff), §8.3 stops;
-  [ ] batch 3 Gmail + Calendar via MCP; [ ] batch 4 reminders/scheduling and memory tools
+  [ ] batch 3 Gmail + Calendar via MCP; batch 4 [x] memory tools (ADR 0020), [ ] reminders/scheduling
 - [x] Spec §4 agent loop (`enzo.agent`: `run_turn`, approvals, prompt order; ADR 0004)
 - [x] Spec §11 persistence base: Postgres store for transcripts, brain/tool call ledgers, approvals (ADR 0005)
 - [x] Gateway: conversations, SSE turns, approvals, brain choice, auth (`enzo.gateway`, `enzo.agent.service`, ADR 0006)
@@ -268,4 +284,6 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
   (PR #59); #57 + #38 fresh starts, `enzo -c`, `/chats` (Ctrl+R), `/rename`, `/delete` to trash (ADR 0018).
 - [x] #48 one JSON log per step, rotated file + `enzo logs` (ADR 0019); #43 plan billing on failed calls;
   #56 first-start message, `enzo update` wording, fast `/new`, long links and step times.
+- [x] Memory (spec §6.2, ADR 0020): `remember`/`forget`/`search_memory` tools, recall before each
+  message, corrections replace, secrets refused, `/memory` + `/forget`, `~/Enzo/Memory.md`; #41 folder named.
 - Then continue in the order of the spec §17 checklist.

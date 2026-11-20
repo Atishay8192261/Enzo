@@ -3,11 +3,12 @@ import {
   type ChatClient,
   type ChatsClient,
   type ConversationMemory,
+  type MemoryClient,
   type Start,
   signInWithChatGPT,
   useChat,
 } from "@enzo/chat";
-import type { ChatSummary, ProviderConnection } from "@enzo/sdk";
+import type { ChatSummary, ProviderConnection, Remembered } from "@enzo/sdk";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -28,6 +29,7 @@ import { type Copy, lastCodeBlock } from "./clipboard.ts";
 import {
   type CommandContext,
   echoOf,
+  memoryLine,
   type PickerKind,
   type Reply,
   runCommand,
@@ -52,6 +54,8 @@ export const PALETTE: Choice[] = [
   { label: "Send my last message again", description: "if it did not go through", value: "/retry" },
   { label: "Show or hide the side panel", value: "/sidebar" },
   { label: "Message details", description: "show or hide times, tokens, cost", value: "/details" },
+  { label: "Memory", description: "what Enzo remembers about you", value: "/memory" },
+  { label: "Forget a memory", description: "remove something Enzo remembers", value: "/forget" },
   { label: "Help", description: "commands and keys", value: "/help" },
   { label: "Quit", description: "or type exit, or ctrl+d", value: "/quit" },
 ];
@@ -63,6 +67,8 @@ const PICKER_TITLE: Record<PickerKind | "palette", string> = {
   logout: "Disconnect an account",
   chats: "Your chats",
   delete: "Move this chat to the trash?",
+  memory: "Forget which memory?",
+  forget: "Forget this?",
 };
 
 /** Typed alone and sent with Enter while an approval card is open: the answer to the card. */
@@ -87,7 +93,7 @@ export function App({
   healthEveryMs,
   start = "fresh",
 }: {
-  client: ChatClient & AccountsClient & ChatsClient;
+  client: ChatClient & AccountsClient & ChatsClient & MemoryClient;
   memory: ConversationMemory;
   onQuit: () => void;
   /** Opens sign-in pages; tests pass a fake. */
@@ -121,6 +127,9 @@ export function App({
   const [connections, setConnections] = useState<ProviderConnection[]>([]);
   // Past chats: the newest one for the opening screen's "continue" line, all of them for /chats.
   const [chats, setChats] = useState<ChatSummary[]>([]);
+  // /forget: what Enzo remembers, and the one the user is being asked about.
+  const [memories, setMemories] = useState<Remembered[]>([]);
+  const [forgetting, setForgetting] = useState<Remembered | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -227,6 +236,29 @@ export function App({
       loadChats();
       return `Renamed this chat “${name}”.`;
     },
+    pickMemory: async () => {
+      const { memories: all } = await client.memories();
+      if (all.length === 0) return "Enzo remembers nothing yet, so there is nothing to forget.";
+      setMemories(all);
+      setPicker("memory");
+      return null;
+    },
+    askForget: async (id) => {
+      const known = memories.find((m) => m.id === id);
+      const found = known ?? (await client.memories()).memories.find((m) => m.id === id);
+      if (!found) return { text: `Enzo has no memory #${id}. /memory lists them.`, error: true };
+      setForgetting(found);
+      setPicker("forget");
+      return null;
+    },
+    forgetMemory: async () => {
+      const target = forgetting;
+      if (!target) return null;
+      setForgetting(null);
+      await client.forgetMemory(target.id);
+      return `Forgot “${memoryLine(target)}”.`;
+    },
+    keepMemory: () => setForgetting(null),
     deleteChat: async () => {
       const id = state.conversationId;
       if (!id) return "Nothing to delete: this chat has no messages yet.";
@@ -354,6 +386,21 @@ export function App({
         description: `${ago(c.last_active)} · ${c.messages} message${c.messages === 1 ? "" : "s"}${c.id === state.conversationId ? " · open now" : ""}`,
         value: `/open ${c.id}`,
       }));
+    }
+    if (kind === "memory") {
+      // The memory itself gets the whole width; /memory shows where each came from.
+      return memories.map((m) => ({ label: memoryLine(m), value: `/forget ${m.id}` }));
+    }
+    if (kind === "forget") {
+      // Keeping it is first: a stray Enter never forgets anything.
+      const what = forgetting ? memoryLine(forgetting) : "";
+      return [
+        { label: "No, keep it", value: "/forget keep" },
+        {
+          label: `Yes, forget “${what.length > 40 ? `${what.slice(0, 39)}…` : what}”`,
+          value: "/forget confirm",
+        },
+      ];
     }
     if (kind === "delete") {
       // Keeping it is first: a stray Enter never deletes anything.
