@@ -3,8 +3,10 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 
 from enzo.brain.models import Message, TextPart
+from enzo.paths import shown
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,4 +60,19 @@ def render_memory(memory: Sequence[MemorySnippet]) -> str:
     return (
         "Relevant memory from Enzo's records. Similarity is not truth: verify against the source "
         "before acting on it.\n" + "\n".join(lines)
+    )
+
+
+def install_note(workspace: Path) -> str:
+    """Developer instructions (layer 2) about this install: where the user finds things (#41).
+
+    Only the folder as the user types it (``~/Enzo``): the full path would tell the provider the
+    account name, and the user does not need it.
+    """
+    folder = shown(workspace)
+    return (
+        f"The user's Enzo folder is {folder}. Files you create or edit are saved there: when "
+        f"you save one, say where it is, like “Saved to {folder}/plan.md”.\n"
+        f"{folder}/Memory.md is a readable copy of your memory, for the user. They can also "
+        "see and forget memories with /memory in the terminal app."
     )
