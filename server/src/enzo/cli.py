@@ -195,9 +195,34 @@ def update() -> int:
         print(f"Update by running the install command again:\n  {INSTALL}")
         return 0
     code = subprocess.call([uv, "tool", "upgrade", "enzo-agent"])  # noqa: S603 - uv itself
-    if code == 0:
-        print("Updated. The next `enzo` fetches the matching terminal app and updates your data.")
-    return code
+    if code != 0:
+        return code
+    now = installed_version()
+    if now == __version__:
+        print(f"Enzo {__version__} is already the latest.")
+    else:
+        print(
+            f"Updated Enzo {__version__} → {now}. The next `enzo` fetches the matching terminal "
+            "app and updates your data."
+        )
+    return 0
+
+
+def installed_version() -> str | None:
+    """The version on disk now (this process still runs the one it started with)."""
+    found = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            "import importlib.metadata as m; print(m.version('enzo-agent'))",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    version = found.stdout.strip()
+    return version if found.returncode == 0 and version else None
 
 
 def web_bundled() -> bool:
@@ -208,8 +233,11 @@ def web_bundled() -> bool:
 def _gateway() -> Iterator[launcher.Gateway]:
     """The gateway for this app, released however the app ends: quitting, Ctrl+C, a closed
     terminal window (SIGHUP) or a plain kill (SIGTERM). Otherwise it would run on unseen."""
+    from enzo import bundled_db  # noqa: PLC0415
+
     state = state_dir()
-    gateway = launcher.attach(state, Settings().port)
+    first = "ENZO_DATABASE_URL" not in os.environ and not bundled_db.set_up(data_dir())
+    gateway = launcher.attach(state, Settings().port, first_start=first)
     previous = {sig: signal.signal(sig, _exit_on_signal) for sig in (signal.SIGHUP, signal.SIGTERM)}
     try:
         yield gateway

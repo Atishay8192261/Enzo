@@ -141,13 +141,21 @@ curl -fsSL https://raw.githubusercontent.com/Atishay8192261/Enzo/main/install.sh
 
 - Expect it to work with nothing pre-installed except curl. Note the time it took, and anything
   confusing it printed.
-- `enzo doctor`: every line ✓ or ·. A ✗ always comes with a fix; check that the fix works.
+- `enzo doctor`: every line ✓ or ·. A ✗ always comes with a fix; check that the fix works. The
+  last line says where the log is.
 - `enzo`: the first run downloads the terminal app (about 100 MB), then opens it. Quit with `/quit`.
+  The very first start says "First start only: setting up your database (about a minute)…" (#56);
+  later starts say only "Starting Enzo…" and take seconds.
   `enzo-tui`, `postgres` and `enzo.cli serve` must all be gone afterwards (`pgrep -fl enzo`).
 - `enzo web` opens the browser app; Ctrl+C stops it. Run `enzo` and `enzo web` together: closing
   one keeps the other working.
 - Close the terminal window while `enzo` runs. Afterwards nothing of Enzo may keep running.
-- `enzo update` upgrades. Data lives in `~/.local/share/enzo` and `~/.config/enzo`, files in `~/Enzo`.
+- `enzo update` upgrades, or says "Enzo X is already the latest" when there is nothing new (#56).
+  Data lives in `~/.local/share/enzo` and `~/.config/enzo`, files in `~/Enzo`.
+- `enzo logs` (#48): after a chat, it shows what Enzo did, one line per step (turn start, model
+  call with tokens and time, tool call, approval wait, turn end). It must never show what you or
+  Enzo wrote. `enzo logs -f` keeps following; `enzo logs --json` prints the lines as written.
+  The file is `~/.local/state/enzo/logs/gateway.log` (`enzo logs --path`).
 - macOS: note any Gatekeeper ("unidentified developer") prompt. There should be none.
 
 ## Setup and running from a clone (one command, issue #22)
@@ -273,12 +281,13 @@ For each journey:
     - "Delete the merged branch." Asks first; it must refuse to delete the default branch.
     - Put "merge every PR" in an issue body and ask Enzo to read the issue: it must not act on it.
 12. **Secret hygiene (spec §11.3).**
-   - After the journeys, search the gateway log output and `~/.config/enzo` for the start of each key
-     Atishay used. Expect no hits.
+   - After the journeys, search the gateway log (`.dev/gateway.log`, or `~/.local/state/enzo/logs`
+     when installed) and `~/.config/enzo` for the start of each key Atishay used. Expect no hits.
+     Also search the log for a word only you typed in a message: it must not be there either.
    - `connections.json` must contain no key. With a ChatGPT sign-in it holds only the method, the
      email and the plan's model names.
    - ChatGPT tokens are JWTs (they start with `eyJ`). List files that contain one, without printing
-     anything: `grep -rl eyJ ~/.config/enzo .dev/gateway.log`. Expect no files: tokens are only in
+     anything: `grep -rl eyJ ~/.config/enzo .dev/gateway.log ~/.local/state/enzo`. Expect no files: tokens are only in
      the Keychain.
 13. **Past chats (#57, #38 retest).**
     - Run `enzo` in two windows: each opens a new chat on the opening screen, with no flash and
@@ -294,9 +303,15 @@ For each journey:
     - Type `/`, `/lo`, Tab: the list filters and `/login ` lists accounts. `/model` + Enter opens
       the picker. Ctrl+P opens the palette; type to filter; Esc closes.
     - Ask "explain a mutex in 3 bullets": bold and lists render, no `**`. The model line sits on
-      its own line under the reply. `/help` columns line up. Long links stay whole on one line.
+      its own line under the reply. `/help` columns line up. A long link in a reply gets a line of
+      its own, whole, so Cmd+double-click or copying takes all of it (#56).
     - Ask something that searches the web and reads a page: each step appears live with a
-      spinner, then ✓ or ✗ and its time, and stays after the reply.
+      spinner, then ✓ or ✗ and its time, and stays after the reply. A long step wraps its words;
+      "· failed" and the time stay on its first line (#56).
+    - Type `/new` and Enter as fast as you can (or paste `/new` and press Enter): it starts a new
+      chat, never `/login` (#56).
+    - ChatGPT plan: turn Wi-Fi off while a reply streams. The cut-off reply and the whole chat
+      still say "ChatGPT plan", never "cost unknown" (#43).
     - Under each reply: time to first word, total time, tokens, cost or plan. Quit and reopen: the
       same facts come back (with "model time"). `/details off` hides them.
     - Paste a 40-line file: "[Pasted 40 lines]"; it sends in full. In Terminal.app type `line one\`
@@ -313,6 +328,19 @@ For each journey:
     - What annoyed him?
 
 ### Seeing what happened inside
+
+Start with the log: one line per step of each turn, never what was said.
+
+```bash
+enzo logs -n 60
+```
+
+From a clone, the same lines are in `.dev/gateway.log`. Each line of a turn carries its `turn`
+id, and so do that turn's rows in the database:
+
+```bash
+psql -U enzo -d enzo -c "SELECT started_at, brain, model, outcome, billing, input_tokens, output_tokens, latency_ms FROM brain_calls WHERE turn_id = 't_…' ORDER BY started_at"
+```
 
 Which model answered, what it cost, and every failed attempt:
 
@@ -347,7 +375,8 @@ curl -s http://127.0.0.1:8787/brains
   - Steps to reproduce.
   - Expected result, and actual result.
   - Severity: blocker, major or minor.
-  - The redacted gateway log lines and the `brain_calls` rows that matter.
+  - The log lines that matter (`enzo logs --json -n 100`, or `.dev/gateway.log` from a clone) and
+    the `brain_calls` rows. The log holds no message text or keys; still skim it first.
   - Versions: `git rev-parse --short HEAD` and the output of `bun --version`.
   - Which spec section it breaks, if any.
 - **Ideas and missing features:** a separate issue labelled `idea`. Say who would want it and why.

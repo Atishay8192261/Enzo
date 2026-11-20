@@ -210,3 +210,45 @@ describe("when Enzo can't be reached (#44)", () => {
     expect(frame).toContain("auto · anthropic · API key");
   });
 });
+
+describe("long lines (#56)", () => {
+  const URL =
+    "https://arstechnica.com/tech-policy/2026/11/trump-admin-still-wont-say-what-it-will-do-about-it/";
+
+  it("a long link in a reply gets a line of its own, so it can be clicked and copied whole", async () => {
+    const text = `The story from today: ${URL} and also [Ars Technica](${URL}) for more. Bare <${URL}> too.`;
+    await using s = await screen(fakeClient({ send: () => events(done({ text })) }), {
+      width: 140,
+    });
+    await enter(s, "news");
+    const rows = lines(await until(s, "for more")).map((l) => l.split("│")[0]?.trim() ?? "");
+    expect(rows.filter((r) => r === URL)).toHaveLength(3); // each one whole, on its own row
+    const words = ["The story from today:", "and also Ars Technica", "for more. Bare", "too."];
+    for (const w of words) expect(rows).toContain(w); // the words around them are kept
+  });
+
+  it("a long step keeps how it went and its time on its first line", async () => {
+    const label = "Reading arstechnica.com/tech-policy/2026/11/trump-admin-still";
+    const send = () =>
+      events(
+        { type: "tool_started", id: "t1", tool: "read_page", label },
+        {
+          type: "tool_finished",
+          id: "t1",
+          tool: "read_page",
+          label,
+          status: "failed",
+          latency_ms: 109,
+        },
+        done({ text: "Here it is." }),
+      );
+    for (const width of [60, 84]) {
+      await using s = await screen(fakeClient({ send }), { width });
+      await enter(s, "news");
+      const rows = lines(await until(s, "Here it is.")).map((l) => l.trim());
+      const first = rows.find((r) => r.startsWith("│ ✗ Reading"));
+      expect(first).toMatch(/· failed {2}109ms$/);
+      expect(rows.filter((r) => r === "109ms" || r === "failed")).toEqual([]);
+    }
+  });
+});

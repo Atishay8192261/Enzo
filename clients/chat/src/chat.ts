@@ -215,7 +215,12 @@ const STEP_NOTE: Record<StepStatus, string> = {
 /** A step's line, the same on every surface: "Reading plan.md…", "Editing plan.md · failed". */
 export function stepLine(item: ChatItem): string {
   const status = item.status ?? "ok";
-  return status === "running" ? `${item.text}…` : `${item.text}${STEP_NOTE[status]}`;
+  return status === "running" ? `${item.text}…` : `${item.text}${stepNote(item)}`;
+}
+
+/** How a finished step went, after its words: " · failed", or "" when it went fine. */
+export function stepNote(item: ChatItem): string {
+  return STEP_NOTE[item.status ?? "ok"];
 }
 
 /** A finished call's status as the chat says it. */

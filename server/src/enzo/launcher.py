@@ -29,6 +29,8 @@ _children: dict[int, subprocess.Popen[bytes]] = {}
 
 GATEWAY_PID = "gateway.pid"
 START_TIMEOUT_S = 90.0
+#: The first start also sets up the bundled database: about a minute on a laptop (#56).
+FIRST_START_TIMEOUT_S = 300.0
 
 
 class LauncherError(Exception):
@@ -58,8 +60,13 @@ def health(port: int) -> dict[str, str] | None:
     return body if isinstance(body, dict) and body.get("status") == "ok" else None
 
 
-def attach(state: Path, port: int, *, say: Callable[[str], None] = print) -> Gateway:
-    """Use the running gateway, or start one; then count this app as one of its users."""
+def attach(
+    state: Path, port: int, *, say: Callable[[str], None] = print, first_start: bool = False
+) -> Gateway:
+    """Use the running gateway, or start one; then count this app as one of its users.
+
+    ``first_start``: the database is not set up yet, which the gateway does before it answers.
+    """
     private_dir(state / "clients")
     with _locked(state):
         info = health(port)
@@ -76,8 +83,11 @@ def attach(state: Path, port: int, *, say: Callable[[str], None] = print) -> Gat
                     "Close it, or choose another port with ENZO_PORT=8788."
                 )
                 raise LauncherError(msg)
-            say("Starting Enzo…")
-            _start(state, port)
+            if first_start:
+                say("Starting Enzo. First start only: setting up your database (about a minute)…")
+            else:
+                say("Starting Enzo…")
+            _start(state, port, FIRST_START_TIMEOUT_S if first_start else START_TIMEOUT_S)
             started = True
         (state / "clients" / str(os.getpid())).touch()
     return Gateway(url_for(port), started)
