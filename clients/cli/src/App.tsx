@@ -59,6 +59,9 @@ const PICKER_TITLE: Record<PickerKind | "palette", string> = {
   logout: "Disconnect an account",
 };
 
+/** Typed alone and sent with Enter while an approval card is open: the answer to the card. */
+export const APPROVAL_WORDS: Record<string, boolean> = { y: true, yes: true, n: false, no: false };
+
 /** Typing one of these words alone quits, like a shell (no slash needed). */
 const QUIT_WORDS = new Set(["exit", "quit"]);
 
@@ -228,6 +231,16 @@ export function App({
       void runLine(line);
       return true;
     }
+    if (approval && state.status === "ready") {
+      // The card is answered in words, and only with Enter: a message that starts with "y" can
+      // never approve by accident. Anything else is a new message, and the card is closed as not
+      // approved (#55).
+      const answer = APPROVAL_WORDS[line.toLowerCase()];
+      if (answer !== undefined) {
+        void decide(approval.id, answer);
+        return true;
+      }
+    }
     if (state.status === "streaming") {
       // Kept in the input, never lost: it can go as soon as the reply is done.
       say("Enzo is still replying: esc stops it, or send when it's done.");
@@ -269,10 +282,6 @@ export function App({
       const page = Math.max(1, Math.floor((scroll.current?.height ?? 10) / 2));
       scroll.current?.scrollBy(key.name === "pageup" ? -page : page);
       return;
-    }
-    if (now.approval && now.state.status === "ready") {
-      if (key.name === "y") void now.decide(now.approval.id, true);
-      if (key.name === "n") void now.decide(now.approval.id, false);
     }
   });
 
@@ -317,8 +326,15 @@ export function App({
     />
   ) : (
     <Prompt
-      focused={!approval && !picker}
-      placeholder={busy ? "Enzo is working… (esc stops it)" : "Message Enzo, or / for commands"}
+      // Typing always works, also while a card waits for an answer (#55).
+      focused={!picker}
+      placeholder={
+        approval
+          ? "y approves · n declines · or type a new message"
+          : busy
+            ? "Enzo is working… (esc stops it)"
+            : "Message Enzo, or / for commands"
+      }
       history={history}
       sources={{ connections, brains: state.brains }}
       meta={`${modelWords(state)} · ${accountWords(connections)}`}

@@ -221,7 +221,10 @@ export const COMMAND_LIST = Object.entries(COMMANDS)
 
 export const KEYS: [string, string][] = [
   ["enter", "send"],
-  ["shift+enter, ctrl+j", "new line"],
+  ["\\ then enter", "new line (any terminal)"],
+  ["shift+enter", "new line (Kitty, Ghostty, WezTerm, iTerm2)"],
+  ["option+enter, ctrl+j", "new line (Terminal.app: Use Option as Meta key)"],
+  ["y or n, then enter", "answer an approval card (or type a new message)"],
   ["↑ / ↓", "your earlier messages"],
   ["/", "commands (tab or enter completes)"],
   ["ctrl+p", "all commands"],

@@ -9,6 +9,7 @@ import type {
   ProviderConnection,
   Usage,
 } from "@enzo/sdk";
+import type { TerminalCapabilities } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import type React from "react";
 import { act } from "react";
@@ -175,11 +176,13 @@ export interface ScreenOptions {
   healthEveryMs?: number;
   /** A terminal that reports keys with the kitty protocol (Shift+Enter told apart from Enter). */
   kitty?: boolean;
+  /** What the terminal says it supports once it answers (e.g. the kitty keyboard protocol). */
+  terminal?: Partial<TerminalCapabilities>;
 }
 
 /** The app on a test screen, ready to type into. */
-export function screen(client: Client, options: ScreenOptions = {}): Promise<Screen> {
-  return mount(
+export async function screen(client: Client, options: ScreenOptions = {}): Promise<Screen> {
+  const s = await mount(
     <App
       client={client}
       memory={options.memory ?? memory()}
@@ -196,6 +199,18 @@ export function screen(client: Client, options: ScreenOptions = {}): Promise<Scr
     },
     options.ready ?? "Message Enzo",
   );
+  if (options.terminal) answer(s, options.terminal);
+  return s;
+}
+
+/** The terminal answers the capability queries, as a real one does shortly after start. */
+export function answer(s: Screen, capabilities: Partial<TerminalCapabilities>): void {
+  const renderer = s.renderer as unknown as { _capabilities: TerminalCapabilities | null };
+  renderer._capabilities = {
+    ...(renderer._capabilities ?? {}),
+    ...capabilities,
+  } as TerminalCapabilities;
+  s.renderer.emit("capabilities", renderer._capabilities);
 }
 
 /** Render inside act() (start-up work is async), then wait for the first expected screen. */

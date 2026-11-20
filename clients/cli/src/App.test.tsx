@@ -201,10 +201,73 @@ describe("a chat in the terminal", () => {
     expect(card).not.toContain("line 13");
     expect(card).toContain("28 more lines");
     expect(card).toContain('"to": "bob@example.com"'); // and the exact action (§12.3)
-    expect(card).toContain("y approve · n decline");
-    await press(s, "y");
+    expect(card).toContain("y + enter approves");
+    await enter(s, "y");
     await until(s, "Sent.");
     expect(decide).toHaveBeenCalledWith("c1", "appr_1", true);
+  });
+
+  it("typing while a card is open goes into the input; sending it means not this (#55)", async () => {
+    const decide = mock(async () => {});
+    const send = sender(() =>
+      events(
+        {
+          type: "approval_needed",
+          id: "a1",
+          tool: "delete_file",
+          arguments: { path: "t39.txt" },
+          summary: "Delete t39.txt",
+          detail: null,
+        },
+        done({ stop: "approval_pending", text: "Waiting" }),
+      ),
+    );
+    await using s = await screen(fakeClient({ send, decide }), { height: 44 });
+    await enter(s, "delete t39.txt");
+    await until(s, "Approve this action?");
+    await type(s, "what is 2+2");
+    expect(await until(s, "❯ what is 2+2")).toContain("Delete t39.txt"); // seen, not dropped
+    send.mockImplementation(() => events(done({ text: "4" })));
+    await act(async () => {
+      s.mockInput.pressEnter();
+    });
+    const after = await until(s, "Not approved: Delete t39.txt (you sent a new message)");
+    expect(send.mock.calls.at(-1)?.[1]).toBe("what is 2+2");
+    expect(decide).not.toHaveBeenCalled();
+    expect(after).not.toContain("Approve this action?");
+  });
+
+  it("a message that only starts with y never approves; n + Enter declines (#55)", async () => {
+    const decide = mock(async () => {});
+    const card = () =>
+      events(
+        {
+          type: "approval_needed",
+          id: "a1",
+          tool: "delete_file",
+          arguments: { path: "a.md" },
+          summary: "Delete a.md",
+          detail: null,
+        },
+        done({ stop: "approval_pending", text: "Waiting" }),
+      );
+    const send = sender(card);
+    await using s = await screen(fakeClient({ send, decide }), { height: 44 });
+    await enter(s, "delete a.md");
+    await until(s, "Approve this action?");
+    await type(s, "y");
+    expect(decide).not.toHaveBeenCalled(); // one letter alone does nothing yet
+    await type(s, "esterday I wrote it");
+    await act(async () => {
+      s.mockInput.pressEnter();
+    });
+    await until(s, "Not approved: Delete a.md");
+    expect(decide).not.toHaveBeenCalled();
+    expect(send.mock.calls.at(-1)?.[1]).toBe("yesterday I wrote it");
+    await until(s, "Approve this action?"); // the fake asks again
+    await enter(s, "no");
+    await until(s, "Declined: Delete a.md");
+    expect(decide).toHaveBeenCalledWith("c1", "a1", false);
   });
 
   it("a reopened chat shows the approval left open, and y answers it (#39)", async () => {
@@ -229,7 +292,7 @@ describe("a chat in the terminal", () => {
       ready: "Approve this action?",
     });
     expect(s.captureCharFrame()).toContain("Delete plan.md");
-    await press(s, "y");
+    await enter(s, "y");
     await until(s, "Approved: Delete plan.md");
     expect(decide).toHaveBeenCalledWith("c1", "a1", true);
   });
@@ -316,6 +379,35 @@ describe("typing and pasting (#35)", () => {
     });
     await until(s, "◆ enzo");
     expect(send.mock.calls[0]?.[1]).toBe("one\ntwo\nthree\nfour");
+  });
+
+  it("a backslash before Enter makes a new line in any terminal, like Terminal.app (#58)", async () => {
+    const send = sender();
+    await using s = await screen(fakeClient({ send }));
+    await type(s, "line one\\");
+    await act(async () => {
+      s.mockInput.pressEnter();
+    });
+    await type(s, "line two");
+    expect(send).not.toHaveBeenCalled();
+    const frame = await until(s, "line two");
+    expect(frame).not.toContain("line one\\"); // the backslash is replaced, not kept
+    await act(async () => {
+      s.mockInput.pressEnter();
+    });
+    await until(s, "◆ enzo");
+    expect(send.mock.calls[0]?.[1]).toBe("line one\nline two");
+  });
+
+  it("the hint names a new-line key that works in this terminal (#58)", async () => {
+    await using plain = await screen(fakeClient());
+    expect(plain.captureCharFrame()).toContain("\\ then enter new line");
+    expect(plain.captureCharFrame()).not.toContain("shift+enter new line");
+    await using kitty = await screen(fakeClient(), {
+      kitty: true,
+      terminal: { kitty_keyboard: true },
+    });
+    await until(kitty, "shift+enter new line");
   });
 
   it("in a terminal that can't tell Shift+Enter apart, Alt+Enter and Ctrl+J still add a line", async () => {
