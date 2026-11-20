@@ -62,8 +62,8 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          - { target: darwin-arm64, runner: macos-14, run: native }
-          - { target: darwin-x64, runner: macos-14, run: rosetta }
+          - { target: darwin-arm64, runner: macos-latest, run: native }
+          - { target: darwin-x64, runner: macos-latest, run: rosetta }
           - { target: linux-x64, runner: ubuntu-24.04, run: native }
           - { target: linux-arm64, runner: ubuntu-24.04-arm, run: native }
     env:
@@ -186,7 +186,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14]
+        os: [ubuntu-24.04, macos-latest]
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
