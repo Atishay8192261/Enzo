@@ -1,13 +1,17 @@
 """The installed `enzo`: the launcher starts the gateway on the bundled Postgres, shares it between
 open apps and stops both after the last one closes (#23)."""
 
+import json
 import os
 import signal
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
+from typing import Any
 
+import httpx2
 import pytest
 
 from enzo import cli, launcher
@@ -53,6 +57,18 @@ def test_the_last_app_to_close_stops_the_gateway_and_its_database(
         assert launcher.health(port) is not None
         assert postgres_running(data)  # the bundled database came up with it
 
+        # The installed gateway writes its own log (#48): not on a screen nobody sees.
+        assert httpx2.get(f"{gateway.url}/brains", timeout=10).status_code == 200
+        log = state / "logs" / "gateway.log"
+        written = [json.loads(line) for line in log.read_text().splitlines()]
+        events = [x["event"] for x in written]
+        assert events[:2] == ["database.ready", "gateway.start"]
+        assert written[0]["first_start"] is True
+        assert {"event": "http", "method": "GET", "path": "/brains", "status": 200}.items() <= (
+            written[-1].items()
+        )
+        assert (state / "logs" / "startup.log").read_text() == ""  # nothing went wrong
+
         other_app = state / "clients" / str(os.getppid())  # a second app, still open
         other_app.touch()
         launcher.release(state)
@@ -78,6 +94,26 @@ def test_a_port_taken_by_another_program_is_explained(installed: tuple[Path, Pat
         port = busy.getsockname()[1]
         with pytest.raises(launcher.LauncherError, match=f"Port {port} is used by another program"):
             launcher.attach(state, port, say=lambda _m: None)
+
+
+def test_a_gateway_that_dies_at_start_shows_its_last_words(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = "import sys; print('database is locked'); sys.exit(3)"
+    real = subprocess.Popen
+
+    def popen(_argv: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+        process: subprocess.Popen[bytes] = real([sys.executable, "-c", script], **kwargs)
+        return process
+
+    monkeypatch.setattr("enzo.launcher.subprocess.Popen", popen)
+    with pytest.raises(launcher.LauncherError) as failed:
+        launcher._start(tmp_path, free_port(), 10)
+    startup = tmp_path / "logs" / "startup.log"
+    assert str(failed.value) == (
+        f"Enzo's gateway did not start. The end of its log ({startup}):\ndatabase is locked"
+    )
+    assert (tmp_path / "logs").stat().st_mode & 0o777 == 0o700
 
 
 def test_a_gateway_started_by_hand_is_never_stopped(tmp_path: Path) -> None:

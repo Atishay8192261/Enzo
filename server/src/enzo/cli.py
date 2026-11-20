@@ -4,6 +4,7 @@ enzo           the terminal app, in a new chat (the gateway and its database sta
 enzo -c        the terminal app, in the last chat (--continue)
 enzo web       the web app in your browser
 enzo doctor    check this installation, with a fix for each problem
+enzo logs      what Enzo did, from its log (-f to keep watching; attach it to a bug report)
 enzo update    update to the latest release
 enzo serve     run the gateway in the foreground (for an always-on machine)
 """
@@ -11,6 +12,7 @@ enzo serve     run the gateway in the foreground (for an always-on machine)
 import argparse
 import atexit
 import contextlib
+import logging
 import os
 import platform
 import shutil
@@ -21,10 +23,11 @@ import time
 import webbrowser
 from collections.abc import Callable, Iterator
 from importlib import resources
+from pathlib import Path
 
 import httpx2
 
-from enzo import __version__, launcher, tui
+from enzo import __version__, launcher, logs, tui
 from enzo.config import Settings
 from enzo.paths import data_dir, private_dir, state_dir
 
@@ -45,6 +48,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     commands.add_parser("web", help="open the web app in your browser")
     commands.add_parser("doctor", help="check this installation and say how to fix problems")
+    logs_parser = commands.add_parser("logs", help="show what Enzo did, from its log")
+    logs_parser.add_argument(
+        "-n", "--lines", type=int, default=40, metavar="N", help="how many lines (default 40)"
+    )
+    logs_parser.add_argument("-f", "--follow", action="store_true", help="keep showing new lines")
+    logs_parser.add_argument("--json", action="store_true", help="the lines as written (JSON)")
+    logs_parser.add_argument("--path", action="store_true", help="only say where the log is")
     commands.add_parser("update", help="update Enzo to the latest release")
     serve = commands.add_parser("serve", help="run the gateway in the foreground")
     serve.add_argument("--managed", action="store_true", help=argparse.SUPPRESS)
@@ -54,6 +64,9 @@ def main(argv: list[str] | None = None) -> int:
         "chat": lambda: chat(last=args.last),
         "web": web,
         "doctor": doctor,
+        "logs": lambda: show_logs(
+            lines=args.lines, keep=args.follow, as_json=args.json, path_only=args.path
+        ),
         "update": update,
         "serve": lambda: serve_gateway(managed=args.managed),
     }
@@ -95,7 +108,16 @@ def serve_gateway(*, managed: bool) -> int:
     from enzo.gateway.app import create_app  # noqa: PLC0415
     from enzo.store.migrate import upgrade  # noqa: PLC0415
 
-    url = os.environ.get("ENZO_DATABASE_URL") or bundled_db.start(data_dir())
+    # An installed gateway (started by the apps) writes only its log file (#48); `enzo serve`
+    # also shows it on screen.
+    logs.configure(file=log_file(), stream=None if managed else sys.stderr)
+    log = logging.getLogger("enzo.cli")
+    began = time.perf_counter()
+    url = os.environ.get("ENZO_DATABASE_URL")
+    if url is None:
+        first = not bundled_db.set_up(data_dir())
+        url = bundled_db.start(data_dir())
+        log.info("database.ready", extra={"first_start": first, "ms": _ms_since(began)})
     upgrade(url)  # every start: `enzo update` needs no separate migration step
     settings = Settings(database_url=url)
     if managed:
@@ -105,7 +127,45 @@ def serve_gateway(*, managed: bool) -> int:
     # end the process on the spot and skip the exit hooks that stop the bundled Postgres: exit
     # normally instead, so they run.
     signal.signal(signal.SIGTERM, _exit_normally)
-    uvicorn.run(create_app(settings), host=settings.host, port=settings.port)
+    log.info(
+        "gateway.start",
+        extra={"version": __version__, "port": settings.port, "ms": _ms_since(began)},
+    )
+    # log_config=None: uvicorn keeps the logging set up above instead of installing its own.
+    uvicorn.run(create_app(settings), host=settings.host, port=settings.port, log_config=None)
+    return 0
+
+
+def _ms_since(began: float) -> int:
+    return round((time.perf_counter() - began) * 1000)
+
+
+def log_file() -> Path:
+    return logs.log_dir(state_dir()) / logs.LOG_FILE
+
+
+def show_logs(
+    *, lines: int = 40, keep: bool = False, as_json: bool = False, path_only: bool = False
+) -> int:
+    """The end of Enzo's log, readable (or as written, to attach to a bug report)."""
+    path = log_file()
+    if path_only:
+        print(path)
+        return 0
+    if not path.exists() and not keep:
+        print(f"{NOTE} No log yet: Enzo writes {path} once it has started.")
+        return 0
+
+    def show(raw: str) -> str:
+        return raw.rstrip("\n") if as_json else logs.readable(raw)
+
+    if not keep:
+        for raw in logs.last_lines(path, max(lines, 0)):
+            print(show(raw))
+        return 0
+    with contextlib.suppress(KeyboardInterrupt):
+        for raw in logs.follow(path, lines=max(lines, 0)):
+            print(show(raw), flush=True)
     return 0
 
 
@@ -122,6 +182,7 @@ def doctor() -> int:
         _check_folders(),
         _check_vault(),
         _check_gateway(),
+        _check_log(),
     ]
     for mark, line in results:
         print(f"{mark} {line}")
@@ -241,6 +302,13 @@ def _check_gateway() -> tuple[str, str]:
     accounts = ", ".join(connected) if connected else "none yet (/login chatgpt in the app)"
     where = f"{info.get('version')} at {launcher.url_for(port)}"
     return OK, f"Gateway: running {where} · accounts: {accounts}"
+
+
+def _check_log() -> tuple[str, str]:
+    path = log_file()
+    if path.exists():
+        return OK, f"Log: {path} (`enzo logs` shows it; attach it to a bug report)"
+    return NOTE, f"Log: none yet (Enzo writes {path} once it has started)"
 
 
 if __name__ == "__main__":

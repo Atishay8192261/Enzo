@@ -6,6 +6,7 @@ agent still finishes and the turn is saved (§6.1, §9.2). Clients read events f
 
 import asyncio
 import logging
+import time
 import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
@@ -17,6 +18,7 @@ from enzo.agent.loop import AgentEvent, TurnDone, TurnOutcome, run_turn
 from enzo.agent.prompt import compose_prompt
 from enzo.brain.models import Message, TextPart
 from enzo.brain.router import Router, classify
+from enzo.logs import conversation_var, new_turn_id, turn_var
 from enzo.store.repository import ConversationInfo, Store
 from enzo.store.schema import ApprovalRow
 from enzo.tools.registry import ToolRegistry
@@ -169,10 +171,23 @@ class ConversationService:
         queue: asyncio.Queue[ServiceEvent | object],
         stop: asyncio.Event,
     ) -> None:
+        # Every log line of this run, and its ledger rows, carry these (#48).
+        turn_id = new_turn_id()
+        conversation_var.set(str(info.id))
+        turn_var.set(turn_id)
+        began = time.perf_counter()
         try:
             decisions = await self.store.decisions(info.id)
             task, why = classify(self.router.config, prompt)
-            log.info("turn task", extra={"conversation": str(info.id), "task": task, "why": why})
+            log.info(
+                "turn.start",
+                extra={
+                    "task": task,
+                    "why": why,
+                    "messages": len(prompt),
+                    "resume": first_new == len(prompt),
+                },
+            )
             async for event in run_turn(
                 self.router,
                 self.registry,
@@ -186,22 +201,43 @@ class ConversationService:
             ):
                 if isinstance(event, TurnDone):
                     # Persist before telling the client the turn is done.
-                    await self._save(info.id, event.outcome, first_new)
+                    await self._save(info.id, event.outcome, first_new, turn_id)
+                    _log_end(event.outcome, began)
                 queue.put_nowait(event)
         except Exception as exc:  # report, never leave the client hanging
+            log.exception("turn.failed", extra={"ms": round((time.perf_counter() - began) * 1000)})
             queue.put_nowait(TurnFailed(f"{type(exc).__name__}: {exc}"))
             raise
         finally:
             queue.put_nowait(_END)
 
-    async def _save(self, conversation_id: uuid.UUID, outcome: TurnOutcome, first_new: int) -> None:
+    async def _save(
+        self, conversation_id: uuid.UUID, outcome: TurnOutcome, first_new: int, turn_id: str
+    ) -> None:
         await self.store.save_turn(
             conversation_id,
             messages=outcome.messages[first_new:],
             brain_calls=outcome.brain_calls,
             tool_outcomes=outcome.tool_outcomes,
             pending=outcome.pending,
+            turn_id=turn_id,
         )
+
+
+def _log_end(outcome: TurnOutcome, began: float) -> None:
+    for request in outcome.pending:
+        log.info("approval.wait", extra={"tool": request.tool, "approval": request.id})
+    log.info(
+        "turn.end",
+        extra={
+            "stop": outcome.stop,
+            "steps": outcome.steps,
+            "calls": len(outcome.brain_calls),
+            "tools": len(outcome.tool_outcomes),
+            "ms": round((time.perf_counter() - began) * 1000),
+            **({"failure": outcome.failure} if outcome.failure else {}),
+        },
+    )
 
 
 async def _drain(queue: "asyncio.Queue[ServiceEvent | object]") -> AsyncGenerator[ServiceEvent]:

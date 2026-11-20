@@ -21,13 +21,13 @@ import httpx2
 import psutil
 
 from enzo import __version__
+from enzo.logs import LOG_FILE, STARTUP_LOG, log_dir
 from enzo.paths import private_dir
 
 #: Gateways this process started: kept so they can be reaped when stopped (no zombie left).
 _children: dict[int, subprocess.Popen[bytes]] = {}
 
 GATEWAY_PID = "gateway.pid"
-GATEWAY_LOG = "gateway.log"
 START_TIMEOUT_S = 90.0
 
 
@@ -107,9 +107,12 @@ def forget_own_pid(state: Path) -> None:
             path.unlink()
 
 
-def _start(state: Path, port: int) -> None:
-    log = state / GATEWAY_LOG
-    with log.open("ab") as out:
+def _start(state: Path, port: int, timeout_s: float = START_TIMEOUT_S) -> None:
+    # The gateway logs to its own file once it is up; what it prints before that (a crash at
+    # start) lands here, kept for the latest start only.
+    logs = private_dir(log_dir(state))
+    startup = logs / STARTUP_LOG
+    with startup.open("wb") as out:
         process = subprocess.Popen(
             [sys.executable, "-m", "enzo.cli", "serve", "--managed"],
             stdin=subprocess.DEVNULL,
@@ -119,15 +122,15 @@ def _start(state: Path, port: int) -> None:
             env={**os.environ, "ENZO_PORT": str(port)},
         )
     _children[process.pid] = process
-    deadline = time.monotonic() + START_TIMEOUT_S
+    deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if health(port) is not None:
             return
         if process.poll() is not None:
             break
         time.sleep(0.25)
-    tail = _tail(log)
-    msg = f"Enzo's gateway did not start. The end of its log ({log}):\n{tail}"
+    log = startup if _tail(startup) else logs / LOG_FILE
+    msg = f"Enzo's gateway did not start. The end of its log ({log}):\n{_tail(log) or '(empty)'}"
     raise LauncherError(msg)
 
 
@@ -181,7 +184,7 @@ def _tail(log: Path, lines: int = 15) -> str:
     try:
         return "\n".join(log.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:])
     except OSError:
-        return "(no log)"
+        return ""
 
 
 @contextlib.contextmanager

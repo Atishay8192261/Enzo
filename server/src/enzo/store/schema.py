@@ -102,6 +102,8 @@ class BrainCallRow(Base):
     fallback_from: Mapped[str | None] = mapped_column(Text)
     #: "usage" (per-token, on a key) or "plan" (the user's subscription: no per-token cost).
     billing: Mapped[str] = mapped_column(Text, server_default="usage")
+    #: The run (one send or resume) that made this call: the same id as its log lines (#48).
+    turn_id: Mapped[str | None] = mapped_column(Text, index=True)
 
 
 class ToolCallRow(Base):
@@ -122,6 +124,8 @@ class ToolCallRow(Base):
     latency_ms: Mapped[float]
     #: When the call started (rows are saved at the end of a turn, #43).
     created_at: Mapped[datetime] = _created_at()
+    #: The run that made this call: the same id as its log lines (#48).
+    turn_id: Mapped[str | None] = mapped_column(Text, index=True)
 
 
 class ApprovalRow(Base):

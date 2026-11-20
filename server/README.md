@@ -27,6 +27,7 @@ enzo            # the terminal app, in a new chat
 enzo -c         # the terminal app, in your last chat (ctrl+r there lists them all)
 enzo web        # the web app, in your browser
 enzo doctor     # check the installation; each problem comes with a fix
+enzo logs       # what Enzo did, one line per step (-f to follow; never what was said)
 enzo update     # the latest release
 ```
 
