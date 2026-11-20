@@ -10,7 +10,7 @@ from alembic.config import Config
 
 ADMIN_URL = os.environ.get("ENZO_TEST_ADMIN_URL", "postgresql://enzo:enzo@localhost:5432/postgres")
 ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
-TABLES = "approvals, tool_calls, brain_calls, messages, conversations"
+TABLES = "memories, approvals, tool_calls, brain_calls, messages, conversations"
 
 
 def alembic_config(url: str) -> Config:

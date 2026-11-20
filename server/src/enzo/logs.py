@@ -18,15 +18,14 @@ import os
 import re
 import sys
 import time
-import uuid
 from collections import deque
 from collections.abc import Callable, Iterator
-from contextvars import ContextVar
 from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import TextIO
 
+from enzo.context import conversation_var, turn_var
 from enzo.paths import private_dir
 
 LOG_DIR = "logs"
@@ -35,10 +34,6 @@ LOG_FILE = "gateway.log"
 STARTUP_LOG = "startup.log"
 MAX_BYTES = 5 * 1024 * 1024
 BACKUPS = 3
-
-#: The conversation and the run (one send or resume) that the current code works for.
-conversation_var: ContextVar[str | None] = ContextVar("enzo_conversation", default=None)
-turn_var: ContextVar[str | None] = ContextVar("enzo_turn", default=None)
 
 #: Loggers whose lines go to Enzo's log: Enzo's own, and the HTTP server's.
 LOGGERS = ("enzo", "uvicorn", "uvicorn.error", "uvicorn.access")
@@ -50,10 +45,6 @@ _STANDARD = set(logging.makeLogRecord({}).__dict__) | {
     "taskName",
     "color_message",
 }
-
-
-def new_turn_id() -> str:
-    return f"t_{uuid.uuid4().hex[:12]}"
 
 
 def log_dir(state: Path) -> Path:

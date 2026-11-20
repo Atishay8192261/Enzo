@@ -5,8 +5,10 @@ import {
   describeCatalog,
   describeChoice,
   describeConnection,
+  type MemoryClient,
   resolveChoice,
 } from "@enzo/chat";
+import type { MemoryList, Remembered } from "@enzo/sdk";
 
 /**
  * What a command shows, as a card under its own echo: plain text, text marked as an error, or
@@ -15,10 +17,10 @@ import {
 export type Reply = string | { text: string; error: true } | { rows: [string, string][] } | null;
 
 /** The pickers a command can open instead of asking for an argument. */
-export type PickerKind = "login" | "logout" | "model" | "chats" | "delete";
+export type PickerKind = "login" | "logout" | "model" | "chats" | "delete" | "memory" | "forget";
 
 export interface CommandContext {
-  client: ChatClient & AccountsClient;
+  client: ChatClient & AccountsClient & MemoryClient;
   /** The conversation's current choice: a model, a tier, or null for smart routing. */
   current: string | null;
   /** This chat's id; null while it is fresh (created by its first message). */
@@ -47,6 +49,14 @@ export interface CommandContext {
   renameChat(title: string): Promise<Reply>;
   /** Move this chat to the trash (after the user confirmed) and start a fresh one. */
   deleteChat(): Promise<Reply>;
+  /** The list of memories to forget one from, or why there is none. */
+  pickMemory(): Promise<Reply>;
+  /** Ask before forgetting this memory. */
+  askForget(id: number): Promise<Reply>;
+  /** Forget the memory the user just confirmed; null: none was being asked about. */
+  forgetMemory(): Promise<Reply>;
+  /** The user kept the memory. */
+  keepMemory(): void;
   quit(): void;
 }
 
@@ -256,6 +266,32 @@ const COMMANDS: Record<string, Command> = {
       return null;
     },
   },
+  "/memory": {
+    usage: "/memory",
+    summary: "what Enzo remembers about you, and where each came from",
+    args: 0,
+    async run(ctx) {
+      return memoryReply(await ctx.client.memories());
+    },
+  },
+  "/forget": {
+    usage: "/forget",
+    summary: "remove something Enzo remembers (asks first)",
+    args: 1,
+    optional: true,
+    also: ["keep", "confirm"],
+    async run(ctx, arg) {
+      if (arg === "keep") {
+        ctx.keepMemory();
+        return null;
+      }
+      if (arg === "confirm") return ctx.forgetMemory();
+      if (!arg) return ctx.pickMemory();
+      const id = Number(arg);
+      if (!Number.isInteger(id) || id < 1) return error("Usage: /forget");
+      return ctx.askForget(id);
+    },
+  },
   "/help": {
     usage: "/help",
     summary: "commands and keys",
@@ -332,4 +368,38 @@ async function safely(run: () => Reply | Promise<Reply>): Promise<Reply> {
   } catch (e: unknown) {
     return error(e instanceof Error ? e.message : String(e));
   }
+}
+
+/** Headings for each kind of memory, in the order /memory and Memory.md show them. */
+export const MEMORY_KINDS: [Remembered["kind"], string][] = [
+  ["about", "About you"],
+  ["preference", "Preferences"],
+  ["person", "People"],
+  ["decision", "Decisions"],
+  ["fact", "Other facts"],
+];
+
+/** A memory as one line: "Priya: Sister, lives in Austin." */
+export const memoryLine = (m: Remembered) => (m.about ? `${m.about}: ${m.text}` : m.text);
+
+/** What /memory shows: each memory under its kind, with where it came from (spec §15.2). */
+export function memoryReply({ memories, file }: MemoryList): Reply {
+  // The path on a line of its own: a terminal wraps it at a "/" otherwise (#56).
+  const copy = file ? ["A readable copy:", file] : [];
+  if (memories.length === 0) {
+    return [
+      "Enzo remembers nothing yet. Tell it something, like “remember I prefer window seats”.",
+      ...copy,
+    ].join("\n");
+  }
+  const lines: string[] = [];
+  for (const [kind, heading] of MEMORY_KINDS) {
+    const group = memories.filter((m) => m.kind === kind);
+    if (group.length === 0) continue;
+    if (lines.length > 0) lines.push("");
+    lines.push(heading);
+    for (const m of group) lines.push(`• ${memoryLine(m)}`, `  ${m.source} · #${m.id}`);
+  }
+  lines.push("", "To change one, just tell Enzo. /forget removes one.", ...copy);
+  return lines.join("\n");
 }

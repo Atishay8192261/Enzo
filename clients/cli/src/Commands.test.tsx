@@ -1,5 +1,6 @@
 import { describe, expect, it, mock } from "bun:test";
 import { act } from "react";
+import { COMMAND_LIST } from "./commands.ts";
 import { Picker } from "./Picker.tsx";
 import {
   arrow,
@@ -29,9 +30,10 @@ describe("the slash-command list (#34)", () => {
     for (const name of ["/login", "/logout", "/models", "/model ", "/new"]) {
       expect(all).toContain(name);
     }
-    expect(all).toContain(" 1/16 "); // more below: the list scrolls with the selection
-    for (let i = 0; i < 15; i++) await arrow(s, "down");
-    expect(await until(s, " 16/16 ")).toContain("/quit");
+    const n = COMMAND_LIST.length;
+    expect(all).toContain(` 1/${n} `); // more below: the list scrolls with the selection
+    for (let i = 0; i < n - 1; i++) await arrow(s, "down");
+    expect(await until(s, ` ${n}/${n} `)).toContain("/quit");
     expect(all).toContain("↑↓ choose · tab complete · enter run · esc close");
     await type(s, "lo");
     const filtered = await until(s, "/logout [provider]");

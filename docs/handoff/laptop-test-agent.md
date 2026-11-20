@@ -43,6 +43,10 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
 
 **Works now:**
 
+- **Memory (new, ADR 0020).** Enzo remembers durable facts you tell it across chats: who you
+  are, preferences, people, decisions. Each has its source (you said / Enzo inferred, when, which
+  chat). `/memory` shows them, `/forget` removes one, `~/Enzo/Memory.md` is a readable copy.
+  Secrets are refused.
 - **Accounts.** You connect your own provider accounts: Anthropic (Claude), OpenAI (GPT), xAI (Grok)
   and Moonshot (Kimi).
   - **Sign in with ChatGPT** (ADR 0013): `/login chatgpt` or web Accounts → **Continue with
@@ -322,7 +326,23 @@ For each journey:
     - Type while a reply streams: the text is kept; Enter then says to wait or press Esc.
     - Quit three ways: `exit`, `quit`, Ctrl+D. Ctrl+C clears typed text first.
     - Note what still feels unlike Claude Code / Codex, and what feels better.
-15. **Usability verdict.** After a session, write 5 to 10 bullets with Atishay:
+15. **Memory (spec §6.2, §15.2; ADR 0020).** Over a few days, not one sitting:
+    - Tell Enzo a few real things: "I'm vegetarian", "my sister Priya lives in Austin",
+      "remember I prefer aisle seats". Each shows a step ("Remembering: …") and a short
+      confirmation, never a question first.
+    - In a new chat (and after quitting `enzo`), ask something that depends on one ("plan
+      dinner for Friday"): Enzo uses it without being told again. Ask something unrelated: it
+      must not bring memories up.
+    - Change one in plain words ("actually I eat fish now"). Ask again: only the new value is
+      used, and `/memory` shows the new one, not both.
+    - `/memory`: each memory under its kind, with "you said, <date>, in “<chat>”". `~/Enzo/Memory.md`
+      shows the same. `/forget` asks first ("No, keep it" is first) and then it is gone from both.
+    - Ask "what do you remember about me?" and "forget that I'm vegetarian": both work in chat.
+    - Try to make it keep a secret ("remember my wifi password is …"): it must refuse and say why.
+    - `enzo logs`: `memory.saved`, `memory.recalled`, `memory.forgotten` lines, never the words.
+    - Files (#41): after "make a file plan.md with my to-do list", Enzo says "Saved to
+      ~/Enzo/plan.md". Asking it to edit `Memory.md` is refused with a pointer to memory instead.
+16. **Usability verdict.** After a session, write 5 to 10 bullets with Atishay:
     - Could he use this every day?
     - What is missing first?
     - What annoyed him?
