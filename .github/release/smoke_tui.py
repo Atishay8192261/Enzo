@@ -1,7 +1,8 @@
 """Release smoke test: the compiled terminal app starts and draws a screen.
 
 `--version` alone would not prove the native renderer (OpenTUI's libopentui) loads, so the binary
-runs in a pseudo-terminal against a gateway that isn't there, and must draw its offline message.
+runs in a pseudo-terminal against a gateway that isn't there, and must draw its offline message
+("Can't reach Enzo at 127.0.0.1:9").
 Standard library only. Usage: python smoke_tui.py <binary> <version>
 """
 
@@ -13,6 +14,7 @@ import sys
 import time
 
 binary, version = sys.argv[1], sys.argv[2]
+MESSAGE = b"reach Enzo at"
 
 shown = subprocess.run([binary, "--version"], capture_output=True, text=True, check=True).stdout
 if shown.strip() != f"enzo-tui {version}":
@@ -25,7 +27,7 @@ if pid == 0:
 
 seen = b""
 deadline = time.monotonic() + 30
-while time.monotonic() < deadline and b"unreachable" not in seen:
+while time.monotonic() < deadline and MESSAGE not in seen:
     ready, _, _ = select.select([fd], [], [], 0.5)
     if ready:
         try:
@@ -37,6 +39,6 @@ while time.monotonic() < deadline and b"unreachable" not in seen:
             os.write(fd, b"\x1b[1;1R")
 os.kill(pid, 9)
 os.waitpid(pid, 0)
-if b"unreachable" not in seen:
+if MESSAGE not in seen:
     sys.exit(f"the terminal app drew no screen; it wrote: {seen[-400:]!r}")
 print(f"ok: {binary} {version} draws its screen")

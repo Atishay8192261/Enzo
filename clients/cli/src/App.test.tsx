@@ -2,225 +2,176 @@ import { describe, expect, it, mock } from "bun:test";
 import { mkdtempSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AccountsClient, ChatClient, ConversationMemory } from "@enzo/chat";
-import {
-  type AgentEvent,
-  type Brain,
-  type Conversation,
-  GatewayError,
-  type ProviderConnection,
-} from "@enzo/sdk";
-import { testRender } from "@opentui/react/test-utils";
-import type React from "react";
+import { GatewayError } from "@enzo/sdk";
+import { TextAttributes } from "@opentui/core";
 import { act } from "react";
-import { App } from "./App.tsx";
 import { fileMemory } from "./memory.ts";
+import {
+  arrow,
+  done,
+  enter,
+  events,
+  fakeClient,
+  lines,
+  memory,
+  paste,
+  press,
+  type Screen,
+  screen,
+  sender,
+  settle,
+  slowly,
+  type,
+  USED,
+  until,
+} from "./testing.tsx";
 
-const BRAINS: Brain[] = [
-  {
-    name: "claude-sonnet",
-    provider: "anthropic",
-    model: "claude-sonnet-5-5",
-    priced: true,
-    tier: "balanced",
-    recommended: true,
-    note: null,
-    available: true,
-  },
-  {
-    name: "grok",
-    provider: "xai",
-    model: "grok-4.7",
-    priced: false,
-    tier: "powerful",
-    recommended: true,
-    note: null,
-    available: false,
-  },
-];
-const CONVERSATION: Conversation = { id: "c1", kind: "main", title: null, brain: null };
-
-async function* events(...list: AgentEvent[]): AsyncGenerator<AgentEvent> {
-  for (const e of list) yield e;
+/** Whether some run of `text` on screen is drawn bold. */
+function bold(s: Screen, text: string): boolean {
+  return s
+    .captureSpans()
+    .lines.some((line) =>
+      line.spans.some(
+        (span) => span.text.includes(text) && (span.attributes & TextAttributes.BOLD) !== 0,
+      ),
+    );
 }
 
-function memory(start: string | null = null): ConversationMemory {
-  let id = start;
-  return {
-    get: () => id,
-    set: (v) => {
-      id = v;
-    },
-  };
-}
-
-const CONNECTIONS: ProviderConnection[] = [
-  {
-    provider: "anthropic",
-    connected: true,
-    method: "api_key",
-    connected_at: "2026-11-17T20:00:00Z",
-    methods: ["api_key"],
-    models: ["claude-opus-5-5"],
-    tools: [],
-    purpose: null,
-    label: null,
-  },
-  {
-    provider: "xai",
-    connected: false,
-    method: null,
-    connected_at: null,
-    methods: ["api_key"],
-    models: ["grok-4.7"],
-    tools: [],
-    purpose: null,
-    label: null,
-  },
-];
-
-type Client = ChatClient & AccountsClient;
-
-function fakeClient(overrides: Partial<Client> = {}): Client {
-  return {
-    connections: async () => CONNECTIONS,
-    connect: mock(async () => {}),
-    disconnect: mock(async () => ({ remote_sign_out: null })),
-    checkConnection: async () => ({ ok: true, detail: null }),
-    startChatGPTSignIn: mock(async () => ({
-      login_id: "l1",
-      url: "http://127.0.0.1:8787/auth/chatgpt/l1",
-    })),
-    chatGPTSignIn: async () => ({
-      status: "connected" as const,
-      message: "Signed in with ChatGPT as ada@example.com.",
-      first_time: true,
-      usage_url: "https://chatgpt.com/settings/usage",
-    }),
-    health: async () => ({ status: "ok", version: "1", env: "test" }),
-    brains: async () => BRAINS,
-    createConversation: async () => CONVERSATION,
-    conversation: async () => CONVERSATION,
-    messages: async () => [],
-    chooseBrain: mock(async () => {}),
-    send: () => events(),
-    resume: () => events(),
-    decide: mock(async () => {}),
-    stop: mock(async () => false),
-    ...overrides,
-  };
-}
-
-async function screen(
-  client: Client,
-  onQuit = () => {},
-  openUrl: (url: string) => Promise<void> = async () => {},
-) {
-  return mount(
-    <App client={client} memory={memory()} onQuit={onQuit} openUrl={openUrl} />,
-    30,
-    "Message Enzo",
-  );
-}
-
-/** Render inside act() (start-up work is async), then wait for the first expected screen. */
-async function mount(node: React.ReactNode, height: number, ready: string): Promise<Screen> {
-  let setup: Screen | undefined;
-  await act(async () => {
-    setup = await testRender(node, { width: 90, height });
-  });
-  if (!setup) throw new Error("render failed");
-  const screen = setup;
-  // Tear down inside act() too: unmounting the root updates React.
-  screen[Symbol.asyncDispose] = () => act(() => screen.dispose());
-  await until(screen, ready);
-  return screen;
-}
-
-type Screen = Awaited<ReturnType<typeof testRender>>;
-
-/** Type a line and press Enter, inside act() like any user-driven update. */
-async function enter(s: Screen, text: string): Promise<void> {
-  await act(async () => {
-    await s.mockInput.typeText(text);
-    s.mockInput.pressEnter();
-  });
-}
-
-async function press(s: Screen, key: string): Promise<void> {
-  await act(async () => {
-    s.mockInput.pressKey(key);
-  });
-}
-
-/** Wait for text on screen while letting real time pass, so async work (streams, network) runs. */
-async function until(s: Screen, text: string, ms = 3000): Promise<string> {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    // Inside act(): React applies the updates async work made meanwhile, as it does in real use.
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-    await s.flush();
-    const frame = s.captureCharFrame();
-    if (frame.includes(text)) return frame;
-  }
-  throw new Error(`never saw "${text}" on screen:\n${s.captureCharFrame()}`);
-}
-
-describe("terminal chat (OpenTUI)", () => {
-  it("sends a message and streams the reply", async () => {
-    const client = fakeClient({
-      send: () =>
-        events(
-          { type: "text", text: "Paris" },
-          {
-            type: "done",
-            stop: "final_answer",
-            text: "Paris",
-            steps: 1,
-            cost_usd: 0.0021,
-            brain: null,
-            model: null,
-            failure: null,
-            plan: false,
-          },
-        ),
-    });
-    await using s = await screen(client);
-    await enter(s, "Capital of France?");
-    const frame = await until(s, "enzo: Paris");
-    expect(frame).toContain("you: Capital of France?");
-    expect(frame).toContain("cost $0.0021");
-  });
-
-  it("keeps the first keystroke and clears the input after sending", async () => {
+describe("a chat in the terminal", () => {
+  it("sends a message and streams the reply as formatted Markdown, not raw (#36)", async () => {
+    const reply = "A **mutex** lets *one* thread in.\n\n- call `lock()`\n- then `unlock()`";
     const send = mock(() =>
-      events({
-        type: "done",
-        stop: "final_answer",
-        text: "ok",
-        steps: 1,
-        cost_usd: null,
-        brain: null,
-        model: null,
-        failure: null,
-        plan: false,
-      }),
+      slowly(
+        20,
+        { type: "text", text: reply.slice(0, 16) },
+        { type: "text", text: reply.slice(16) },
+        done({ text: reply, usage: USED }),
+      ),
     );
     await using s = await screen(fakeClient({ send }));
-    await enter(s, "hello enzo");
-    await until(s, "enzo: ok");
+    await enter(s, "explain a mutex");
+    await until(s, "└");
+    const frame = await until(s, "then unlock()");
     expect(send).toHaveBeenCalledWith(
       "c1",
-      "hello enzo",
+      "explain a mutex",
       expect.objectContaining({ device: "cli" }),
     );
-    await act(async () => {
-      await s.mockInput.typeText("again");
+    expect(frame).toContain("A mutex lets one thread in.");
+    expect(frame).not.toContain("**"); // no raw Markdown markers
+    expect(frame).not.toContain("`lock()`");
+    expect(frame).toContain("- call lock()");
+    expect(bold(s, "mutex")).toBe(true);
+    expect(frame).toContain("◆ enzo"); // Enzo's side of the turn is named
+    expect(frame).toContain("╭─ you"); // the user's message is its own card
+  });
+
+  it("says who answered on its own line, never glued to the reply (#36)", async () => {
+    const send = () => events(done({ text: "Paris", brain: "claude-sonnet", usage: USED }));
+    await using s = await screen(fakeClient({ send }));
+    await enter(s, "Capital of France?");
+    const frame = await until(s, "└ claude-sonnet-5-5");
+    const reply = lines(frame).find((l) => l.includes("Paris")) ?? "";
+    expect(reply.trim()).toBe("Paris");
+  });
+
+  it("shows when a message was sent and what each reply used (#49)", async () => {
+    const send = () =>
+      slowly(30, { type: "text", text: "Paris" }, done({ text: "Paris", usage: USED }));
+    await using s = await screen(fakeClient({ send }), { width: 130 });
+    await enter(s, "Capital of France?");
+    const frame = await until(s, "1,388 in · 81 out");
+    expect(frame).toMatch(/you · \d{1,2}[:.]\d{2}/); // the time it was sent
+    expect(frame).toMatch(/first word \d+ms/);
+    expect(frame).toContain("$0.0021");
+    expect(frame).toContain("this chat: 1,469 tokens · $0.0021"); // the status bar adds it up
+    expect(frame).toContain("tokens in"); // and the side panel has the breakdown
+    await enter(s, "/details off");
+    const quiet = await until(s, "Details off.");
+    expect(quiet).not.toContain("1,388 in · 81 out");
+    expect(quiet).toContain("└ claude-sonnet-5-5"); // who answered still shows
+    expect(quiet).toContain("this chat: 1,469 tokens");
+  });
+
+  it("a reopened chat shows each step and what each reply used (#40, #49)", async () => {
+    const client = fakeClient({
+      messages: async () => [
+        { role: "user", parts: [{ type: "text", text: "tidy notes.md" }] },
+        {
+          role: "assistant",
+          parts: [
+            {
+              type: "tool_call",
+              id: "a",
+              name: "read_file",
+              label: "Reading notes.md",
+              latency_ms: 40,
+            },
+          ],
+        },
+        { role: "tool", parts: [{ type: "tool_result", call_id: "a", content: "{}" }] },
+        { role: "assistant", parts: [{ type: "text", text: "Tidied." }] },
+      ],
+      usage: async () => ({
+        total: USED,
+        turns: [{ ...USED, started_at: "2026-11-20T09:05:00Z" }],
+      }),
     });
-    const frame = await until(s, "again");
-    expect(frame).not.toContain("hello enzoagain");
+    await using s = await screen(client, { ready: "Tidied." });
+    const frame = await until(s, "model time");
+    expect(frame).toContain("✓ Reading notes.md  40ms");
+    expect(frame).toContain("3.1s model time");
+    expect(frame).toContain("1,388 in · 81 out");
+    expect(frame).not.toContain("read_file");
+  });
+
+  it("shows each step as Enzo takes it, in plain words, and how it went (#40)", async () => {
+    let finish = () => {};
+    const send = () =>
+      (async function* () {
+        yield {
+          type: "tool_started" as const,
+          id: "t1",
+          tool: "web_search",
+          label: "Searching the web for “mutex”",
+        };
+        await new Promise<void>((r) => {
+          finish = r;
+        });
+        yield {
+          type: "tool_finished" as const,
+          id: "t1",
+          tool: "web_search",
+          label: "Searching the web for “mutex”",
+          status: "ok",
+          latency_ms: 420,
+        };
+        yield {
+          type: "tool_started" as const,
+          id: "t2",
+          tool: "read_page",
+          label: "Reading bbc.com/news",
+        };
+        yield {
+          type: "tool_finished" as const,
+          id: "t2",
+          tool: "read_page",
+          label: "Reading bbc.com/news",
+          status: "failed",
+          latency_ms: 30,
+        };
+        yield done({ text: "Here it is." });
+      })();
+    await using s = await screen(fakeClient({ send }));
+    await enter(s, "news about mutexes");
+    const running = await until(s, "Searching the web for “mutex”…");
+    expect(running).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Searching the web/); // a spinner while it runs
+    expect(running).not.toContain("Thinking…");
+    finish();
+    const after = await until(s, "Here it is.");
+    expect(after).toContain("✓ Searching the web for “mutex”  420ms");
+    expect(after).toContain("✗ Reading bbc.com/news · failed");
+    expect(after).not.toMatch(/web_search|read_page/); // never a tool's name (§10.3)
   });
 
   it("asks for approval of the exact action and resumes on y", async () => {
@@ -237,210 +188,50 @@ describe("terminal chat (OpenTUI)", () => {
             detail: Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join("\n"),
             arguments: { to: "bob@example.com" },
           },
-          {
-            type: "done",
-            stop: "approval_pending",
-            text: "Waiting",
-            steps: 1,
-            cost_usd: null,
-            brain: null,
-            model: null,
-            failure: null,
-            plan: false,
-          },
+          done({ stop: "approval_pending", text: "Waiting" }),
         ),
-      resume: () =>
-        events({
-          type: "done",
-          stop: "final_answer",
-          text: "Sent.",
-          steps: 2,
-          cost_usd: null,
-          brain: null,
-          model: null,
-          failure: null,
-          plan: false,
-        }),
+      resume: () => events(done({ text: "Sent." })),
     });
-    await using s = await screen(client);
+    await using s = await screen(client, { height: 50 });
     await enter(s, "email bob");
-    const card = await until(s, "Approve this action? (y / n)");
+    const card = await until(s, "Approve this action?");
     expect(card).toContain("Email bob@example.com"); // plain words, not the tool name (§10.3)
     expect(card).not.toContain("send_email");
     expect(card).toContain("line 12"); // the detail, clipped so the card stays readable
     expect(card).not.toContain("line 13");
     expect(card).toContain("28 more lines");
     expect(card).toContain('"to": "bob@example.com"'); // and the exact action (§12.3)
+    expect(card).toContain("y approve · n decline");
     await press(s, "y");
-    await until(s, "enzo: Sent.");
+    await until(s, "Sent.");
     expect(decide).toHaveBeenCalledWith("c1", "appr_1", true);
   });
 
-  it("lists models by tier and chooses a model, a tier or auto", async () => {
-    const chooseBrain = mock(async (_id: string, _choice: string | null) => {});
-    await using s = await screen(fakeClient({ chooseBrain }));
-    await enter(s, "/models");
-    const catalog = await until(s, "balanced (everyday default):");
-    expect(catalog).toContain("★ claude-sonnet (claude-sonnet-5-5)");
-    expect(catalog).toContain("grok (grok-4.7) · cost unknown · needs /login xai");
-    await enter(s, "/model ghost");
-    await until(s, "Unknown model: ghost. See /models.");
-    await enter(s, "/model grok");
-    await until(s, "grok needs your xai account: /login xai");
-    await enter(s, "/model claude-sonnet");
-    await until(s, "Model: claude-sonnet (claude-sonnet-5-5)");
-    await until(s, "model: claude-sonnet"); // the header follows the choice
-    await enter(s, "/model balanced");
-    await until(s, "Model: any balanced model");
-    await enter(s, "/model auto");
-    await until(s, "Model: auto (smart routing");
-    expect(chooseBrain.mock.calls).toEqual([
-      ["c1", "claude-sonnet"],
-      ["c1", "balanced"],
-      ["c1", null],
-    ]);
-    await enter(s, "/model");
-    await until(s, "Usage: /model <name|tier|auto>");
-    await enter(s, "/brains");
-    await until(s, "Unknown command: /brains");
-  });
-
-  it("shows which model wrote each reply", async () => {
-    const client = fakeClient({
-      send: () =>
-        events({
-          type: "done",
-          stop: "final_answer",
-          text: "Paris",
-          steps: 1,
-          cost_usd: null,
-          brain: "claude-sonnet",
-          model: "claude-sonnet-5-5",
-          failure: null,
-          plan: false,
-        }),
+  it("a reopened chat shows the approval left open, and y answers it (#39)", async () => {
+    const decide = mock(async () => {});
+    const conversation = async () => ({
+      id: "c1",
+      kind: "main" as const,
+      title: null,
+      brain: null,
+      pending_approvals: [
+        {
+          id: "a1",
+          tool: "delete_file",
+          arguments: { path: "plan.md" },
+          summary: "Delete plan.md",
+          detail: null,
+        },
+      ],
     });
-    await using s = await screen(client);
-    await enter(s, "Capital of France?");
-    await until(s, "enzo: Paris · claude-sonnet");
-  });
-
-  it("quits on /quit", async () => {
-    const onQuit = mock(() => {});
-    await using s = await screen(fakeClient(), onQuit);
-    await enter(s, "/quit");
-    await until(s, "Message Enzo");
-    expect(onQuit).toHaveBeenCalledTimes(1);
-  });
-
-  it("says plainly when the gateway is down", async () => {
-    const client = fakeClient({ health: () => Promise.reject(new Error("ECONNREFUSED")) });
-    await using _s = await mount(
-      <App client={client} memory={memory()} onQuit={() => {}} />,
-      10,
-      "Gateway unreachable: ECONNREFUSED",
-    );
-  });
-});
-
-describe("provider accounts", () => {
-  const KEY = "fake-xai-000000000000";
-
-  it("logs in at a hidden prompt: the key is never drawn", async () => {
-    const connect = mock(async () => {});
-    await using s = await screen(fakeClient({ connect }));
-    await enter(s, "/login xai");
-    await until(s, "Paste your xai API key (hidden)");
-    let frames = "";
-    await act(async () => {
-      await s.mockInput.typeText(KEY);
+    await using s = await screen(fakeClient({ conversation, decide }), {
+      memory: memory("c1"),
+      ready: "Approve this action?",
     });
-    frames += await until(s, `${KEY.length} characters`);
-    await act(async () => {
-      s.mockInput.pressEnter();
-    });
-    frames += await until(s, "Connected xai.");
-    expect(connect).toHaveBeenCalledWith("xai", KEY);
-    expect(frames).not.toContain(KEY);
-    expect(frames).not.toContain("fake-xai");
-    await until(s, "Message Enzo"); // back to chat
-  });
-
-  it("takes a bracketed paste and trims the newline", async () => {
-    const connect = mock(async () => {});
-    await using s = await screen(fakeClient({ connect }));
-    await enter(s, "/login xai");
-    await until(s, "(hidden)");
-    await act(async () => {
-      await s.mockInput.pasteBracketedText(`${KEY}\n`);
-    });
-    const frame = await until(s, `${KEY.length} characters`);
-    expect(frame).not.toContain(KEY);
-    await act(async () => {
-      s.mockInput.pressEnter();
-    });
-    await until(s, "Connected xai.");
-    expect(connect).toHaveBeenCalledWith("xai", KEY);
-  });
-
-  it("Esc cancels without saving", async () => {
-    const connect = mock(async () => {});
-    await using s = await screen(fakeClient({ connect }));
-    await enter(s, "/login xai");
-    await until(s, "(hidden)");
-    await act(async () => {
-      await s.mockInput.typeText("abc");
-    });
-    await until(s, "3 characters");
-    await press(s, "ESCAPE");
-    await until(s, "Login cancelled. Nothing was saved.");
-    expect(connect).not.toHaveBeenCalled();
-  });
-
-  it("shows the provider's refusal and never the key", async () => {
-    const connect = mock(() =>
-      Promise.reject(new Error("/connections/xai failed: HTTP 422: xai rejected this key")),
-    );
-    await using s = await screen(fakeClient({ connect }));
-    await enter(s, "/login xai");
-    await until(s, "(hidden)");
-    await act(async () => {
-      await s.mockInput.typeText(KEY);
-      s.mockInput.pressEnter();
-    });
-    const frame = await until(s, "xai rejected this key");
-    expect(frame).not.toContain(KEY);
-  });
-
-  it("refuses keys typed on the command line and unknown providers", async () => {
-    const connect = mock(async () => {});
-    await using s = await screen(fakeClient({ connect }));
-    await enter(s, `/login xai ${KEY}`);
-    const frame = await until(s, "Never type a key on the command line");
-    expect(frame).not.toContain(KEY);
-    await enter(s, "/login ghost");
-    await until(s, "Unknown provider: ghost. Providers: anthropic, xai");
-    expect(connect).not.toHaveBeenCalled();
-  });
-
-  it("starts a new chat with /new and remembers it", async () => {
-    let n = 0;
-    const createConversation = mock(async () => ({ ...CONVERSATION, id: `c${++n}` }));
-    const mem = memory();
-    const client = fakeClient({
-      createConversation,
-      messages: async () => [{ role: "user", parts: [{ type: "text", text: "earlier question" }] }],
-    });
-    await using s = await mount(
-      <App client={client} memory={mem} onQuit={() => {}} openUrl={async () => {}} />,
-      30,
-      "earlier question",
-    );
-    await enter(s, "/new");
-    const frame = await until(s, "New chat started.");
-    expect(frame).not.toContain("earlier question");
-    expect(frame).toContain("Hi, I'm Enzo");
-    expect(mem.get()).toBe(`c${n}`);
+    expect(s.captureCharFrame()).toContain("Delete plan.md");
+    await press(s, "y");
+    await until(s, "Approved: Delete plan.md");
+    expect(decide).toHaveBeenCalledWith("c1", "a1", true);
   });
 
   it("marks a refused message not sent and stops the running reply with Esc (#46)", async () => {
@@ -452,43 +243,14 @@ describe("provider accounts", () => {
       })();
     await using s = await screen(fakeClient({ send, stop }));
     await enter(s, "are you back?");
-    const frame = await until(s, "(not sent)");
+    const frame = await until(s, "you · not sent");
     expect(frame).toContain("Not sent: Enzo is still finishing the last reply.");
     expect(frame).toContain("Esc stops it.");
     expect(frame).not.toContain("HTTP 409"); // never a raw status or URL
+    expect(frame).not.toContain("◆ enzo"); // nothing answered it, so no reply header
     await press(s, "ESCAPE");
     await until(s, "Stopping the reply…");
     expect(stop).toHaveBeenCalledWith("c1");
-  });
-
-  it("a reopened chat shows the approval left open, and y answers it (#39)", async () => {
-    const decide = mock(async () => {});
-    const conversation = async () => ({
-      ...CONVERSATION,
-      pending_approvals: [
-        {
-          id: "a1",
-          tool: "delete_file",
-          arguments: { path: "plan.md" },
-          summary: "Delete plan.md",
-          detail: null,
-        },
-      ],
-    });
-    await using s = await mount(
-      <App
-        client={fakeClient({ conversation, decide })}
-        memory={memory("c1")}
-        onQuit={() => {}}
-        openUrl={async () => {}}
-      />,
-      30,
-      "Approve this action? (y / n)",
-    );
-    expect(s.captureCharFrame()).toContain("Delete plan.md");
-    await press(s, "y");
-    await until(s, "Approved: Delete plan.md");
-    expect(decide).toHaveBeenCalledWith("c1", "a1", true);
   });
 
   it("when the stream ends early, the chat stops waiting and keeps what arrived (#46)", async () => {
@@ -496,122 +258,220 @@ describe("provider accounts", () => {
     await using s = await screen(fakeClient({ send }));
     await enter(s, "a story");
     const frame = await until(s, "Lost the connection to Enzo mid-reply.");
-    expect(frame).toContain("enzo: Once upon a time");
+    expect(frame).toContain("Once upon a time");
     expect(frame).toContain("Message Enzo"); // ready to type again
   });
 
-  it("greets a new chat, and says how to connect when nothing is", async () => {
-    await using s = await screen(fakeClient());
-    const frame = await until(s, "Hi, I'm Enzo, your personal agent.");
-    expect(frame).toContain("/help lists every command");
-    expect(frame).not.toContain("No model account is connected yet");
-  });
-
-  it("points a new user to /login chatgpt when no account is connected", async () => {
-    const offline = BRAINS.map((b) => ({ ...b, available: false }));
-    await using s = await screen(fakeClient({ brains: async () => offline }));
-    const frame = await until(s, "No model account is connected yet");
-    expect(frame).toContain("/login chatgpt");
-  });
-
-  it("signs in with ChatGPT in the browser and says the plan is in use", async () => {
-    const opened: string[] = [];
-    let polls = 0;
-    const startChatGPTSignIn = mock(async () => ({
-      login_id: "l1",
-      url: "http://127.0.0.1:8787/auth/chatgpt/l1",
-    }));
-    const client = fakeClient({
-      startChatGPTSignIn,
-      chatGPTSignIn: async () => {
-        polls += 1;
-        return {
-          status: polls < 2 ? ("pending" as const) : ("connected" as const),
-          message: polls < 2 ? null : "Signed in with ChatGPT as ada@example.com.",
-          first_time: polls >= 2,
-          usage_url: "https://chatgpt.com/settings/usage",
-        };
-      },
-    });
-    await using s = await screen(
-      client,
-      () => {},
-      async (url) => {
-        opened.push(url);
-      },
+  it("keeps what is typed while a reply streams, and never loses it (#35)", async () => {
+    let finish = () => {};
+    const send = sender(() =>
+      (async function* () {
+        yield { type: "text" as const, text: "Working on it" };
+        await new Promise<void>((r) => {
+          finish = r;
+        });
+        yield done({ text: "Working on it", usage: USED });
+      })(),
     );
-    await enter(s, "/login chatgpt");
-    const waiting = await until(s, "Finish signing in with ChatGPT in your browser");
-    expect(opened).toEqual(["http://127.0.0.1:8787/auth/chatgpt/l1"]);
-    // Whole on one line, so a click or a copy gets all of it.
-    expect(
-      waiting.split("\n").some((line) => line.trim() === "http://127.0.0.1:8787/auth/chatgpt/l1"),
-    ).toBe(true);
-    const frame = await until(s, "You're using your ChatGPT plan", 5000);
-    expect(frame).toContain("ada@example.com");
-    expect(startChatGPTSignIn).toHaveBeenCalledWith(false);
-    await enter(s, "/login chatgpt new");
-    await until(s, "Signed in with", 5000);
-    expect(startChatGPTSignIn).toHaveBeenLastCalledWith(true);
+    await using s = await screen(fakeClient({ send }));
+    await enter(s, "first");
+    await until(s, "Working on it");
+    await type(s, "second"); // the input stays focused while Enzo writes
+    await act(async () => {
+      s.mockInput.pressEnter();
+    });
+    const frame = await until(s, "Enzo is still replying");
+    expect(frame).toContain("❯ second"); // kept, not sent and not thrown away
+    expect(send).toHaveBeenCalledTimes(1);
+    finish();
+    await until(s, "└ claude-sonnet-5-5");
+    await act(async () => {
+      s.mockInput.pressEnter();
+    });
+    await until(s, /you[\s\S]*you/);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1]?.[1]).toBe("second");
+  });
+});
+
+describe("typing and pasting (#35)", () => {
+  it("Shift+Enter, Alt+Enter and Ctrl+J add a line; Enter sends it all", async () => {
+    const send = sender();
+    // A terminal that tells Shift+Enter apart (kitty protocol: Kitty, Ghostty, WezTerm, iTerm2).
+    await using s = await screen(fakeClient({ send }), { kitty: true });
+    await type(s, "one");
+    await act(async () => {
+      s.mockInput.pressEnter({ shift: true });
+    });
+    await type(s, "two");
+    await act(async () => {
+      s.mockInput.pressEnter({ meta: true });
+    });
+    await type(s, "three");
+    await press(s, "j", { ctrl: true });
+    await type(s, "four");
+    expect(send).not.toHaveBeenCalled();
+    await act(async () => {
+      s.mockInput.pressEnter();
+    });
+    await until(s, "◆ enzo");
+    expect(send.mock.calls[0]?.[1]).toBe("one\ntwo\nthree\nfour");
   });
 
-  it("explains a ChatGPT sign-in that did not finish", async () => {
-    const client = fakeClient({
-      chatGPTSignIn: async () => ({
-        status: "failed" as const,
-        message: "The ChatGPT sign-in was cancelled, so nothing was connected.",
-        first_time: false,
-        usage_url: "https://chatgpt.com/settings/usage",
-      }),
+  it("in a terminal that can't tell Shift+Enter apart, Alt+Enter and Ctrl+J still add a line", async () => {
+    const send = sender();
+    await using s = await screen(fakeClient({ send }));
+    await type(s, "one");
+    await act(async () => {
+      s.mockInput.pressEnter({ meta: true });
     });
-    await using s = await screen(client);
-    await enter(s, "/login chatgpt");
-    await until(s, "sign-in was cancelled", 5000);
+    await type(s, "two");
+    await press(s, "j", { ctrl: true });
+    await type(s, "three");
+    expect(send).not.toHaveBeenCalled();
+    await act(async () => {
+      s.mockInput.pressEnter();
+    });
+    await until(s, "◆ enzo");
+    expect(send.mock.calls[0]?.[1]).toBe("one\ntwo\nthree");
   });
 
-  it("shows when the ChatGPT plan paid for a reply", async () => {
-    const client = fakeClient({
-      send: () =>
-        events({
-          type: "done",
-          stop: "final_answer",
-          text: "hello",
-          steps: 1,
-          cost_usd: 0,
-          brain: "gpt-sol",
-          model: "gpt-6.2-sol",
-          failure: null,
-          plan: true,
-        }),
+  it("a long paste shows as a short tag and is sent in full", async () => {
+    const send = sender();
+    await using s = await screen(fakeClient({ send }));
+    const pasted = Array.from({ length: 42 }, (_, i) => `row ${i + 1}`).join("\r\n");
+    await type(s, "summarize ");
+    await paste(s, pasted);
+    const frame = await until(s, "[Pasted 42 lines]");
+    expect(frame).not.toContain("row 2");
+    expect(send).not.toHaveBeenCalled(); // pasted line breaks never send the message
+    await act(async () => {
+      s.mockInput.pressEnter();
     });
-    await using s = await screen(client);
+    await until(s, "◆ enzo");
+    expect(send.mock.calls[0]?.[1]).toBe(`summarize ${pasted.replaceAll("\r\n", "\n")}`);
+  });
+
+  it("a short paste goes in as typed", async () => {
+    const send = sender();
+    await using s = await screen(fakeClient({ send }));
+    await paste(s, "just this");
+    await until(s, "❯ just this");
+    await act(async () => {
+      s.mockInput.pressEnter();
+    });
+    await until(s, "◆ enzo");
+    expect(send.mock.calls[0]?.[1]).toBe("just this");
+  });
+
+  it("Up and Down bring back earlier messages, and the draft returns", async () => {
+    const send = sender();
+    await using s = await screen(fakeClient({ send }));
+    await enter(s, "first message");
+    await until(s, "◆ enzo");
+    await enter(s, "second message");
+    await until(s, "second message");
+    await settle(s, 100);
+    await arrow(s, "up");
+    await until(s, "❯ second message");
+    await arrow(s, "up");
+    await until(s, "❯ first message");
+    await arrow(s, "down");
+    await until(s, "❯ second message");
+    await arrow(s, "down");
+    await until(s, "❯ Message Enzo"); // back to the empty draft
+  });
+
+  it("Ctrl+C clears what was typed; on an empty input it quits", async () => {
+    const onQuit = mock(() => {});
+    await using s = await screen(fakeClient(), { onQuit });
+    await type(s, "oops");
+    await until(s, "❯ oops");
+    await press(s, "c", { ctrl: true });
+    await until(s, "❯ Message Enzo");
+    expect(onQuit).not.toHaveBeenCalled();
+    await press(s, "c", { ctrl: true });
+    expect(onQuit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("quitting", () => {
+  for (const word of ["exit", "quit", "EXIT", "/quit", "/exit"]) {
+    it(`typing ${word} quits`, async () => {
+      const onQuit = mock(() => {});
+      const send = sender();
+      await using s = await screen(fakeClient({ send }), { onQuit });
+      await enter(s, word);
+      await settle(s);
+      expect(onQuit).toHaveBeenCalledTimes(1);
+      expect(send).not.toHaveBeenCalled(); // never sent to Enzo as a message
+    });
+  }
+
+  it("Ctrl+D quits, even with something typed", async () => {
+    const onQuit = mock(() => {});
+    await using s = await screen(fakeClient(), { onQuit });
+    await type(s, "half a thought");
+    await press(s, "d", { ctrl: true });
+    expect(onQuit).toHaveBeenCalledTimes(1);
+  });
+
+  it("a sentence that only starts with exit is a message", async () => {
+    const onQuit = mock(() => {});
+    const send = sender();
+    await using s = await screen(fakeClient({ send }), { onQuit });
+    await enter(s, "exit the loop early?");
+    await until(s, "◆ enzo");
+    expect(onQuit).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("copying (#35)", () => {
+  const reply = "Use this:\n\n```sh\nls -la\n```\n\nDone.";
+
+  it("/copy copies the last reply, /copy code its last code block", async () => {
+    const copied: string[] = [];
+    const copy = async (text: string) => {
+      copied.push(text);
+      return true;
+    };
+    await using s = await screen(fakeClient({ send: () => events(done({ text: reply })) }), {
+      copy,
+    });
+    await enter(s, "/copy");
+    await until(s, "No reply to copy yet.");
+    await enter(s, "list files");
+    await until(s, "Done.");
+    await enter(s, "/copy");
+    await until(s, "Copied the last reply (7 lines).");
+    await enter(s, "/copy code");
+    await until(s, "Copied the last code block (1 line).");
+    expect(copied).toEqual([reply, "ls -la"]);
+  });
+
+  it("selecting text with the mouse copies it", async () => {
+    const copied: string[] = [];
+    const copy = async (text: string) => {
+      copied.push(text);
+      return true;
+    };
+    const send = () => events(done({ text: "Selectable words" }));
+    const onQuit = mock(() => {});
+    await using s = await screen(fakeClient({ send }), { copy, onQuit });
     await enter(s, "hi");
-    const frame = await until(s, "Using ChatGPT plan");
-    expect(frame).toContain("manage usage");
-    expect(frame).not.toContain("no charge");
-  });
-
-  it("signing out of ChatGPT says whether OpenAI confirmed it", async () => {
-    const disconnect = mock(async () => ({ remote_sign_out: "not_confirmed" as const }));
-    await using s = await screen(fakeClient({ disconnect }));
-    await enter(s, "/logout openai");
-    await until(s, "OpenAI did not confirm it");
-  });
-
-  it("lists, checks and disconnects", async () => {
-    const disconnect = mock(async () => ({ remote_sign_out: null }));
-    const checkConnection = mock(async () => ({ ok: false, detail: "xai rejected this key" }));
-    await using s = await screen(fakeClient({ disconnect, checkConnection }));
-    await enter(s, "/connections");
-    await until(s, "anthropic: connected (API key, since 2026-11-17) · claude-opus-5-5");
-    await until(s, "xai: not connected: /login xai · grok-4.7");
-    await enter(s, "/check xai");
-    await until(s, "xai: xai rejected this key");
-    await enter(s, "/logout xai");
-    await until(s, "Disconnected xai. Its key was deleted.");
-    expect(disconnect).toHaveBeenCalledWith("xai");
-    await enter(s, "/logout");
-    await until(s, "Usage: /logout <provider>");
+    const frame = await until(s, "Selectable words");
+    const row = lines(frame).findIndex((l) => l.includes("Selectable words"));
+    const col = (lines(frame)[row] ?? "").indexOf("Selectable");
+    await act(async () => {
+      await s.mockMouse.drag(col, row, col + 9, row);
+    });
+    await until(s, "Copied to clipboard");
+    expect(copied).toEqual(["Selectable"]);
+    // Ctrl+C with text selected copies it again, the way terminals do; it never quits then.
+    await press(s, "c", { ctrl: true });
+    expect(copied).toEqual(["Selectable", "Selectable"]);
+    expect(onQuit).not.toHaveBeenCalled();
   });
 });
 

@@ -5,6 +5,8 @@ import {
   type ConversationMemory,
   describeApproval,
   formatCost,
+  STEP_MARK,
+  stepLine,
   useChat,
 } from "@enzo/chat";
 import {
@@ -170,7 +172,14 @@ export function App({ client }: { client: ChatClient & AccountsClient }) {
                 </span>
               )}
               <div className="body">
-                {item.failure === "not_connected" ? (
+                {item.role === "step" ? (
+                  <>
+                    <span className={`mark ${item.status ?? "ok"}`} aria-hidden="true">
+                      {STEP_MARK[item.status ?? "ok"]}
+                    </span>{" "}
+                    {stepLine(item)}
+                  </>
+                ) : item.failure === "not_connected" ? (
                   <>
                     No model account is connected yet.{" "}
                     <button type="button" className="link" onClick={() => setAccountsOpen(true)}>
@@ -200,11 +209,6 @@ export function App({ client }: { client: ChatClient & AccountsClient }) {
                 E
               </span>
               <div className="body">{state.draft}</div>
-            </li>
-          )}
-          {state.working > 0 && (
-            <li className="notice working" role="status">
-              <span className="dots" aria-hidden="true" /> Working…
             </li>
           )}
           {state.status === "streaming" && !state.draft && state.working === 0 && (

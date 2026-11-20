@@ -255,10 +255,17 @@ button.link {
   color: var(--muted);
   animation: blink 1s steps(2) infinite;
 }
-.items .notice {
+.items .notice,
+.items .step {
   color: var(--muted);
   font-size: 14px;
   padding-left: 40px;
+}
+.items .step .mark.ok {
+  color: var(--ok, #2e9d5b);
+}
+.items .step .mark.failed {
+  color: var(--danger, #c0392b);
 }
 .by {
   display: block;
@@ -565,7 +572,8 @@ button.chatgpt:hover:not(:disabled) {
   .approval {
     margin-left: 0;
   }
-  .items .notice {
+  .items .notice,
+  .items .step {
     padding-left: 0;
   }
 }

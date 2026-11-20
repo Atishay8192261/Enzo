@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GatewayClient, GatewayError } from "./client.ts";
+import { GatewayClient, GatewayError, GatewayUnreachableError } from "./client.ts";
 
 interface Seen {
   url: string;
@@ -28,7 +28,7 @@ describe("GatewayClient", () => {
       fetch: fakeFetch(
         () =>
           sse(
-            'event: text\ndata: {"text":"hi"}\n\nevent: done\ndata: {"stop":"final_answer","text":"hi","steps":1,"cost_usd":0.001,"brain":"b","model":"m","failure":null,"plan":false}\n\n',
+            'event: text\ndata: {"text":"hi"}\n\nevent: done\ndata: {"stop":"final_answer","text":"hi","steps":1,"cost_usd":0.001,"brain":"b","model":"m","failure":null,"plan":false,"usage":{}}\n\n',
           ),
         seen,
       ),
@@ -60,6 +60,38 @@ describe("GatewayClient", () => {
       status: 409,
       message: expect.stringContaining("a turn is already running"),
     });
+  });
+
+  it("says plainly when the gateway can't be reached at all (#44)", async () => {
+    const refused = new TypeError("Unable to connect. Is the computer able to access the url?");
+    const client = new GatewayClient({
+      baseUrl: "http://127.0.0.1:8787/",
+      fetch: async () => {
+        throw refused;
+      },
+    });
+    const failure = await client.health().catch((e: unknown) => e);
+    expect(failure).toBeInstanceOf(GatewayUnreachableError);
+    expect(failure).toBeInstanceOf(GatewayError); // callers that catch GatewayError still do
+    expect(failure).toMatchObject({
+      message: "Can't reach Enzo at 127.0.0.1:8787",
+      url: "http://127.0.0.1:8787",
+      cause: refused,
+    });
+    await expect(client.send("c-1", "hi").next()).rejects.toBeInstanceOf(GatewayUnreachableError);
+  });
+
+  it("leaves a request the caller stopped as it is, not as a connection problem", async () => {
+    const stop = new AbortController();
+    const aborted = new DOMException("The operation was aborted.", "AbortError");
+    const client = new GatewayClient({
+      baseUrl: "http://enzo",
+      fetch: async () => {
+        stop.abort();
+        throw aborted;
+      },
+    });
+    await expect(client.health(stop.signal)).rejects.toBe(aborted);
   });
 
   it("handles empty 204 replies", async () => {

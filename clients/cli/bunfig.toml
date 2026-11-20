@@ -1,0 +1,3 @@
+[test]
+# Sign-in flows poll on a real clock: give them room, and fail long before CI does.
+timeout = 20000

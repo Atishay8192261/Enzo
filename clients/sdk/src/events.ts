@@ -2,8 +2,17 @@
 
 export type AgentEvent =
   | { type: "text"; text: string }
-  | { type: "tool_started"; id: string; tool: string }
-  | { type: "tool_finished"; id: string; tool: string; status: string; latency_ms: number }
+  /** `label` is the step in plain words ("Reading plan.md"); never show `tool` to people. */
+  | { type: "tool_started"; id: string; tool: string; label: string }
+  | {
+      type: "tool_finished";
+      id: string;
+      tool: string;
+      label: string;
+      /** "ok", or why not: "declined", "not_run", "failed", "timeout", ... */
+      status: string;
+      latency_ms: number;
+    }
   | {
       type: "approval_needed";
       id: string;
@@ -27,8 +36,29 @@ export type AgentEvent =
       failure: string | null;
       /** The user's ChatGPT plan paid for (part of) this reply, so there is no per-token cost. */
       plan: boolean;
+      /** Tokens, models and time behind the reply (#49). */
+      usage: Usage;
     }
   | { type: "error"; message: string };
+
+/** What brain calls used: for one reply, one turn, or a whole chat (#49). */
+export interface Usage {
+  input_tokens: number;
+  output_tokens: number;
+  /** Input read from the provider's cache (cheaper); part of `input_tokens`. */
+  cached_input_tokens: number;
+  calls: number;
+  /** Per-token cost; null when any call has no published price (never shown as 0). */
+  cost_usd: number | null;
+  /** The user's ChatGPT plan paid for some of it: there is no per-token price for that. */
+  plan: boolean;
+  /** The models that answered, in order. */
+  models: string[];
+  /** Time spent waiting for the models (tools and approvals not included). */
+  model_ms: number;
+  /** When the first call started (ISO time): about when the message was sent. */
+  started_at: string | null;
+}
 
 export type StopReason =
   | "final_answer"
@@ -47,8 +77,14 @@ type Shape = Record<
 
 const SHAPES: Record<AgentEvent["type"], Shape> = {
   text: { text: "string" },
-  tool_started: { id: "string", tool: "string" },
-  tool_finished: { id: "string", tool: "string", status: "string", latency_ms: "number" },
+  tool_started: { id: "string", tool: "string", label: "string" },
+  tool_finished: {
+    id: "string",
+    tool: "string",
+    label: "string",
+    status: "string",
+    latency_ms: "number",
+  },
   approval_needed: {
     id: "string",
     tool: "string",
@@ -65,6 +101,7 @@ const SHAPES: Record<AgentEvent["type"], Shape> = {
     model: "string|null",
     failure: "string|null",
     plan: "boolean",
+    usage: "object",
   },
   error: { message: "string" },
 };

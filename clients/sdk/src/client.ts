@@ -1,4 +1,4 @@
-import { type AgentEvent, toAgentEvent } from "./events.ts";
+import { type AgentEvent, toAgentEvent, type Usage } from "./events.ts";
 import { parseSse } from "./sse.ts";
 
 export interface Health {
@@ -44,7 +44,29 @@ export interface ApprovalCard {
 
 export interface StoredMessage {
   role: "system" | "user" | "assistant" | "tool";
-  parts: Array<{ type: string; text?: string; name?: string; content?: string }>;
+  parts: StoredPart[];
+}
+
+/** One part of a stored message: text, a tool call (with its step in plain words) or a result. */
+export interface StoredPart {
+  type: string;
+  text?: string;
+  name?: string;
+  content?: string;
+  /** A tool call's id; a result names the call it answers with `call_id`. */
+  id?: string;
+  call_id?: string;
+  /** A tool call's step in plain words, e.g. "Reading plan.md" (#40). */
+  label?: string;
+  /** How long a tool call took (#49). */
+  latency_ms?: number;
+  is_error?: boolean;
+}
+
+/** What a chat used, in total and for each of the user's messages, in order (#49). */
+export interface ConversationUsage {
+  total: Usage;
+  turns: Usage[];
 }
 
 /** A provider account the user can connect. Never carries the secret. */
@@ -103,6 +125,21 @@ export class GatewayError extends Error {
   }
 }
 
+/**
+ * The gateway could not be reached at all (it is not running, or the network is down), as
+ * opposed to answering with an error. Clients say so plainly and retry (#44).
+ */
+export class GatewayUnreachableError extends GatewayError {
+  constructor(
+    readonly url: string,
+    cause?: unknown,
+  ) {
+    super(`Can't reach Enzo at ${url.replace(/^https?:\/\//, "")}`);
+    this.name = "GatewayUnreachableError";
+    this.cause = cause;
+  }
+}
+
 /** Any fetch-shaped function. Not `typeof fetch`: runtimes (Bun) add members a wrapper lacks. */
 export type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -152,6 +189,11 @@ export class GatewayClient {
 
   messages(id: string): Promise<StoredMessage[]> {
     return this.#json("GET", `/conversations/${enc(id)}/messages`) as Promise<StoredMessage[]>;
+  }
+
+  /** What this chat used: tokens, cost or plan, models, time (#49). */
+  usage(id: string): Promise<ConversationUsage> {
+    return this.#json("GET", `/conversations/${enc(id)}/usage`) as Promise<ConversationUsage>;
   }
 
   /** Stop the reply being written in this conversation (#46). False: none was running. */
@@ -243,7 +285,13 @@ export class GatewayClient {
     const init: RequestInit = { method, headers };
     if (body !== undefined) init.body = JSON.stringify(body);
     if (signal) init.signal = signal;
-    const res = await this.#fetch(`${this.#baseUrl}${path}`, init);
+    let res: Response;
+    try {
+      res = await this.#fetch(`${this.#baseUrl}${path}`, init);
+    } catch (e: unknown) {
+      if (signal?.aborted) throw e; // the caller stopped it: not a connection problem
+      throw new GatewayUnreachableError(this.#baseUrl, e);
+    }
     if (!res.ok) throw new GatewayError(await describe(res, path), res.status);
     return res;
   }
