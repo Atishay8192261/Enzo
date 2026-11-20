@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from enzo.agent.loop import ApprovalNeeded, ToolFinished, TurnDone, run_turn
+from enzo.agent.loop import ApprovalNeeded, ToolFinished, ToolStarted, TurnDone, run_turn
 from enzo.brain import Message, ToolCall
 from enzo.brain.config import BrainsConfig
 from enzo.brain.fake import ScriptedBrain
@@ -154,6 +154,9 @@ async def test_a_merge_is_pinned_to_the_head_and_shows_the_diff() -> None:
     assert state.merged == [12]
     finished = [e.outcome for e in events if isinstance(e, ToolFinished)]
     assert finished[0].status == "ok"
+    # The chat's step line says it in the same plain words as the card (#40).
+    (started,) = [e.label for e in events if isinstance(e, ToolStarted)]
+    assert started == "GitHub: Merge pull request (octo/site #12)"
     assert json.loads(finished[0].call.arguments_json)["expectedHeadSha"] == state.head
 
 

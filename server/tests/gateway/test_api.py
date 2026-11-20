@@ -204,6 +204,20 @@ async def test_approval_flow_over_http(store: Store) -> None:
         assert roles == ["user", "assistant", "tool", "assistant"]
 
 
+async def test_each_step_reads_as_plain_words_live_and_after_reopening(store: Store) -> None:
+    """The chat shows what Enzo is doing (#40), and still shows it when the chat is reopened."""
+    step = ToolCall(id="c1", name="step", arguments_json='{"value": "the plan"}')
+    brain = ScriptedBrain([Message.assistant(tool_calls=(step,)), Message.assistant("done")])
+    async with client(service(store, {"m-main": brain})) as c:
+        cid = await new_conversation(c)
+        got = events((await c.post(f"/conversations/{cid}/turns", json={"message": "go"})).text)
+        steps = [(k, d["label"]) for k, d in got if k.startswith("tool_")]
+        assert steps == [("tool_started", "Doing the plan"), ("tool_finished", "Doing the plan")]
+        stored = (await c.get(f"/conversations/{cid}/messages")).json()
+        calls = [p for m in stored for p in m["parts"] if p["type"] == "tool_call"]
+        assert [(p["name"], p["label"]) for p in calls] == [("step", "Doing the plan")]
+
+
 class Gated(ScriptedBrain):
     """Waits for a signal before answering, to hold a turn open."""
 

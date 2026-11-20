@@ -108,6 +108,7 @@ def file_tools(root: Path) -> list[Tool[Any, Any]]:
     @tool(
         name="list_files",
         description="List the files and folders in the user's Enzo workspace folder.",
+        activity=_list_activity,
     )
     async def list_files(params: ListParams) -> Listing:
         return workspace.list(params.path)
@@ -116,6 +117,7 @@ def file_tools(root: Path) -> list[Tool[Any, Any]]:
         name="read_file",
         description="Read a text file from the workspace.",
         untrusted_output=True,
+        activity=_read_activity,
     )
     async def read_file(params: ReadFileParams) -> FileText:
         return workspace.read(params.path, params.max_chars)
@@ -123,6 +125,7 @@ def file_tools(root: Path) -> list[Tool[Any, Any]]:
     @tool(
         name="create_file",
         description="Create a new text file in the workspace. Fails if the file already exists.",
+        activity=_create_activity,
     )
     async def create_file(params: CreateParams) -> Written:
         return workspace.create(params.path, params.content)
@@ -133,6 +136,7 @@ def file_tools(root: Path) -> list[Tool[Any, Any]]:
             "Replace one exact piece of text in a workspace file. The previous version is kept, "
             "so the edit can be undone."
         ),
+        activity=_edit_activity,
     )
     async def edit_file(params: EditParams) -> Edited:
         return workspace.edit(params.path, params.old_text, params.new_text)
@@ -142,11 +146,32 @@ def file_tools(root: Path) -> list[Tool[Any, Any]]:
         description="Delete a file from the workspace (it stays recoverable). Needs approval.",
         requires_approval=True,
         summary=_delete_summary,
+        activity=_delete_activity,
     )
     async def delete_file(params: DeleteParams) -> Deleted:
         return workspace.delete(params.path)
 
     return [list_files, read_file, create_file, edit_file, delete_file]
+
+
+def _list_activity(params: ListParams) -> str:
+    return "Looking at your files" if params.path in {".", ""} else f"Looking in {params.path}"
+
+
+def _read_activity(params: ReadFileParams) -> str:
+    return f"Reading {params.path}"
+
+
+def _create_activity(params: CreateParams) -> str:
+    return f"Creating {params.path}"
+
+
+def _edit_activity(params: EditParams) -> str:
+    return f"Editing {params.path}"
+
+
+def _delete_activity(params: DeleteParams) -> str:
+    return f"Deleting {params.path}"
 
 
 def _delete_summary(params: DeleteParams) -> str:

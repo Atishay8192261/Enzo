@@ -18,8 +18,10 @@ from enzo.agent.service import (
     TurnMeta,
 )
 from enzo.brain.config import TIERS
-from enzo.brain.models import TextDelta
+from enzo.brain.models import Message, TextDelta, ToolCall
+from enzo.gateway.usage import ConversationUsageOut, per_turn, usage_of
 from enzo.store.repository import ApprovalError, ConversationInfo, ConversationKind
+from enzo.tools.registry import ToolRegistry
 
 
 def get_service(request: Request) -> ConversationService:
@@ -122,7 +124,16 @@ def conversation_routes(auth: params.Depends) -> APIRouter:
     @router.get("/{conversation_id}/messages")
     async def messages(conversation_id: uuid.UUID, s: ServiceDep) -> list[dict[str, Any]]:
         await _require(s, conversation_id)
-        return [m.model_dump(mode="json") for m in await s.store.history(conversation_id)]
+        took = {t.call_id: t.latency_ms for t in await s.store.tool_calls(conversation_id)}
+        return [_shown(m, s.registry, took) for m in await s.store.history(conversation_id)]
+
+    @router.get("/{conversation_id}/usage")
+    async def usage(conversation_id: uuid.UUID, s: ServiceDep) -> ConversationUsageOut:
+        """What this chat used, in total and per user message (#49)."""
+        await _require(s, conversation_id)
+        calls = await s.store.brain_calls(conversation_id)
+        turns = per_turn(await s.store.saves(conversation_id), calls)
+        return ConversationUsageOut(total=usage_of(calls), turns=[usage_of(t) for t in turns])
 
     async def start_turn(
         conversation_id: uuid.UUID, body: TurnIn, s: ServiceDep
@@ -193,17 +204,32 @@ async def _guard(
     return stream
 
 
+def _shown(message: Message, registry: ToolRegistry, took: dict[str, float]) -> dict[str, Any]:
+    """A stored message for the chat: each tool call carries its step in plain words (#40)
+    and how long it took (#49)."""
+    out = message.model_dump(mode="json")
+    for part, raw in zip(message.parts, out["parts"], strict=True):
+        if isinstance(part, ToolCall):
+            raw["label"] = registry.activity(part)
+            if part.id in took:
+                raw["latency_ms"] = took[part.id]
+    return out
+
+
 def _sse(event: ServiceEvent) -> ServerSentEvent:
     """Client-facing events. Plain data only: no provider payloads leave the gateway."""
     match event:
         case TextDelta(text=text):
             return ServerSentEvent(event="text", data={"text": text})
-        case ToolStarted(call=call):
-            return ServerSentEvent(event="tool_started", data={"id": call.id, "tool": call.name})
-        case ToolFinished(outcome=o):
+        case ToolStarted(call=call, label=label):
+            return ServerSentEvent(
+                event="tool_started", data={"id": call.id, "tool": call.name, "label": label}
+            )
+        case ToolFinished(outcome=o, label=label):
             data = {
                 "id": o.call.id,
                 "tool": o.call.name,
+                "label": label,
                 "status": o.status,
                 "latency_ms": o.latency_ms,
             }
@@ -234,6 +260,8 @@ def _sse(event: ServiceEvent) -> ServerSentEvent:
                 "failure": o.failure,
                 # A ChatGPT plan paid for (part of) this reply: apps say so instead of a price.
                 "plan": any(c.billing == "plan" for c in o.brain_calls),
+                # Tokens, models and time behind the reply (#49).
+                "usage": usage_of(o.brain_calls).model_dump(mode="json"),
             }
             return ServerSentEvent(event="done", data=data)
         case TurnFailed(message=message):
