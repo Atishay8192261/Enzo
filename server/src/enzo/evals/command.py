@@ -96,8 +96,7 @@ async def _run(
         )
         where = "online" if online else "offline: the tasks that need the internet are skipped"
         print(f"Running {len(tasks)} tasks on {shown} · {where}")
-        print(f"{NOTE} In a throwaway workspace and database: your chats, memory and files stay")
-        print("  untouched.")
+        print(f"{NOTE} Throwaway workspace and database: your chats, memory and files are safe.")
         result = await run_suite(
             names,
             config=config,

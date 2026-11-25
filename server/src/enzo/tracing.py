@@ -508,7 +508,8 @@ def render(trace: Trace) -> str:
     """The trace for a terminal: a header, the model calls, the tool calls, then totals."""
     out: list[str] = []
     chat = f"chat {trace.conversation_id[:8]}" if trace.conversation_id else "a deleted chat"
-    title = f" · “{trace.title}”" if trace.title else ""
+    # A chat is named after its first message: say it once.
+    title = f" · “{trace.title}”" if trace.title and trace.title != trace.message else ""
     out.append(f"Trace of {trace.runs[-1] if trace.runs else '?'}{title} · {chat}")
     if trace.message:
         out.append(f"Asked: “{_cut(trace.message, 100)}”")
@@ -574,9 +575,14 @@ def _totals(trace: Trace) -> str:
         if plan:
             cost = "your ChatGPT plan" if not priced else f"{cost} + your ChatGPT plan"
     return (
-        f"Total: {len(calls)} model calls · {tokens_in:,} in / {tokens_out:,} out · "
-        f"{_seconds(model_ms)} in models · cost: {cost} · {len(trace.tool_calls)} tool calls"
+        f"Total: {_count(len(calls), 'model call')} · {tokens_in:,} in / {tokens_out:,} out · "
+        f"{_seconds(model_ms)} in models · cost: {cost} · "
+        f"{_count(len(trace.tool_calls), 'tool call')}"
     )
+
+
+def _count(n: int, thing: str) -> str:
+    return f"{n} {thing}" if n == 1 else f"{n} {thing}s"
 
 
 def _clock(at: datetime) -> str:
