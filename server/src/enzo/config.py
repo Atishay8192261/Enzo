@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     use_env_keys: bool = False
     #: Show reminders as desktop notifications too (ENZO_NOTIFY=0 turns them off).
     notify: bool = True
+    #: A Google OAuth client (Desktop app type) for Gmail and Calendar, when it is not set up in
+    #: the app (/login google). An installed app's client secret is not secret (ADR 0026).
+    google_client_id: str | None = None
+    google_client_secret: SecretStr | None = None
     #: Host names the gateway answers to (DNS-rebinding defence). Local only unless changed.
     allowed_hosts: tuple[str, ...] = ("127.0.0.1", "localhost", "[::1]", "::1")
 

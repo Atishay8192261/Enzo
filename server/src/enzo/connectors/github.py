@@ -88,7 +88,7 @@ ALLOWED = frozenset(
 async def pin_merge(args: dict[str, Any], call: CallFn) -> tuple[dict[str, Any], str | None]:
     """Pin a merge to the PR's current head and show what it lands (§12.3)."""
     where = {"owner": args["owner"], "repo": args["repo"], "pullNumber": args["pullNumber"]}
-    raw = await call("pull_request_read", {"method": "get", **where})
+    raw = (await call("pull_request_read", {"method": "get", **where})).text
     try:
         pr = json.loads(raw)
         head = pr["head"]["sha"]
@@ -100,7 +100,7 @@ async def pin_merge(args: dict[str, Any], call: CallFn) -> tuple[dict[str, Any],
     if asked and asked != head:
         msg = f"the pull request changed (head is now {head[:12]}, not {str(asked)[:12]})"
         raise ConnectorError(msg)
-    diff = _unwrap_diff(await call("pull_request_read", {"method": "get_diff", **where}))
+    diff = _unwrap_diff((await call("pull_request_read", {"method": "get_diff", **where})).text)
     cut = len(diff) > MAX_DIFF_CHARS
     detail = (
         f'Merging "{title}" at commit {head[:12]} into its base.\n\n'

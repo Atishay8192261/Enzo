@@ -97,8 +97,14 @@ def chatgpt_routes(auth: params.Depends, port: int) -> APIRouter:
     return router
 
 
-def _page(title: str, text: str, status_code: int = 200) -> HTMLResponse:
+def _page(
+    title: str,
+    text: str,
+    status_code: int = 200,
+    link: tuple[str, str] = (USAGE_URL, "Manage your ChatGPT usage"),
+) -> HTMLResponse:
     """A plain page for the browser tab: no scripts, no external resources."""
+    href, words = link
     body = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Enzo</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -111,7 +117,8 @@ def _page(title: str, text: str, status_code: int = 200) -> HTMLResponse:
   @media (prefers-color-scheme: dark) {{ body {{ background: #161514; color: #ecebe8; }} }}
 </style></head>
 <body><main><h1>{html.escape(title)}</h1><p>{html.escape(text)}</p>
-<p><a href="{USAGE_URL}" rel="noreferrer">Manage your ChatGPT usage</a></p></main></body></html>"""
+<p><a href="{html.escape(href)}" rel="noreferrer">{html.escape(words)}</a></p>
+</main></body></html>"""
     return HTMLResponse(body, status_code=status_code, headers=_NO_STORE)
 
 
