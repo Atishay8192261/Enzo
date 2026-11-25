@@ -17,7 +17,7 @@ curl -fsSL https://raw.githubusercontent.com/Atishay8192261/Enzo/main/install.sh
 ```
 
 Or `uv tool install enzo-agent`. Then run `enzo` (terminal, a new chat; `enzo -c` continues the last), `enzo web` (browser), `enzo doctor` (check
-the installation), `enzo logs` (what Enzo did, for a bug report), `enzo stop` (turn off Enzo left running for reminders) or `enzo update`. Python, the database and the terminal app come with it: nothing
+the installation), `enzo logs` (what Enzo did, for a bug report), `enzo stop` (turn off Enzo left running for reminders and scheduled tasks) or `enzo update`. Python, the database and the terminal app come with it: nothing
 else to install. macOS and Linux; on Windows, use WSL. Releases: [docs/ops/release.md](docs/ops/release.md).
 
 ## Docs
