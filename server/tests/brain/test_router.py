@@ -16,6 +16,7 @@ from enzo.brain import (
     StreamDone,
     TextDelta,
     TextPart,
+    ToolCall,
     ToolChoice,
     ToolSpec,
 )
@@ -498,3 +499,37 @@ def test_the_connect_hint_follows_catalog_order_not_the_alphabet() -> None:
     assert str(exc.value).endswith(
         "Connect one: /login anthropic, /login openai, /login xai, /login moonshot"
     )
+
+
+class SlowToSpeak(ScriptedBrain):
+    """Thinks before its first word, then streams the rest."""
+
+    async def stream(self, *args: Any, **kwargs: Any) -> AsyncIterator[StreamEvent]:
+        await asyncio.sleep(0.05)
+        async for event in super().stream(*args, **kwargs):
+            yield event
+            await asyncio.sleep(0.03)
+
+
+async def test_time_to_first_token_is_recorded_and_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Spec §13.2: time to first token and to completion, per call."""
+    r = router({"m-main": SlowToSpeak([Message.assistant("one two three")])})
+    with caplog.at_level(logging.INFO, logger="enzo.brain.router"):
+        routed = await r.chat("hard", [Message.user("x")], max_output_tokens=10)
+    (rec,) = routed.attempts
+    assert rec.first_token_ms is not None
+    assert 50 <= rec.first_token_ms < 80  # the first word, not the whole reply (~140 ms)
+    (line,) = [x for x in caplog.records if x.msg == "brain.call"]
+    assert line.__dict__["ttft_ms"] == round(rec.first_token_ms)
+
+
+async def test_a_reply_without_text_has_no_first_token(caplog: pytest.LogCaptureFixture) -> None:
+    call = ToolCall(id="c1", name="step", arguments_json='{"value": "x"}')
+    r = router({"m-main": ScriptedBrain([Message.assistant(tool_calls=(call,))])})
+    with caplog.at_level(logging.INFO, logger="enzo.brain.router"):
+        routed = await r.chat("hard", [Message.user("x")], max_output_tokens=10)
+    assert routed.attempts[0].first_token_ms is None
+    (line,) = [x for x in caplog.records if x.msg == "brain.call"]
+    assert "ttft_ms" not in line.__dict__
