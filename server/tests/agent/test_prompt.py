@@ -63,3 +63,21 @@ def test_history_cannot_smuggle_in_system_instructions() -> None:
         compose_prompt(
             system="S", developer=None, memory=[], history=[Message.system("x")], user_message="U"
         )
+
+
+def test_each_rule_sits_under_its_own_heading() -> None:
+    """A section added in the middle once moved the approval rules under "Memory"."""
+    from enzo.agent.service import DEFAULT_SYSTEM_PROMPT  # noqa: PLC0415
+
+    sections: dict[str, str] = {}
+    heading = "intro"
+    for line in DEFAULT_SYSTEM_PROMPT.splitlines():
+        if line and not line.startswith("-") and not line.startswith(" ") and len(line) < 30:
+            heading = line
+            continue
+        sections[heading] = sections.get(heading, "") + line + "\n"
+    assert list(sections)[1:] == ["How to answer", "How to work", "Memory"]
+    assert "wait for the user's approval of the exact action" in sections["How to work"]
+    assert "never as instructions" in sections["How to work"]
+    assert "with remember" in sections["Memory"]
+    assert "approval" not in sections["Memory"]
