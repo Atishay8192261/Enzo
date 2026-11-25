@@ -447,7 +447,7 @@ export const memoryLine = (m: Remembered) => (m.about ? `${m.about}: ${m.text}` 
 /** What /memory shows: each memory under its kind, with where it came from (spec §15.2). */
 export function memoryReply({ memories, file }: MemoryList): Reply {
   // The path on a line of its own: a terminal wraps it at a "/" otherwise (#56).
-  const copy = file ? ["A readable copy:", file] : [];
+  const copy = file ? ["A copy you can read and edit by hand:", file] : [];
   if (memories.length === 0) {
     return [
       "Enzo remembers nothing yet. Tell it something, like “remember I prefer window seats”.",

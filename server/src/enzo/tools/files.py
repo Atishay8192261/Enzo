@@ -25,6 +25,13 @@ from enzo.paths import shown
 from enzo.tools.registry import Tool, tool
 
 HIDDEN = ".enzo"
+#: Files in the workspace the file tools never change, and what to do instead.
+PROTECTED = {
+    MEMORY_FILE: (
+        "is the user's copy of Enzo's memory, which only they edit by hand; to change a memory, "
+        "use remember (with replaces) or forget instead"
+    ),
+}
 MAX_READ_BYTES = 5_000_000
 MAX_WRITE_CHARS = 1_000_000
 
@@ -276,14 +283,17 @@ class Workspace:
         return path
 
     def _writable(self, relative: str) -> Path:
-        """A path a file tool may change: anything inside, except Enzo's own memory file."""
+        """A path a file tool may change: anything inside, except the files Enzo keeps for the
+        user. Their hand edits count as the user's own words (spec §11.2), so a tool, which a
+        web page could talk into it, never writes them. On a disk that ignores case (macOS)
+        ``memory.md`` is ``Memory.md``, and a link to one is the same file."""
         path = self.resolve(relative)
-        if path == self._root() / MEMORY_FILE:
-            msg = (
-                f"{MEMORY_FILE} is written by Enzo from its memory; to change a memory, use "
-                "remember (with replaces) or forget instead"
-            )
-            raise FileToolError(msg)
+        root = self._root()
+        for name, why in PROTECTED.items():
+            own = root / name
+            alias = path.parent == root and path.name.casefold() == name.casefold()
+            if alias or (path.exists() and own.exists() and path.samefile(own)):
+                raise FileToolError(f"{name} {why}")
         return path
 
     def _root(self) -> Path:
