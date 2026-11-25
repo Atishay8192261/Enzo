@@ -60,6 +60,9 @@ class CallRecord:
     fallback_from: str | None = None
     #: "plan": paid by the user's subscription (a ChatGPT sign-in), so no per-token cost exists.
     billing: Literal["usage", "plan"] = "usage"
+    #: Time from the call's start to its first word of text; None when it sent no text (a
+    #: reply that only calls tools). Logged and measured by evals; not stored in the ledger.
+    first_token_ms: float | None = None
 
 
 class Ledger(Protocol):
@@ -338,6 +341,7 @@ class Router:
         for number, name in enumerate(candidates, start=1):
             attempt = _Attempt(name, task, number, plan.primary, self._clock(), time.perf_counter())
             emitted = False
+            first: float | None = None  # ms to the first word of text
             try:
                 # Inside the try: a fallback brain with no key must still be recorded as tried.
                 brain = self.brain(name)
@@ -353,20 +357,22 @@ class Router:
                     max_output_tokens=max_output_tokens,
                 ):
                     if isinstance(event, TextDelta):
+                        if first is None:
+                            first = (time.perf_counter() - attempt.started) * 1000
                         emitted = True
                         yield event
                     elif isinstance(event, StreamDone):
-                        attempts.append(self._record_ok(attempt, event.response))
+                        attempts.append(self._record_ok(attempt, event.response, first))
                         yield RoutedDone(RoutedResponse(event.response, name, tuple(attempts)))
                         return
                 msg = "stream ended without a final response"
                 raise ProviderServerError(msg, provider=brain.provider, model=brain.model)
             except asyncio.CancelledError:
                 # Stopped by the user (or the turn was cancelled): still an attempt on record.
-                self._record_cancelled(attempt)
+                self._record_cancelled(attempt, first)
                 raise
             except BrainError as exc:
-                attempts.append(self._record_error(attempt, exc))
+                attempts.append(self._record_error(attempt, exc, first))
                 # Fall back once, only on transient failures, and never after text reached the user.
                 if exc.fallback_eligible and not emitted and number < len(candidates):
                     log.warning(
@@ -393,7 +399,9 @@ class Router:
                 brain=name, prompt_tokens=prompt, max_output_tokens=max_output_tokens, budget=budget
             )
 
-    def _record_ok(self, attempt: _Attempt, response: BrainResponse) -> CallRecord:
+    def _record_ok(
+        self, attempt: _Attempt, response: BrainResponse, first_token_ms: float | None
+    ) -> CallRecord:
         usage = response.usage
         record = CallRecord(
             brain=attempt.brain,
@@ -415,11 +423,14 @@ class Router:
             ),
             fallback_from=attempt.fallback_from,
             billing=response.billing,
+            first_token_ms=first_token_ms,
         )
         self._emit(record)
         return record
 
-    def _record_error(self, attempt: _Attempt, exc: BrainError) -> CallRecord:
+    def _record_error(
+        self, attempt: _Attempt, exc: BrainError, first_token_ms: float | None
+    ) -> CallRecord:
         record = CallRecord(
             brain=attempt.brain,
             provider=exc.provider,
@@ -432,11 +443,12 @@ class Router:
             error=str(exc),
             fallback_from=attempt.fallback_from,
             billing=attempt.billing,
+            first_token_ms=first_token_ms,
         )
         self._emit(record)
         return record
 
-    def _record_cancelled(self, attempt: _Attempt) -> CallRecord:
+    def _record_cancelled(self, attempt: _Attempt, first_token_ms: float | None) -> CallRecord:
         cfg = self._config.brains[attempt.brain]
         record = CallRecord(
             brain=attempt.brain,
@@ -449,6 +461,7 @@ class Router:
             outcome="cancelled",
             fallback_from=attempt.fallback_from,
             billing=attempt.billing,
+            first_token_ms=first_token_ms,
         )
         self._emit(record)
         return record
@@ -470,6 +483,11 @@ class Router:
                 "out": record.output_tokens,
                 "cached": record.cached_input_tokens,
                 "ms": round(record.latency_ms),
+                **(
+                    {"ttft_ms": round(record.first_token_ms)}
+                    if record.first_token_ms is not None
+                    else {}
+                ),
                 "cost_usd": record.cost_usd,
                 **({"fallback_from": record.fallback_from} if record.fallback_from else {}),
             },

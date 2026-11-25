@@ -6,6 +6,7 @@ It stops when the gateway that started it exits; a stale lock from a crash is cl
 start.
 """
 
+import os
 import warnings
 from pathlib import Path
 
@@ -17,6 +18,17 @@ DATABASE = "enzo"
 def set_up(data: Path) -> bool:
     """The database exists already: a start takes seconds, not the first start's minute (#56)."""
     return (data / "postgres" / "PG_VERSION").is_file()
+
+
+def url_for_command(data: Path, *, create: bool) -> str | None:
+    """Enzo's database for a command beside the gateway (`enzo trace`, `enzo eval`): the one
+    ``ENZO_DATABASE_URL`` names, else the bundled one, which several processes share. None when
+    there is none yet and ``create`` is off."""
+    if url := os.environ.get("ENZO_DATABASE_URL"):
+        return url
+    if not create and not set_up(data):
+        return None
+    return start(data)
 
 
 def start(data: Path) -> str:

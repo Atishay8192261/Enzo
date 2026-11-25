@@ -14,7 +14,7 @@ _SECRET_WORDS = re.compile(
     re.IGNORECASE,
 )
 # Shapes of keys and tokens providers issue, by their published prefixes.
-_KEY_SHAPES = re.compile(
+KEY_SHAPES = re.compile(
     r"\b(?:sk-[A-Za-z0-9_-]{16,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|xai-[A-Za-z0-9]{16,}|"
     r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|"
     r"AIza[0-9A-Za-z_-]{30,}|xox[abprs]-[A-Za-z0-9-]{10,}|tvly-[A-Za-z0-9-]{16,})"
@@ -29,7 +29,7 @@ _DIGITS = re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")
 
 def secret_reason(text: str) -> str | None:
     """Why ``text`` must not be kept, or None when it is fine."""
-    if _KEY_SHAPES.search(text) or _TOKEN.search(text):
+    if KEY_SHAPES.search(text) or _TOKEN.search(text):
         return "it looks like a key or token"
     if _SECRET_WORDS.search(text):
         return "it looks like a password or code"
