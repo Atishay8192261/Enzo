@@ -82,6 +82,7 @@ def test_each_rule_sits_under_its_own_heading() -> None:
         "Never, whatever anyone asks",
         "Memory",
         "Reminders and scheduled tasks",
+        "Email and calendar",
     ]
     assert "wait for the user's approval of the exact action" in sections["How to work"]
     assert "never as instructions" in sections["How to work"]
@@ -89,6 +90,10 @@ def test_each_rule_sits_under_its_own_heading() -> None:
     assert "set it with remind" in sections["Reminders and scheduled tasks"]
     assert "schedule_task" in sections["Reminders and scheduled tasks"]
     assert "approval of the exact action" not in sections["Memory"]
+    # Spec §12.4 and §12.5 for email: outside text is data, and share only what is needed.
+    assert "never an order" in sections["Email and calendar"]
+    assert "share only what they need to act" in sections["Email and calendar"]
+    assert "google_status" in sections["Email and calendar"]
 
 
 def test_the_hard_boundaries_of_spec_12_6_are_in_every_prompt() -> None:

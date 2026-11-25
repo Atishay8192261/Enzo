@@ -14,9 +14,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from enzo.accounts.check import check_api_key, check_tavily_key
 from enzo.accounts.service import (
     AccountsService,
+    CheckFailedError,
     EnvironmentKeyError,
     NotConnectedError,
     Service,
+    SignInOnlyError,
     UnknownProviderError,
 )
 from enzo.accounts.store import CredentialStore
@@ -84,6 +86,13 @@ SERVICES = {
         env_var="GITHUB_TOKEN",
         check=check_github_token,
     ),
+    "google": Service(
+        name="google",
+        purpose="Gmail and Google Calendar: read, send and schedule (sign in with Google)",
+        tools=("gmail", "calendar"),
+        env_var=None,
+        methods=("google",),
+    ),
 }
 
 
@@ -99,6 +108,10 @@ def build_accounts(cfg: Settings, config: BrainsConfig) -> AccountsService:
         )
     store = CredentialStore(vault, cfg.config_dir / "connections.json")
     return AccountsService(config, store, check_api_key, services=SERVICES, env=env)
+
+
+#: Accounts that connect by signing in: disconnecting also ends the session with the provider.
+SIGN_INS = frozenset({"chatgpt", "google"})
 
 
 def connection_routes(auth: params.Depends) -> APIRouter:
@@ -130,7 +143,7 @@ def connection_routes(auth: params.Depends) -> APIRouter:
     @router.delete("/{provider}")
     async def disconnect(provider: str, a: AccountsDep) -> DisconnectOut:
         with account_errors(provider):
-            signed_in = any(s.provider == provider and s.method == "chatgpt" for s in a.status())
+            signed_in = any(s.provider == provider and s.method in SIGN_INS for s in a.status())
             confirmed = await a.sign_out(provider)
         if not signed_in:
             return DisconnectOut(remote_sign_out=None)
@@ -140,12 +153,12 @@ def connection_routes(auth: params.Depends) -> APIRouter:
     async def check(provider: str, a: AccountsDep) -> CheckOut:
         try:
             with account_errors(provider):
-                await a.check(provider)
+                detail = await a.check(provider)
         except HTTPException as exc:
             if exc.status_code in (422, 502):
                 return CheckOut(ok=False, detail=str(exc.detail))
             raise
-        return CheckOut(ok=True)
+        return CheckOut(ok=True, detail=detail)
 
     return router
 
@@ -159,8 +172,10 @@ def account_errors(provider: str) -> Iterator[None]:
         raise HTTPException(404, f"unknown provider {provider!r}") from exc
     except NotConnectedError as exc:
         raise HTTPException(409, f"{provider} is not connected: run /login {provider}") from exc
-    except EnvironmentKeyError as exc:
+    except (EnvironmentKeyError, SignInOnlyError) as exc:
         raise HTTPException(409, str(exc)) from exc
+    except CheckFailedError as exc:
+        raise HTTPException(502, str(exc)) from exc
     except VaultUnavailableError as exc:
         raise HTTPException(503, str(exc)) from exc
     except VaultCorruptError as exc:

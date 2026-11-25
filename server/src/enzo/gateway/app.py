@@ -21,6 +21,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from enzo import __version__
 from enzo.accounts.chatgpt import host_id
+from enzo.accounts.google import GoogleClient
 from enzo.accounts.service import AccountsService
 from enzo.agent.prompt import install_note
 from enzo.agent.service import ConversationService
@@ -29,9 +30,11 @@ from enzo.brain.factory import build_brain, has_key
 from enzo.brain.router import Router
 from enzo.config import Settings
 from enzo.connectors.github import github_tools
+from enzo.connectors.google import GoogleConnectors
 from enzo.gateway.chatgpt import RedactAuthQuery, chatgpt_routes
 from enzo.gateway.connections import build_accounts, connection_routes
 from enzo.gateway.conversations import ServiceDep, conversation_routes
+from enzo.gateway.google import google_routes
 from enzo.gateway.memory import memory_routes
 from enzo.gateway.scheduled import scheduled_routes
 from enzo.memory import Memory, memory_tools
@@ -138,6 +141,7 @@ def create_app(
     app.include_router(scheduled_routes(auth))
     app.include_router(connection_routes(auth))
     app.include_router(chatgpt_routes(auth, cfg.port))
+    app.include_router(google_routes(auth, cfg.port))
     _finish(app, cfg)
     return app
 
@@ -157,6 +161,10 @@ async def _running(
     http = httpx2.AsyncClient(timeout=httpx2.Timeout(20.0), follow_redirects=False)
     if acct.chatgpt is None:
         acct.enable_chatgpt(host_id(cfg.config_dir), http)
+    if acct.google is None:
+        acct.enable_google(http, configured=_google_client(cfg))
+    google = GoogleConnectors(lambda: acct.google)
+    acct.set_google_check(google.check)
     env = os.environ if cfg.use_env_keys else None  # opt-in only (#24)
     router = Router(
         config,
@@ -186,8 +194,9 @@ async def _running(
     # Scheduled tasks run as agent turns: the runner hands each due one to the task runner.
     tasks = TaskRunner(schedule, service, runner.bus, finished, notify=notify)
     runner.connect(tasks.start, lambda: tasks.running > 0)
-    connectors = Connectors(tools, acct, http)
+    connectors = Connectors(tools, acct, http, google)
     await connectors.refresh("github")
+    await connectors.refresh("google")
     acct.on_change(connectors.changed)
     runner.start()  # reminders due while Enzo was not running arrive now, marked late
     try:
@@ -198,6 +207,13 @@ async def _running(
         await connectors.close()
         await http.aclose()
         await store.close()
+
+
+def _google_client(cfg: Settings) -> GoogleClient | None:
+    """A Google OAuth client from configuration (ADR 0026), when one is set."""
+    if not cfg.google_client_id:
+        return None
+    return GoogleClient(client_id=cfg.google_client_id, client_secret=cfg.google_client_secret)
 
 
 def _finish(app: FastAPI, cfg: Settings) -> None:
@@ -226,14 +242,22 @@ class Connectors:
     go away when it disconnects. A connector that cannot be reached is logged, never fatal."""
 
     def __init__(
-        self, registry: ToolRegistry, accounts: AccountsService, http: httpx2.AsyncClient
+        self,
+        registry: ToolRegistry,
+        accounts: AccountsService,
+        http: httpx2.AsyncClient,
+        google: GoogleConnectors | None = None,
     ) -> None:
         self._registry = registry
         self._accounts = accounts
         self._http = http
+        self._google = google
         self._tasks: set[asyncio.Task[None]] = set()
 
     async def refresh(self, name: str) -> None:
+        if name == "google" and self._google is not None:
+            self._registry.replace_group(name, await self._google.tools())  # never raises
+            return
         if name != "github":
             return
         try:

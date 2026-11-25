@@ -4,6 +4,8 @@ Two kinds of account share one flow (key checked first, then kept in the vault, 
 
 - **model providers** (Anthropic, OpenAI, …), from ``brains.toml``: they unlock models;
 - **services** a tool uses (e.g. Tavily for web search): they unlock or extend tools.
+
+Some accounts connect by signing in instead of a key: ChatGPT (ADR 0013) and Google (ADR 0026).
 """
 
 from collections.abc import Awaitable, Callable, Mapping
@@ -15,6 +17,8 @@ from pydantic import SecretStr
 
 from enzo.accounts.chatgpt import PROVIDER as CHATGPT_PROVIDER
 from enzo.accounts.chatgpt import ChatGPTSignIn
+from enzo.accounts.google import PROVIDER as GOOGLE_PROVIDER
+from enzo.accounts.google import GoogleClient, GoogleSignIn, describe_access
 from enzo.accounts.store import ApiKeyCredential, Connection, CredentialStore
 from enzo.accounts.vault import VaultUnavailableError
 from enzo.brain.config import BrainConfig, BrainsConfig
@@ -35,6 +39,19 @@ class EnvironmentKeyError(LookupError):
     """The key comes from an environment variable: only unsetting it disconnects."""
 
 
+class SignInOnlyError(LookupError):
+    """This account connects by signing in, never with a pasted key."""
+
+
+class CheckFailedError(Exception):
+    """A connection was checked live and does not (fully) work. The message says what failed."""
+
+
+async def _no_key(_key: str) -> None:
+    msg = "this account takes no key"
+    raise SignInOnlyError(msg)
+
+
 @dataclass(frozen=True, slots=True)
 class Service:
     """A non-model account that a tool uses."""
@@ -43,8 +60,11 @@ class Service:
     #: Shown to the user: what connecting it does, e.g. "raises web search limits".
     purpose: str
     tools: tuple[str, ...]
-    env_var: str
-    check: Callable[[str], Awaitable[None]]
+    #: Where an opted-in environment key comes from; None for sign-in accounts.
+    env_var: str | None
+    check: Callable[[str], Awaitable[None]] = _no_key
+    #: How it connects: "api_key", or a sign-in such as "google".
+    methods: tuple[str, ...] = ("api_key",)
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,11 +86,12 @@ class _Account:
     """What every account has in common, whichever kind it is."""
 
     name: str
-    env_var: str
+    env_var: str | None
     check: Callable[[str], Awaitable[None]]
     models: tuple[str, ...]
     tools: tuple[str, ...]
     purpose: str | None
+    methods: tuple[str, ...] = ("api_key",)
 
 
 class AccountsService:
@@ -94,6 +115,32 @@ class AccountsService:
         self._accounts = _accounts(config, checker, services or {})
         #: Sign in with ChatGPT, once the gateway enables it (it needs an HTTP client).
         self.chatgpt: ChatGPTSignIn | None = None
+        #: Sign in with Google (Gmail, Calendar), once the gateway enables it.
+        self.google: GoogleSignIn | None = None
+        #: The live Gmail and Calendar check (the connectors supply it, §8.2).
+        self._google_check: Callable[[], Awaitable[str]] | None = None
+
+    def enable_google(
+        self,
+        http: httpx2.AsyncClient,
+        *,
+        configured: GoogleClient | None = None,
+        check: Callable[[], Awaitable[str]] | None = None,
+    ) -> GoogleSignIn | None:
+        """Turn on Sign in with Google. None without a vault (tokens must live in one)."""
+        if self._store is None or GOOGLE_PROVIDER not in self._accounts:
+            return None
+        self.google = GoogleSignIn(
+            self._store,
+            http,
+            configured=configured,
+            on_change=lambda: self._changed(GOOGLE_PROVIDER),
+        )
+        self._google_check = check
+        return self.google
+
+    def set_google_check(self, check: Callable[[], Awaitable[str]]) -> None:
+        self._google_check = check
 
     def enable_chatgpt(self, host: str, http: httpx2.AsyncClient) -> ChatGPTSignIn | None:
         """Turn on Sign in with ChatGPT for the OpenAI account. None without a vault."""
@@ -127,7 +174,11 @@ class AccountsService:
                     methods=self._methods(name),
                     models=account.models,
                     tools=account.tools,
-                    purpose=account.purpose,
+                    purpose=(
+                        describe_access(c.scopes)
+                        if c and c.method == "google" and c.scopes is not None
+                        else account.purpose
+                    ),
                     label=c.label if c else None,
                 )
             )
@@ -136,6 +187,9 @@ class AccountsService:
     async def connect_api_key(self, provider: str, api_key: str) -> Connection:
         """Check the key with the provider first; save it only if it works (§8.2)."""
         account = self._account(provider)
+        if "api_key" not in account.methods:
+            msg = f"{provider} connects by signing in: /login {provider}"
+            raise SignInOnlyError(msg)
         store = self._require_store()
         credential = ApiKeyCredential(api_key=SecretStr(api_key.strip()))
         await account.check(credential.api_key.get_secret_value())
@@ -151,6 +205,8 @@ class AccountsService:
         confirmed = True
         if self._signed_in_with_chatgpt(provider) and self.chatgpt is not None:
             confirmed = await self.chatgpt.sign_out()
+        elif self._signed_in_with("google", provider) and self.google is not None:
+            confirmed = await self.google.sign_out()  # revokes Enzo's access at Google
         self.disconnect(provider)
         return confirmed
 
@@ -163,9 +219,18 @@ class AccountsService:
         store.disconnect(provider)
         self._changed(provider)
 
-    async def check(self, provider: str) -> None:
-        """Re-check a saved connection, e.g. after the key was revoked (spec §8.4)."""
+    async def check(self, provider: str) -> str | None:
+        """Re-check a saved connection, e.g. after the key was revoked (spec §8.4). Returns what
+        was checked, when there is more to say than "it works"."""
         account = self._account(provider)
+        if self._signed_in_with("google", provider):
+            if self._google_check is None:
+                msg = "the Google connection cannot be checked yet"
+                raise NotConnectedError(msg)
+            return await self._google_check()
+        if "api_key" not in account.methods:
+            msg = f"{provider} is not connected"
+            raise NotConnectedError(msg)
         if self._signed_in_with_chatgpt(provider) and self.chatgpt is not None:
             # Renews the token if it is due (a refused renewal raises AuthError), then re-reads
             # which models the plan includes.
@@ -174,12 +239,13 @@ class AccountsService:
             if models is not None:
                 self._require_store().set_models(provider, models)
                 self._changed(provider)
-            return
+            return None
         key = self._require_store().api_key(provider) or self._env_key(account)
         if key is None:
             msg = f"{provider} is not connected"
             raise NotConnectedError(msg)
         await account.check(key)
+        return None
 
     def connected(self, provider: str) -> bool:
         """From the non-secret index: routing asks often, and must not read the vault for it."""
@@ -201,15 +267,18 @@ class AccountsService:
         return self.api_key(provider)
 
     def _signed_in_with_chatgpt(self, provider: str) -> bool:
+        return self._signed_in_with("chatgpt", provider)
+
+    def _signed_in_with(self, method: str, provider: str) -> bool:
         if self._store is None:
             return False
         connection = self._store.connections().get(provider)
-        return connection is not None and connection.method == "chatgpt"
+        return connection is not None and connection.method == method
 
     def _methods(self, provider: str) -> tuple[str, ...]:
         if provider == CHATGPT_PROVIDER and self.chatgpt is not None:
             return ("chatgpt", "api_key")
-        return ("api_key",)
+        return self._account(provider).methods
 
     def api_key(self, provider: str) -> str | None:
         """The connected account's key, else (opted in only) the environment's."""
@@ -218,7 +287,7 @@ class AccountsService:
         return stored or (self._env_key(account) if account else None)
 
     def _env_key(self, account: _Account) -> str | None:
-        if self._env is None:
+        if self._env is None or account.env_var is None:
             return None
         return self._env.get(account.env_var) or None
 
@@ -254,6 +323,12 @@ def _accounts(
             msg = f"service {name!r} clashes with a model provider of the same name"
             raise ValueError(msg)
         out[name] = _Account(
-            name, service.env_var, service.check, (), service.tools, service.purpose
+            name,
+            service.env_var,
+            service.check,
+            (),
+            service.tools,
+            service.purpose,
+            service.methods,
         )
     return out
