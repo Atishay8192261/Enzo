@@ -17,13 +17,16 @@ developers.openai.com/siwc, read 2026-11-18):
 
 import asyncio
 import base64
+import fcntl
 import hashlib
 import logging
+import os
 import re
 import secrets
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -407,15 +410,28 @@ class ChatGPTSignIn:
         return credential if isinstance(credential, ChatGPTCredential) else None
 
     async def access_token(self) -> str:
-        """A valid access token, renewed shortly before it expires. One renewal at a time."""
+        """A valid access token, renewed shortly before it expires. One renewal at a time, also
+        across processes (the gateway and `enzo eval` share the vault): refresh tokens rotate,
+        so a second renewal with the same one would end the sign-in."""
         async with self._renewing:
-            credential = self.credential()
-            if credential is None:
-                raise AuthError(SIGN_IN_AGAIN, provider=PROVIDER, model="")
-            if credential.expires_at - self._now() > REFRESH_MARGIN:
+            credential = self._signed_in()
+            if self._fresh(credential):
                 return credential.access_token.get_secret_value()
-            renewed = await self._renew(credential)
-            return renewed.access_token.get_secret_value()
+            async with held(self._store.lock_path("chatgpt-renewal")):
+                credential = self._signed_in()  # another process may have renewed it meanwhile
+                if self._fresh(credential):
+                    return credential.access_token.get_secret_value()
+                renewed = await self._renew(credential)
+                return renewed.access_token.get_secret_value()
+
+    def _signed_in(self) -> ChatGPTCredential:
+        credential = self.credential()
+        if credential is None:
+            raise AuthError(SIGN_IN_AGAIN, provider=PROVIDER, model="")
+        return credential
+
+    def _fresh(self, credential: ChatGPTCredential) -> bool:
+        return credential.expires_at - self._now() > REFRESH_MARGIN
 
     async def _renew(self, credential: ChatGPTCredential) -> ChatGPTCredential:
         ctx = {"provider": PROVIDER, "model": ""}
@@ -522,3 +538,34 @@ def _log_refusal(step: str, response: httpx2.Response, error: str | None) -> Non
         step,
         extra={"status": response.status_code, "error": error, "request_id": request_id},
     )
+
+
+#: How long a renewal waits for another process's renewal to finish.
+LOCK_WAIT_S = 30.0
+
+
+@asynccontextmanager
+async def held(path: Path, wait_s: float = LOCK_WAIT_S) -> AsyncIterator[None]:
+    """An exclusive lock on ``path`` shared by every process (``flock``), waited for without
+    blocking the event loop. It is released when the holder exits, even if it crashes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        deadline = time.monotonic() + wait_s
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() > deadline:
+                    msg = (
+                        "Another Enzo process is renewing the ChatGPT sign-in and has not finished"
+                    )
+                    raise ProviderTimeoutError(msg, provider=PROVIDER, model="") from None
+                await asyncio.sleep(0.05)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
