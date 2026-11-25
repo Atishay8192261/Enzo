@@ -6,6 +6,7 @@ enzo web       the web app in your browser
 enzo doctor    check this installation, with a fix for each problem
 enzo logs      what Enzo did, from its log (-f to keep watching; attach it to a bug report)
 enzo trace     one task step by step: models, tokens, tools and approvals (last, or a turn id)
+enzo eval      measure Enzo on 20 fixed tasks with your models; --compare two runs
 enzo update    update to the latest release
 enzo stop      stop Enzo running in the background for reminders
 enzo serve     run the gateway in the foreground (for an always-on machine)
@@ -66,6 +67,31 @@ def main(argv: list[str] | None = None) -> int:
     trace_parser.add_argument("--full", action="store_true", help="whole arguments and results")
     trace_parser.add_argument("--json", action="store_true", help="the trace as JSON")
     trace_parser.add_argument("--log", type=Path, metavar="PATH", help="read this log file")
+    eval_parser = commands.add_parser("eval", help="measure Enzo on 20 fixed tasks")
+    eval_parser.add_argument(
+        "--brain",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="a model to test; repeat for more, or 'all' (default: each account's everyday one)",
+    )
+    eval_parser.add_argument(
+        "--task",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="only these tasks: an id, a prefix like memory, or a category",
+    )
+    eval_parser.add_argument(
+        "--offline", action="store_true", help="skip the tasks that need the internet"
+    )
+    eval_parser.add_argument(
+        "--compare",
+        nargs=2,
+        metavar=("BEFORE", "AFTER"),
+        help="compare two saved runs (ids, paths, last, previous); exit 1 if the pass rate dropped",
+    )
+    eval_parser.add_argument("--runs", action="store_true", help="list the saved runs")
     commands.add_parser("update", help="update Enzo to the latest release")
     commands.add_parser("stop", help="stop Enzo running in the background (for reminders)")
     serve = commands.add_parser("serve", help="run the gateway in the foreground")
@@ -80,6 +106,13 @@ def main(argv: list[str] | None = None) -> int:
             lines=args.lines, keep=args.follow, as_json=args.json, path_only=args.path
         ),
         "trace": lambda: show_trace(args.turn, full=args.full, as_json=args.json, log=args.log),
+        "eval": lambda: evaluate(
+            brains=args.brain,
+            tasks=args.task,
+            offline=args.offline,
+            compare_with=args.compare,
+            runs=args.runs,
+        ),
         "update": update,
         "stop": stop,
         "serve": lambda: serve_gateway(managed=args.managed),
@@ -226,6 +259,22 @@ def log_lines(path: Path | None = None) -> list[str]:
         with contextlib.suppress(OSError):
             out.extend(file.read_text(encoding="utf-8", errors="replace").splitlines())
     return out
+
+
+def evaluate(
+    *,
+    brains: list[str],
+    tasks: list[str],
+    offline: bool,
+    compare_with: list[str] | None,
+    runs: bool,
+) -> int:
+    """`enzo eval` (``enzo.evals.command``): imported only when used, it pulls in the gateway."""
+    from enzo.evals import command  # noqa: PLC0415
+
+    return command.main(
+        brains=brains, tasks=tasks, offline=offline, compare_with=compare_with, runs=runs
+    )
 
 
 def _stop_if_idle(state: Path) -> None:
