@@ -6,6 +6,7 @@ import type {
   ChatsClient,
   ConversationMemory,
   MemoryClient,
+  RemindersClient,
   Start,
 } from "@enzo/chat";
 import type {
@@ -13,6 +14,7 @@ import type {
   Brain,
   Conversation,
   ConversationUsage,
+  GatewayEvent,
   ProviderConnection,
   Usage,
 } from "@enzo/sdk";
@@ -135,7 +137,15 @@ export function memory(start: string | null = null): ConversationMemory {
   };
 }
 
-export type Client = ChatClient & AccountsClient & ChatsClient & MemoryClient;
+export type Client = ChatClient & AccountsClient & ChatsClient & MemoryClient & RemindersClient;
+
+/** An event stream with nothing to say: it stays open until the app closes it. */
+export async function* quiet(signal?: AbortSignal): AsyncGenerator<GatewayEvent> {
+  await new Promise<void>((resolve) => {
+    if (signal?.aborted) return resolve();
+    signal?.addEventListener("abort", () => resolve(), { once: true });
+  });
+}
 
 export function fakeClient(overrides: Partial<Client> = {}): Client {
   const usage: ConversationUsage = { total: NONE, turns: [] };
@@ -164,6 +174,10 @@ export function fakeClient(overrides: Partial<Client> = {}): Client {
     renameConversation: mock(async () => {}),
     deleteConversation: mock(async () => {}),
     memories: async () => ({ memories: [], file: "~/Enzo/Memory.md" }),
+    reminders: async () => [],
+    cancelReminder: mock(async () => {}),
+    conversationReminders: async () => [],
+    events: quiet,
     forgetMemory: mock(async () => {}),
     chooseBrain: mock(async () => {}),
     send: () => events(),

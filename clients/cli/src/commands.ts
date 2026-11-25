@@ -6,9 +6,10 @@ import {
   describeChoice,
   describeConnection,
   type MemoryClient,
+  type RemindersClient,
   resolveChoice,
 } from "@enzo/chat";
-import type { MemoryList, Remembered } from "@enzo/sdk";
+import type { MemoryList, Remembered, UpcomingReminder } from "@enzo/sdk";
 
 /**
  * What a command shows, as a card under its own echo: plain text, text marked as an error, or
@@ -17,10 +18,19 @@ import type { MemoryList, Remembered } from "@enzo/sdk";
 export type Reply = string | { text: string; error: true } | { rows: [string, string][] } | null;
 
 /** The pickers a command can open instead of asking for an argument. */
-export type PickerKind = "login" | "logout" | "model" | "chats" | "delete" | "memory" | "forget";
+export type PickerKind =
+  | "login"
+  | "logout"
+  | "model"
+  | "chats"
+  | "delete"
+  | "memory"
+  | "forget"
+  | "reminders"
+  | "cancel";
 
 export interface CommandContext {
-  client: ChatClient & AccountsClient & MemoryClient;
+  client: ChatClient & AccountsClient & MemoryClient & RemindersClient;
   /** The conversation's current choice: a model, a tier, or null for smart routing. */
   current: string | null;
   /** This chat's id; null while it is fresh (created by its first message). */
@@ -57,6 +67,14 @@ export interface CommandContext {
   forgetMemory(): Promise<Reply>;
   /** The user kept the memory. */
   keepMemory(): void;
+  /** The list of reminders to cancel one from, or why there is none. */
+  pickReminder(): Promise<Reply>;
+  /** Ask before cancelling this reminder. */
+  askCancel(id: number): Promise<Reply>;
+  /** Cancel the reminder the user just confirmed; null: none was being asked about. */
+  cancelReminder(): Promise<Reply>;
+  /** The user kept the reminder. */
+  keepReminder(): void;
   quit(): void;
 }
 
@@ -292,6 +310,32 @@ const COMMANDS: Record<string, Command> = {
       return ctx.askForget(id);
     },
   },
+  "/reminders": {
+    usage: "/reminders",
+    summary: "your reminders still to come, and when",
+    args: 0,
+    async run(ctx) {
+      return remindersReply(await ctx.client.reminders());
+    },
+  },
+  "/cancel": {
+    usage: "/cancel",
+    summary: "cancel a reminder (asks first)",
+    args: 1,
+    optional: true,
+    also: ["keep", "confirm"],
+    async run(ctx, arg) {
+      if (arg === "keep") {
+        ctx.keepReminder();
+        return null;
+      }
+      if (arg === "confirm") return ctx.cancelReminder();
+      if (!arg) return ctx.pickReminder();
+      const id = Number(arg);
+      if (!Number.isInteger(id) || id < 1) return error("Usage: /cancel");
+      return ctx.askCancel(id);
+    },
+  },
   "/help": {
     usage: "/help",
     summary: "commands and keys",
@@ -401,5 +445,18 @@ export function memoryReply({ memories, file }: MemoryList): Reply {
     for (const m of group) lines.push(`• ${memoryLine(m)}`, `  ${m.source} · #${m.id}`);
   }
   lines.push("", "To change one, just tell Enzo. /forget removes one.", ...copy);
+  return lines.join("\n");
+}
+
+/** A reminder as one line: "Fri 21 Nov 09:00 · Call mom". */
+export const reminderLine = (r: UpcomingReminder) => `${r.next ?? "soon"} · ${r.text}`;
+
+/** What /reminders shows: each one still to come, soonest first, with its schedule. */
+export function remindersReply(reminders: UpcomingReminder[]): Reply {
+  if (reminders.length === 0) {
+    return "No reminders yet. Ask Enzo, like “remind me Friday at 9 to call mom”.";
+  }
+  const lines = reminders.flatMap((r) => [`• ${reminderLine(r)}`, `  ${r.schedule} · #${r.id}`]);
+  lines.push("", "To change one, just tell Enzo. /cancel removes one.");
   return lines.join("\n");
 }

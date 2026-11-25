@@ -148,7 +148,7 @@ def test_the_app_knows_when_a_start_is_the_first(
         return launcher.Gateway(launcher.url_for(port), True)
 
     monkeypatch.setattr(launcher, "attach", attach)
-    monkeypatch.setattr(launcher, "release", lambda _s: None)
+    monkeypatch.setattr(launcher, "release", lambda _s, _port=None: None)
     with cli._gateway():
         pass
     assert seen == [first]
@@ -191,7 +191,7 @@ def test_a_closed_terminal_still_releases_the_gateway(
     monkeypatch.setattr(
         launcher, "attach", lambda _s, port, **_k: launcher.Gateway(launcher.url_for(port), True)
     )
-    monkeypatch.setattr(launcher, "release", released.append)
+    monkeypatch.setattr(launcher, "release", lambda s, _port=None: released.append(s))
 
     def app_running() -> None:
         with cli._gateway():

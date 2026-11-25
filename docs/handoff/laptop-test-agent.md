@@ -43,7 +43,11 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
 
 **Works now:**
 
-- **Memory (new, ADR 0020).** Enzo remembers durable facts you tell it across chats: who you
+- **Reminders (new, ADR 0021).** "remind me Friday at 9 to call mom": it arrives in the chat, in any
+  open app, and as a desktop notification, also with the app closed (Enzo stays on in the
+  background while reminders are due; `enzo stop` turns it off). `/reminders` lists them,
+  `/cancel` removes one. Missed ones arrive late, once.
+- **Memory (ADR 0020).** Enzo remembers durable facts you tell it across chats: who you
   are, preferences, people, decisions. Each has its source (you said / Enzo inferred, when, which
   chat). `/memory` shows them, `/forget` removes one, `~/Enzo/Memory.md` is a readable copy.
   Secrets are refused.
@@ -342,7 +346,22 @@ For each journey:
     - `enzo logs`: `memory.saved`, `memory.recalled`, `memory.forgotten` lines, never the words.
     - Files (#41): after "make a file plan.md with my to-do list", Enzo says "Saved to
       ~/Enzo/plan.md". Asking it to edit `Memory.md` is refused with a pointer to memory instead.
-16. **Usability verdict.** After a session, write 5 to 10 bullets with Atishay:
+16. **Reminders (spec §9.3; ADR 0021).**
+    - "remind me in 2 minutes to stretch": a step ("Setting a reminder: Stretch") and a one-line
+      confirmation with the day and time in his time zone. At that minute it shows in the open
+      chat as "⏰ Reminder: Stretch" and as a macOS notification (allow notifications for the
+      terminal if macOS asks; note it).
+    - "remind me every weekday at 9 to check email": `/reminders` lists it with "every weekday at
+      09:00". `/cancel` asks first ("No, keep it" is first), then it is gone.
+    - Quit `enzo` with a reminder a few minutes out: it must say Enzo stays on in the background.
+      The notification still arrives with no Enzo window open. Afterwards `pgrep -fl enzo` shows
+      nothing: it stopped itself. `enzo stop` turns it off early.
+    - Close the lid past a reminder's time, wait, open it: the reminder arrives within a minute,
+      marked "late: due …, Enzo wasn't running" (or "late" if the computer slept).
+    - Daylight saving and time zones: a daily reminder keeps its local time. Note anything odd.
+    - `enzo doctor` shows "reminders: N, next …". `enzo logs` shows `reminder.set`,
+      `reminder.delivered`, never the words.
+17. **Usability verdict.** After a session, write 5 to 10 bullets with Atishay:
     - Could he use this every day?
     - What is missing first?
     - What annoyed him?

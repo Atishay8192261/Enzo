@@ -9,6 +9,8 @@ from contextvars import ContextVar
 
 conversation_var: ContextVar[str | None] = ContextVar("enzo_conversation", default=None)
 turn_var: ContextVar[str | None] = ContextVar("enzo_turn", default=None)
+#: The user's time zone, as their app reported it with the message (IANA, e.g. Europe/Paris).
+timezone_var: ContextVar[str | None] = ContextVar("enzo_timezone", default=None)
 
 
 def new_turn_id() -> str:

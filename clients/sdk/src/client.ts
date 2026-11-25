@@ -69,6 +69,47 @@ export interface MemoryList {
   file: string | null;
 }
 
+/** A reminder still to come (spec §9.3). */
+export interface UpcomingReminder {
+  id: number;
+  text: string;
+  next_at: string | null;
+  /** The next time in the user's words: "Fri 21 Nov 09:00". */
+  next: string | null;
+  /** "every weekday at 09:00, until 1 Dec 2026". */
+  schedule: string;
+  timezone: string;
+  repeat: "once" | "hourly" | "daily" | "weekdays" | "weekly" | "monthly";
+  ends_on: string | null;
+  runs: number;
+  conversation_id: string | null;
+}
+
+/** A reminder that arrived in a chat: shown in its timeline after `after` messages. */
+export interface DeliveredReminder {
+  text: string;
+  due_at: string;
+  delivered_at: string;
+  /** It arrived well after its time: Enzo was not running then. */
+  late: boolean;
+  after: number;
+  /** When it was due, in the user's zone: "Fri 09:00". */
+  due: string;
+}
+
+/** Something that happened while no turn was running: for now, a reminder arriving. */
+export interface GatewayEvent {
+  kind: "reminder";
+  reminder: number;
+  text: string;
+  /** What to show: the text, with a note when it is late. */
+  words: string;
+  late: boolean;
+  conversation_id: string | null;
+  /** When a repeating reminder comes next, or null when it is done. */
+  next: string | null;
+}
+
 export interface ApprovalCard {
   id: string;
   tool: string;
@@ -231,6 +272,35 @@ export class GatewayClient {
   /** Moves a chat to the trash: out of the list, never destroyed. */
   async deleteConversation(id: string): Promise<void> {
     await this.#json("DELETE", `/conversations/${enc(id)}`);
+  }
+
+  /** Reminders still to come, soonest first. */
+  async reminders(): Promise<UpcomingReminder[]> {
+    const body = (await this.#json("GET", "/reminders")) as { reminders: UpcomingReminder[] };
+    return body.reminders;
+  }
+
+  async cancelReminder(id: number): Promise<void> {
+    await this.#json("DELETE", `/reminders/${id}`);
+  }
+
+  /** The reminders that arrived in a chat, in order. */
+  conversationReminders(id: string): Promise<DeliveredReminder[]> {
+    return this.#json("GET", `/conversations/${enc(id)}/reminders`) as Promise<DeliveredReminder[]>;
+  }
+
+  /** Live events while the app is open (a reminder arriving). Ends if the gateway goes away. */
+  async *events(signal?: AbortSignal): AsyncGenerator<GatewayEvent> {
+    const res = await this.#request("GET", "/events", undefined, signal);
+    if (!res.body) throw new GatewayError("event stream has no body", res.status);
+    for await (const message of parseSse(res.body)) {
+      if (message.event !== "reminder") continue; // kinds this app does not know yet
+      try {
+        yield { kind: "reminder", ...(JSON.parse(message.data) as Omit<GatewayEvent, "kind">) };
+      } catch {
+        // a malformed event is skipped, never fatal
+      }
+    }
   }
 
   /** Everything Enzo remembers, newest first. */

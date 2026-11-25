@@ -101,11 +101,15 @@ async def test_the_app_registers_the_core_tools(
             "remember",
             "forget",
             "search_memory",
+            "remind",
+            "list_reminders",
+            "cancel_reminder",
         ]
         gated = [n for n in names if registry.get(n).requires_approval]
         fenced = [n for n in names if registry.get(n).untrusted_output]
         # The brain knows where the user's files are (#41), as the user would type it.
         assert "Enzo folder is" in app.state.service._developer
         assert app.state.service.memory is not None
+        assert app.state.background.runner is not None  # reminders are delivered
     assert gated == ["delete_file"]
     assert fenced == ["web_search", "read_page", "read_file"]

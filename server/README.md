@@ -28,6 +28,7 @@ enzo -c         # the terminal app, in your last chat (ctrl+r there lists them a
 enzo web        # the web app, in your browser
 enzo doctor     # check the installation; each problem comes with a fix
 enzo logs       # what Enzo did, one line per step (-f to follow; never what was said)
+enzo stop       # turn off Enzo left running in the background for your reminders
 enzo update     # the latest release
 ```
 
@@ -39,6 +40,11 @@ Enzo remembers what you tell it about yourself across chats (preferences, people
 `/memory` shows what it remembers and where each fact came from, `/forget` removes one, and
 `~/Enzo/Memory.md` is a readable copy. To change a memory, just tell Enzo. It never keeps
 passwords, keys, codes or card numbers.
+
+Ask Enzo to remind you ("remind me Friday at 9 to call mom", "every weekday at 9 to check
+email"): it arrives in the chat and as a desktop notification. If you quit `enzo` while
+reminders are still to come, Enzo stays on in the background to deliver them and then stops by
+itself; `enzo stop` turns it off. `/reminders` lists them and `/cancel` removes one.
 
 ## Where things live
 
