@@ -28,7 +28,7 @@ enzo -c         # the terminal app, in your last chat (ctrl+r there lists them a
 enzo web        # the web app, in your browser
 enzo doctor     # check the installation; each problem comes with a fix
 enzo logs       # what Enzo did, one line per step (-f to follow; never what was said)
-enzo stop       # turn off Enzo left running in the background for your reminders
+enzo stop       # turn off Enzo left running in the background for what you scheduled
 enzo update     # the latest release
 ```
 
@@ -42,9 +42,11 @@ Enzo remembers what you tell it about yourself across chats (preferences, people
 passwords, keys, codes or card numbers.
 
 Ask Enzo to remind you ("remind me Friday at 9 to call mom", "every weekday at 9 to check
-email"): it arrives in the chat and as a desktop notification. If you quit `enzo` while
-reminders are still to come, Enzo stays on in the background to deliver them and then stops by
-itself; `enzo stop` turns it off. `/reminders` lists them and `/cancel` removes one.
+email"): it arrives in the chat and as a desktop notification. Ask it to do something on its own
+("every morning at 8 until Friday, check the weather and tell me"): you approve the exact plan once,
+and each run reports back the same way. If you quit `enzo` while
+reminders or scheduled tasks are still to come, Enzo stays on in the background for them and then
+stops by itself; `enzo stop` turns it off. `/scheduled` lists them and `/cancel` removes one.
 
 ## Where things live
 

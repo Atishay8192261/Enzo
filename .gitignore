@@ -24,3 +24,6 @@ coverage/
 # release builds: the web app and terminal-app hashes are put in the package at release time
 server/src/enzo/webapp/
 server/src/enzo/_release.json
+
+# Claude Code agent worktrees (local only)
+.claude/worktrees/
