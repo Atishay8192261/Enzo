@@ -120,6 +120,10 @@ class CredentialStore:
         self._vault = vault
         self._index_path = index_path
 
+    def lock_path(self, name: str) -> Path:
+        """A lock file next to the index, for work only one process may do at a time."""
+        return self._index_path.with_name(f".{name}.lock")
+
     def connect(
         self,
         provider: str,

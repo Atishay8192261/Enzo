@@ -17,11 +17,13 @@ from enzo.accounts.chatgpt import (
     TOKEN_URL,
     ChatGPTSignIn,
     challenge,
+    held,
     host_id,
 )
 from enzo.accounts.service import AccountsService
 from enzo.accounts.store import ChatGPTCredential, CredentialStore
-from enzo.brain import AuthError, ProviderServerError
+from enzo.accounts.vault import generate_key, open_vault
+from enzo.brain import AuthError, ProviderServerError, ProviderTimeoutError
 from enzo.brain.config import BrainConfig, load_config
 from enzo.brain.factory import PlanLogin
 from tests.accounts.fake_openai_auth import (
@@ -249,6 +251,43 @@ async def test_tokens_are_renewed_once_shortly_before_they_expire(tmp_path: Path
     credential = store.credential("openai")
     assert isinstance(credential, ChatGPTCredential)
     assert credential.refresh_token.get_secret_value() in fake.refresh_tokens  # the replacement
+
+
+async def test_two_processes_renew_the_sign_in_once(tmp_path: Path) -> None:
+    """The gateway and `enzo eval` run as two processes on one vault. Refresh tokens rotate:
+    if both renew with the same one, OpenAI refuses the second and the sign-in ends. One
+    renews; the other waits and uses the renewed token."""
+    fake = FakeOpenAIAuth()
+    clock = Clock()
+    key = generate_key()
+
+    def process() -> tuple[ChatGPTSignIn, CredentialStore]:
+        store = CredentialStore(open_vault(tmp_path, key), tmp_path / "connections.json")
+        sign_in = ChatGPTSignIn(
+            store, host_id(tmp_path), client_for(fake), on_change=lambda: None, now=clock
+        )
+        return sign_in, store
+
+    (gateway, store), (evals, _) = process(), process()
+    await sign_in_once(gateway, fake)
+    clock.now += timedelta(minutes=59)  # inside the two-minute margin
+    tokens = await asyncio.gather(gateway.access_token(), evals.access_token())
+    assert tokens[0] == tokens[1]
+    assert len(fake.calls_to(TOKEN_URL)) == 2  # the sign-in, then one renewal
+    assert "openai" in store.connections()
+
+
+async def test_a_renewal_stuck_in_another_process_is_reported_not_waited_on_forever(
+    tmp_path: Path,
+) -> None:
+    lock = tmp_path / ".chatgpt-renewal.lock"
+    async with held(lock):
+        with pytest.raises(ProviderTimeoutError, match="Another Enzo process"):
+            async with held(lock, wait_s=0.2):
+                pytest.fail("got a lock another holder has")
+    async with held(lock, wait_s=0.2):  # free again once the holder is done
+        pass
+    assert lock.stat().st_mode & 0o777 == 0o600
 
 
 async def test_an_ended_sign_in_says_so_and_forgets_the_tokens(tmp_path: Path) -> None:
