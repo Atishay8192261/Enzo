@@ -7,7 +7,17 @@ from enzo.tools.registry import (
     ToolError,
     ToolOutcome,
     ToolRegistry,
+    ToolStoppedError,
     tool,
 )
 
-__all__ = ["JsonArgs", "Prepared", "Tool", "ToolError", "ToolOutcome", "ToolRegistry", "tool"]
+__all__ = [
+    "JsonArgs",
+    "Prepared",
+    "Tool",
+    "ToolError",
+    "ToolOutcome",
+    "ToolRegistry",
+    "ToolStoppedError",
+    "tool",
+]
