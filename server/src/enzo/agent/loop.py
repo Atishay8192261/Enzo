@@ -338,24 +338,29 @@ async def _gate(registry: ToolRegistry, call: ToolCall) -> _Gate:
 
     A tool with a ``prepare`` step is made exact first (e.g. a merge pinned to the PR's current
     head commit). The approval id covers the prepared arguments, so when the target has changed
-    since the user was asked, the id differs and the user is asked again (§12.3).
+    since the user was asked, the id differs and the user is asked again (§12.3). A tool that
+    asks only sometimes (a browser step) says in its prepared call whether this one needs a yes.
     """
     tool = registry.get(call.name)
-    if tool is None or not tool.requires_approval:
+    if tool is None or not (tool.requires_approval or tool.prepare):
         return _Gate(None, call)
     checked = registry.validate(call)
     if not isinstance(checked, ValidatedCall):
         return _Gate(None, call)
-    args, detail = checked.args, None
+    args, detail, summary, ask = checked.args, None, None, tool.requires_approval
     if tool.prepare is not None:
         try:
             async with asyncio.timeout(tool.timeout_s):
                 prepared = await tool.prepare(args)
         except Exception as exc:  # a lookup failed: nothing is asked and nothing runs
             return _Gate(None, call, error=f"{type(exc).__name__}: {exc}")
-        args, detail = prepared.args, prepared.detail
+        args, detail, summary = prepared.args, prepared.detail, prepared.summary
+        ask = ask or prepared.ask
         call = ToolCall(id=call.id, name=call.name, arguments_json=args.model_dump_json())
-    summary = tool.summary(args) if tool.summary else None
+    if not ask:
+        return _Gate(None, call)  # runs as prepared, without asking
+    if summary is None and tool.summary:
+        summary = tool.summary(args)
     return _Gate(approval_request(call, args, summary, detail), call)
 
 

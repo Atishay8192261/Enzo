@@ -34,10 +34,21 @@ APPROVAL_NOTE = (
 )
 
 type FailureKind = Literal[
-    "invalid_arguments", "unknown_tool", "failed", "timeout", "bad_result", "declined", "not_run"
+    "invalid_arguments",
+    "unknown_tool",
+    "failed",
+    "timeout",
+    "bad_result",
+    "declined",
+    "not_run",
+    "stopped",
 ]
 
 type Handler[P: BaseModel, R: BaseModel] = Callable[[P], Awaitable[R]]
+
+
+class ToolStoppedError(Exception):
+    """The user stopped the step while it ran (Esc closed the browser under it): not a failure."""
 
 
 class ToolError(BaseModel):
@@ -60,11 +71,17 @@ class JsonArgs(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class Prepared[P: BaseModel]:
-    """A gated call made exact before the user is asked (e.g. pinned to a commit)."""
+    """A call made exact before it runs or the user is asked (e.g. pinned to a commit)."""
 
     args: P
     #: Shown on the approval card with the exact arguments, e.g. the diff about to be merged.
     detail: str | None = None
+    #: The exact action in plain words, when the tool's ``summary`` cannot know it from the
+    #: arguments alone (a browser step names the button the page really shows).
+    summary: str | None = None
+    #: For a tool that does not always need approval: True when this exact call does (a
+    #: browser click that would place an order). A tool with ``requires_approval`` always asks.
+    ask: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,9 +101,10 @@ class Tool[P: BaseModel, R: BaseModel]:
     summary: Callable[[P], str] | None = None
     #: What the chat shows while the call runs, in plain words: "Reading plan.md" (#40).
     activity: Callable[[P], str] | None = None
-    #: For approval-gated tools: look up what the call will really do and pin it before asking.
-    #: The approval covers the prepared arguments, so if the target changes, the user is asked
-    #: again (§12.3 "if the content changes after approval, ask again").
+    #: Look up what the call will really do and pin it before it runs (and before asking, for a
+    #: gated tool). The approval covers the prepared arguments, so if the target changes, the
+    #: user is asked again (§12.3 "if the content changes after approval, ask again"). A tool
+    #: without ``requires_approval`` decides here, per call, whether this one needs a yes.
     prepare: Callable[[P], Awaitable[Prepared[P]]] | None = None
     #: A JSON Schema for the arguments instead of a Pydantic model (tools from MCP servers).
     schema: dict[str, Any] | None = None
@@ -233,6 +251,8 @@ class ToolRegistry:
             return self._failed(
                 call, "timeout", f"{call.name} timed out after {t.timeout_s}s", started, began
             )
+        except ToolStoppedError as exc:
+            return self._failed(call, "stopped", str(exc), started, began)
         except Exception as exc:  # any tool bug becomes data for the brain (§4.2)
             return self._failed(call, "failed", f"{type(exc).__name__}: {exc}", started, began)
         if not isinstance(value, t.returns):
