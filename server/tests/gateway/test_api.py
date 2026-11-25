@@ -19,6 +19,7 @@ from enzo.brain.provider import BrainProvider
 from enzo.brain.router import Router
 from enzo.config import Settings
 from enzo.gateway.app import create_app
+from enzo.schedule import Background
 from enzo.store.repository import Store
 from tests.agent import tools as t
 
@@ -46,9 +47,11 @@ def service(store: Store, brains: dict[str, BrainProvider]) -> ConversationServi
     return ConversationService(store, router, t.registry())
 
 
-def client(svc: ConversationService, token: str | None = None) -> httpx2.AsyncClient:
+def client(
+    svc: ConversationService, token: str | None = None, background: Background | None = None
+) -> httpx2.AsyncClient:
     settings = Settings(env="test", api_token=SecretStr(token) if token else None)
-    app = create_app(settings, service=svc)
+    app = create_app(settings, service=svc, background=background)
     return httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://enzo")
 
 

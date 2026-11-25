@@ -6,6 +6,7 @@ enzo web       the web app in your browser
 enzo doctor    check this installation, with a fix for each problem
 enzo logs      what Enzo did, from its log (-f to keep watching; attach it to a bug report)
 enzo update    update to the latest release
+enzo stop      stop Enzo running in the background for reminders
 enzo serve     run the gateway in the foreground (for an always-on machine)
 """
 
@@ -56,6 +57,7 @@ def main(argv: list[str] | None = None) -> int:
     logs_parser.add_argument("--json", action="store_true", help="the lines as written (JSON)")
     logs_parser.add_argument("--path", action="store_true", help="only say where the log is")
     commands.add_parser("update", help="update Enzo to the latest release")
+    commands.add_parser("stop", help="stop Enzo running in the background (for reminders)")
     serve = commands.add_parser("serve", help="run the gateway in the foreground")
     serve.add_argument("--managed", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -68,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
             lines=args.lines, keep=args.follow, as_json=args.json, path_only=args.path
         ),
         "update": update,
+        "stop": stop,
         "serve": lambda: serve_gateway(managed=args.managed),
     }
     try:
@@ -131,8 +134,11 @@ def serve_gateway(*, managed: bool) -> int:
         "gateway.start",
         extra={"version": __version__, "port": settings.port, "ms": _ms_since(began)},
     )
+    # Kept on for reminders after the last app closed: stop once none is left (spec §9.2).
+    on_idle = (lambda: _stop_if_idle(state_dir())) if managed else None
+    app = create_app(settings, on_idle=on_idle)
     # log_config=None: uvicorn keeps the logging set up above instead of installing its own.
-    uvicorn.run(create_app(settings), host=settings.host, port=settings.port, log_config=None)
+    uvicorn.run(app, host=settings.host, port=settings.port, log_config=None)
     return 0
 
 
@@ -166,6 +172,24 @@ def show_logs(
     with contextlib.suppress(KeyboardInterrupt):
         for raw in logs.follow(path, lines=max(lines, 0)):
             print(show(raw), flush=True)
+    return 0
+
+
+def _stop_if_idle(state: Path) -> None:
+    if launcher.idle(state):
+        logging.getLogger("enzo.cli").info("gateway.idle_stop")
+        os.kill(os.getpid(), signal.SIGTERM)  # uvicorn shuts down cleanly, then the database
+
+
+def stop() -> int:
+    """`enzo stop`: turn off a gateway left on in the background for reminders."""
+    if launcher.stop_background(state_dir()):
+        print(
+            "Stopped Enzo. Reminders wait until you open Enzo again; any missed meanwhile "
+            "arrive then, marked late."
+        )
+    else:
+        print("Enzo is not running in the background.")
     return 0
 
 
@@ -244,7 +268,7 @@ def _gateway() -> Iterator[launcher.Gateway]:
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
-        launcher.release(state)
+        launcher.release(state, Settings().port)
 
 
 def _exit_on_signal(signum: int, _frame: object) -> None:
@@ -329,7 +353,9 @@ def _check_gateway() -> tuple[str, str]:
         connected = []
     accounts = ", ".join(connected) if connected else "none yet (/login chatgpt in the app)"
     where = f"{info.get('version')} at {launcher.url_for(port)}"
-    return OK, f"Gateway: running {where} · accounts: {accounts}"
+    waiting = launcher.upcoming(port)
+    reminders = f" · reminders: {waiting[0]}, next {waiting[1]}" if waiting else ""
+    return OK, f"Gateway: running {where} · accounts: {accounts}{reminders}"
 
 
 def _check_log() -> tuple[str, str]:

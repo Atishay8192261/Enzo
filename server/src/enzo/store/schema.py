@@ -192,3 +192,67 @@ class MemoryRow(Base):
         TSVECTOR,
         Computed("to_tsvector('english', coalesce(about, '') || ' ' || text)", persisted=True),
     )
+
+
+class JobRow(Base):
+    """Something Enzo does at a time, for the user: for now a reminder (spec §9.2, §9.3).
+
+    It belongs to the user (Enzo has one), is delivered to the chat it was set in, and stops at
+    its stop condition: a one-time reminder after it fires, a repeating one after ``max_runs``
+    deliveries or past ``ends_on`` (the user's local date), or when the user cancels it.
+    """
+
+    __tablename__ = "jobs"
+    __table_args__ = (
+        CheckConstraint("kind IN ('reminder')", name="kind"),
+        CheckConstraint(
+            "repeat IN ('once', 'hourly', 'daily', 'weekdays', 'weekly', 'monthly')",
+            name="repeat",
+        ),
+        CheckConstraint("status IN ('active', 'done', 'cancelled')", name="status"),
+        CheckConstraint("every >= 1", name="every"),
+        Index(None, "status", "next_run_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    kind: Mapped[str] = mapped_column(Text)
+    #: What to remind the user of, in their words.
+    text: Mapped[str] = mapped_column(Text)
+    #: The chat it was set in, where it is delivered (and the run, as on log lines).
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    turn_id: Mapped[str | None] = mapped_column(Text)
+    #: The user's zone: repeats keep their wall-clock time across daylight-saving changes.
+    timezone: Mapped[str] = mapped_column(Text)
+    #: The first time it fires; repeats are counted from it.
+    first_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    repeat: Mapped[str] = mapped_column(Text, server_default="once")
+    every: Mapped[int] = mapped_column(Integer, server_default="1")
+    ends_on: Mapped[date | None] = mapped_column(Date)
+    max_runs: Mapped[int | None] = mapped_column(Integer)
+    runs: Mapped[int] = mapped_column(Integer, server_default="0")
+    #: When it fires next; None once it is done or cancelled.
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(Text, server_default="active")
+    created_at: Mapped[datetime] = _created_at()
+
+
+class JobRunRow(Base):
+    """One delivery: when it was due, when it arrived, and where in the chat it showed."""
+
+    __tablename__ = "job_runs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    #: The reminder as delivered, kept even if the reminder is later changed.
+    text: Mapped[str] = mapped_column(Text)
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    delivered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    #: Delivered well after it was due: Enzo was not running (the computer slept or was off).
+    late: Mapped[bool]
+    #: How many messages the chat had then: clients show the reminder after that many.
+    after: Mapped[int] = mapped_column(Integer)

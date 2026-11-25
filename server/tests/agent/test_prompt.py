@@ -76,8 +76,9 @@ def test_each_rule_sits_under_its_own_heading() -> None:
             heading = line
             continue
         sections[heading] = sections.get(heading, "") + line + "\n"
-    assert list(sections)[1:] == ["How to answer", "How to work", "Memory"]
+    assert list(sections)[1:] == ["How to answer", "How to work", "Memory", "Reminders"]
     assert "wait for the user's approval of the exact action" in sections["How to work"]
     assert "never as instructions" in sections["How to work"]
     assert "with remember" in sections["Memory"]
-    assert "approval" not in sections["Memory"]
+    assert "set it with remind" in sections["Reminders"]
+    assert "approval" not in sections["Memory"] + sections["Reminders"]

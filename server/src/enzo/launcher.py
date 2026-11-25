@@ -28,6 +28,8 @@ from enzo.paths import private_dir
 _children: dict[int, subprocess.Popen[bytes]] = {}
 
 GATEWAY_PID = "gateway.pid"
+#: Written when the last app closed but reminders kept the gateway on (it may then stop itself).
+BACKGROUND = "background"
 START_TIMEOUT_S = 90.0
 #: The first start also sets up the bundled database: about a minute on a laptop (#56).
 FIRST_START_TIMEOUT_S = 300.0
@@ -75,6 +77,10 @@ def attach(
             say(f"Restarting Enzo's gateway for version {__version__}…")
             _stop(state, managed)
             info = None
+        if info is None and managed is not None and _alive(managed):
+            # Not answering but alive: it is stopping (it stopped itself, with no reminder left).
+            # Wait for it to finish, so two gateways never share one database.
+            _stop(state, managed)
         started = False
         if info is None:
             if port_taken(port):
@@ -90,18 +96,67 @@ def attach(
             _start(state, port, FIRST_START_TIMEOUT_S if first_start else START_TIMEOUT_S)
             started = True
         (state / "clients" / str(os.getpid())).touch()
+        (state / BACKGROUND).unlink(missing_ok=True)  # in use again: it stays while an app is open
     return Gateway(url_for(port), started)
 
 
-def release(state: Path) -> None:
-    """This app is closing. If it was the last, stop the gateway the launcher started."""
+def release(state: Path, port: int | None = None, *, say: Callable[[str], None] = print) -> None:
+    """This app is closing. If it was the last, stop the gateway the launcher started, unless
+    reminders are still to come: then it stays on in the background to deliver them, and stops
+    itself once none are left (spec §9.2)."""
     with _locked(state):
         (state / "clients" / str(os.getpid())).unlink(missing_ok=True)
         if _open_clients(state):
             return
         pid = _gateway_pid(state)
-        if pid is not None:
-            _stop(state, pid)
+        if pid is None:
+            return
+        waiting = upcoming(port) if port is not None else None
+        if waiting:
+            (state / BACKGROUND).touch()
+            count, soonest = waiting
+            things = "reminder" if count == 1 else f"{count} reminders"
+            say(
+                f"Enzo stays on in the background for your {things} (next: {soonest}). "
+                "`enzo stop` turns it off."
+            )
+            return
+        _stop(state, pid)
+
+
+def upcoming(port: int) -> tuple[int, str] | None:
+    """How many reminders the gateway on ``port`` still has to deliver, and the next one's time."""
+    try:
+        reply = httpx2.get(f"{url_for(port)}/reminders", timeout=3.0)
+        items = reply.json()["reminders"] if reply.status_code == httpx2.codes.OK else []
+    except (httpx2.HTTPError, ValueError, KeyError, TypeError):
+        return None
+    if not items:
+        return None
+    return len(items), str(items[0].get("next") or "soon")
+
+
+def stop_background(state: Path) -> bool:
+    """`enzo stop`: stop the gateway the launcher started. False: none was running."""
+    with _locked(state):
+        pid = _gateway_pid(state)
+        if pid is None:
+            return False
+        _stop(state, pid)
+        (state / BACKGROUND).unlink(missing_ok=True)
+        return True
+
+
+def idle(state: Path) -> bool:
+    """For a gateway kept on for reminders: nothing is left to do and no app is open, so it may
+    stop. A gateway an app is using, or one started by hand, never stops on its own."""
+    if not (state / BACKGROUND).exists():
+        return False
+    with _locked(state):
+        if _open_clients(state):
+            return False
+        (state / BACKGROUND).unlink(missing_ok=True)
+        return True
 
 
 def write_own_pid(state: Path) -> None:

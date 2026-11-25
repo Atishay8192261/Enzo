@@ -194,3 +194,53 @@ describe("GatewayClient", () => {
     expect(new GatewayError("x", 500).status).toBe(500);
   });
 });
+
+describe("reminders (spec §9.3)", () => {
+  it("lists and cancels them, and reads a chat's delivered ones", async () => {
+    const seen: Seen[] = [];
+    const client = new GatewayClient({
+      baseUrl: "http://enzo",
+      fetch: fakeFetch((url, init) => {
+        if (init.method === "DELETE") return new Response(null, { status: 204 });
+        if (url.endsWith("/reminders") && url.includes("/conversations/")) {
+          return Response.json([{ text: "Tea", after: 2, late: false }]);
+        }
+        return Response.json({ reminders: [{ id: 3, text: "Call mom" }] });
+      }, seen),
+    });
+    expect((await client.reminders()).map((r) => r.text)).toEqual(["Call mom"]);
+    await client.cancelReminder(3);
+    expect((await client.conversationReminders("c 1")).map((r) => r.text)).toEqual(["Tea"]);
+    expect(seen.map((s) => `${s.init.method} ${s.url}`)).toEqual([
+      "GET http://enzo/reminders",
+      "DELETE http://enzo/reminders/3",
+      "GET http://enzo/conversations/c%201/reminders",
+    ]);
+  });
+
+  it("streams live events, skipping kinds it does not know and broken data", async () => {
+    const client = new GatewayClient({
+      baseUrl: "http://enzo",
+      fetch: fakeFetch(() =>
+        sse(
+          'event: something_new\ndata: {"x":1}\n\n' +
+            "event: reminder\ndata: {not json\n\n" +
+            'event: reminder\ndata: {"reminder":3,"text":"Call mom","words":"Call mom","late":false,"conversation_id":"c1","next":null}\n\n',
+        ),
+      ),
+    });
+    const got = [];
+    for await (const e of client.events()) got.push(e);
+    expect(got).toEqual([
+      {
+        kind: "reminder",
+        reminder: 3,
+        text: "Call mom",
+        words: "Call mom",
+        late: false,
+        conversation_id: "c1",
+        next: null,
+      },
+    ]);
+  });
+});

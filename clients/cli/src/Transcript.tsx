@@ -175,7 +175,8 @@ function Notice({ item, details }: { item: ChatItem; details: boolean }) {
   const facts = details ? describeStats(item) : [];
   return (
     <box paddingLeft={2} marginTop={1} flexShrink={0} flexDirection="column">
-      <text fg={COLOR.dim}>
+      {/* A reminder the user set stands out; other notices stay quiet. */}
+      <text fg={item.reminder ? COLOR.accent : COLOR.dim}>
         {item.text}
         {item.offer === "stop" ? <span fg={COLOR.warn}> Esc stops it.</span> : null}
         {item.offer === "resend" ? (

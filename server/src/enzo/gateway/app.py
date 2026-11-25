@@ -4,7 +4,7 @@ import asyncio
 import logging
 import os
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from importlib import resources
 from typing import Annotated, Literal
@@ -33,7 +33,10 @@ from enzo.gateway.chatgpt import RedactAuthQuery, chatgpt_routes
 from enzo.gateway.connections import build_accounts, connection_routes
 from enzo.gateway.conversations import ServiceDep, conversation_routes
 from enzo.gateway.memory import memory_routes
+from enzo.gateway.reminders import reminder_routes
 from enzo.memory import Memory, memory_tools
+from enzo.schedule import Background, Bus, Runner, Schedule, reminder_tools
+from enzo.schedule.notify import desktop, silent
 from enzo.store.repository import Store
 from enzo.tools.files import file_tools
 from enzo.tools.registry import ToolRegistry
@@ -67,57 +70,34 @@ def create_app(
     *,
     service: ConversationService | None = None,
     accounts: AccountsService | None = None,
+    background: Background | None = None,
+    on_idle: Callable[[], None] | None = None,
 ) -> FastAPI:
-    """Build the gateway. Tests inject a service; otherwise the real one is built at startup."""
+    """Build the gateway. Tests inject a service; otherwise the real one is built at startup.
+
+    ``on_idle``: called when no reminder is left to deliver (an installed gateway that was kept
+    running for reminders may then stop).
+    """
     cfg = settings or Settings()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if service is not None:
             app.state.service = service
+            if background is not None:
+                app.state.background = background
             yield
             return
-        store = Store.from_url(cfg.database_url)
-        config = load_config(cfg.brains_config)
-        acct = accounts or build_accounts(cfg, config)
-        # One client for tools and sign-in: no automatic redirects (read_page checks every hop).
-        http = httpx2.AsyncClient(timeout=httpx2.Timeout(20.0), follow_redirects=False)
-        if acct.chatgpt is None:
-            acct.enable_chatgpt(host_id(cfg.config_dir), http)
-        env = os.environ if cfg.use_env_keys else None  # opt-in only (#24)
-        router = Router(
-            config,
-            build=lambda c: build_brain(c, env, keys=acct.auth),
-            available=lambda c: acct.usable(c) or has_key(c, env),
-        )
-        acct.on_change(router.forget)
-        app.state.accounts = acct
-        memory = Memory(store.engine, cfg.workspace_dir)
-        tools = ToolRegistry(
-            [
-                *web_tools(tavily_key=lambda: acct.api_key("tavily"), http=http),
-                *file_tools(cfg.workspace_dir),
-                *memory_tools(memory),
-            ]
-        )
-        app.state.service = ConversationService(
-            store, router, tools, developer=install_note(cfg.workspace_dir), memory=memory
-        )
-        connectors = Connectors(tools, acct, http)
-        await connectors.refresh("github")
-        acct.on_change(connectors.changed)
-        try:
+        async with _running(app, cfg, accounts, on_idle):
             yield
-        finally:
-            await connectors.close()
-            await http.aclose()
-            await store.close()
 
     app = FastAPI(title="Enzo Gateway", version=__version__, lifespan=lifespan)
     # The web app calls /api/…: in development Vite strips the prefix, here the gateway does.
     app.add_middleware(StripApiPrefix)
     if service is not None:
         app.state.service = service  # available even when the ASGI server skips lifespan
+    if background is not None:
+        app.state.background = background
     if accounts is not None:
         app.state.accounts = accounts
     app.exception_handler(RequestValidationError)(_invalid_request)
@@ -154,10 +134,62 @@ def create_app(
 
     app.include_router(conversation_routes(auth))
     app.include_router(memory_routes(auth))
+    app.include_router(reminder_routes(auth))
     app.include_router(connection_routes(auth))
     app.include_router(chatgpt_routes(auth, cfg.port))
     _finish(app, cfg)
     return app
+
+
+@asynccontextmanager
+async def _running(
+    app: FastAPI,
+    cfg: Settings,
+    accounts: AccountsService | None,
+    on_idle: Callable[[], None] | None,
+) -> AsyncIterator[None]:
+    """Everything a real gateway runs: the store, brains, tools, connectors and reminders."""
+    store = Store.from_url(cfg.database_url)
+    config = load_config(cfg.brains_config)
+    acct = accounts or build_accounts(cfg, config)
+    # One client for tools and sign-in: no automatic redirects (read_page checks every hop).
+    http = httpx2.AsyncClient(timeout=httpx2.Timeout(20.0), follow_redirects=False)
+    if acct.chatgpt is None:
+        acct.enable_chatgpt(host_id(cfg.config_dir), http)
+    env = os.environ if cfg.use_env_keys else None  # opt-in only (#24)
+    router = Router(
+        config,
+        build=lambda c: build_brain(c, env, keys=acct.auth),
+        available=lambda c: acct.usable(c) or has_key(c, env),
+    )
+    acct.on_change(router.forget)
+    app.state.accounts = acct
+    memory = Memory(store.engine, cfg.workspace_dir)
+    schedule = Schedule(store.engine)
+    runner = Runner(schedule, Bus(), notify=desktop if cfg.notify else silent, on_idle=on_idle)
+    app.state.background = Background(schedule, runner.bus, runner)
+    tools = ToolRegistry(
+        [
+            *web_tools(tavily_key=lambda: acct.api_key("tavily"), http=http),
+            *file_tools(cfg.workspace_dir),
+            *memory_tools(memory),
+            *reminder_tools(schedule, on_set=runner.poke),
+        ]
+    )
+    app.state.service = ConversationService(
+        store, router, tools, developer=install_note(cfg.workspace_dir), memory=memory
+    )
+    connectors = Connectors(tools, acct, http)
+    await connectors.refresh("github")
+    acct.on_change(connectors.changed)
+    runner.start()  # reminders due while Enzo was not running arrive now, marked late
+    try:
+        yield
+    finally:
+        await runner.stop()
+        await connectors.close()
+        await http.aclose()
+        await store.close()
 
 
 def _finish(app: FastAPI, cfg: Settings) -> None:

@@ -18,7 +18,7 @@ from enzo.agent.loop import AgentEvent, TurnDone, TurnOutcome, run_turn
 from enzo.agent.prompt import MemorySnippet, compose_prompt
 from enzo.brain.models import Message, TextPart
 from enzo.brain.router import Router, classify
-from enzo.context import conversation_var, new_turn_id, turn_var
+from enzo.context import conversation_var, new_turn_id, timezone_var, turn_var
 from enzo.memory import Fact, Memory
 from enzo.store.repository import ConversationInfo, Store
 from enzo.store.schema import ApprovalRow
@@ -107,6 +107,8 @@ class ConversationService:
         # Spec §3 step 2: what Enzo remembers that this message is about. (The chat is set for
         # this request too, so the recall's log line names it.)
         conversation_var.set(str(conversation_id))
+        # Tools that deal in times (reminders) read the user's zone from the turn.
+        timezone_var.set((meta or TurnMeta()).timezone)
         recalled = await self.memory.recall(text) if self.memory else []
         prompt = compose_prompt(
             system=self._system,

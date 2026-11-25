@@ -92,12 +92,13 @@ async function load(
   client: ChatClient,
   conversation: Conversation,
 ): Promise<Omit<Connection, "brains">> {
-  const [messages, usage] = await Promise.all([
+  const [messages, usage, reminders] = await Promise.all([
     client.messages(conversation.id),
-    // Without it the chat still opens; it just shows no totals yet.
+    // Without these the chat still opens; it just shows no totals or past reminders yet.
     client.usage(conversation.id).catch(() => null),
+    client.conversationReminders(conversation.id).catch(() => []),
   ]);
-  const items = toItems(messages, usage);
+  const items = toItems(messages, usage, reminders);
   return {
     conversationId: conversation.id,
     title: conversation.title,
@@ -336,6 +337,8 @@ export function useChat(
 
   /** The chat's new name, after the gateway took it (/rename). */
   const renamed = useCallback((title: string) => dispatch({ type: "renamed", title }), []);
+  /** A reminder arrived while the app is open: it shows in the chat on screen (spec §9.3). */
+  const reminded = useCallback((words: string) => dispatch({ type: "reminder", words }), []);
 
   /** Reload the catalog, e.g. after an account was connected and more models became available. */
   const refreshBrains = useCallback(async () => {
@@ -352,9 +355,11 @@ export function useChat(
     newChat,
     openChat,
     renamed,
+    reminded,
     stop,
   } satisfies {
     renamed: (title: string) => void;
+    reminded: (words: string) => void;
     state: ChatState;
     openChat: (conversationId: string) => Promise<void>;
     send: (text: string) => Promise<void>;

@@ -2,6 +2,7 @@ import type {
   AgentEvent,
   Brain,
   ConversationUsage,
+  DeliveredReminder,
   GatewayClient,
   StoredMessage,
   StoredPart,
@@ -22,6 +23,7 @@ export type ChatClient = Pick<
   | "decide"
   | "stop"
   | "usage"
+  | "conversationReminders"
 >;
 
 /** Listing and tidying past chats (#38): not every surface has these yet. */
@@ -29,6 +31,9 @@ export type ChatsClient = Pick<
   GatewayClient,
   "conversations" | "renameConversation" | "deleteConversation"
 >;
+
+/** Reminders (spec §9.3): the ones to come, cancelling one, and live arrivals. */
+export type RemindersClient = Pick<GatewayClient, "reminders" | "cancelReminder" | "events">;
 
 /** What Enzo remembers (spec §6.2): seeing it and forgetting a part of it. */
 export type MemoryClient = Pick<GatewayClient, "memories" | "forgetMemory">;
@@ -59,6 +64,8 @@ export interface ChatItem {
    * send the message that did not go through again once Enzo is reachable (#44).
    */
   offer?: "stop" | "resend";
+  /** A notice that is a reminder the user set, arriving (spec §9.3). */
+  reminder?: true;
 }
 
 /** The facts behind one reply (#49). */
@@ -182,7 +189,8 @@ export type ChatAction =
   | { type: "brain_chosen"; brain: string | null }
   | { type: "brains_loaded"; brains: Brain[] }
   | { type: "approval_decided"; id: string; approved: boolean }
-  | { type: "event"; event: AgentEvent; at?: number };
+  | { type: "event"; event: AgentEvent; at?: number }
+  | { type: "reminder"; words: string };
 
 /** Said when a message is refused because a reply is still being written (HTTP 409). */
 export const BUSY = "Not sent: Enzo is still finishing the last reply.";
@@ -253,8 +261,10 @@ const STOP_NOTICES: Record<string, string> = {
 
 export function reduce(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
-    case "connected":
-      // Also how a new chat starts: nothing from the previous conversation carries over.
+    case "connected": {
+      // Also how a new chat starts: nothing from the previous conversation carries over. A
+      // reminder that arrived while the app was still opening its chat is kept, not lost.
+      const early = state.status === "connecting" ? state.items.filter((i) => i.reminder) : [];
       return {
         ...state,
         status: "ready",
@@ -263,9 +273,13 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
         title: action.title ?? null,
         brains: action.brains,
         brain: action.brain,
-        items: action.running
-          ? [...action.items, { role: "notice", text: STILL_RUNNING, offer: "stop" }]
-          : action.items,
+        items: [
+          ...action.items,
+          ...(action.running
+            ? [{ role: "notice" as const, text: STILL_RUNNING, offer: "stop" as const }]
+            : []),
+          ...early,
+        ],
         draft: "",
         working: 0,
         online: true,
@@ -276,6 +290,7 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
         turnStartedAt: null,
         firstWordAt: null,
       };
+    }
     case "created":
       return { ...state, conversationId: action.conversationId };
     case "renamed":
@@ -376,6 +391,9 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
         : state.items;
       return { ...state, items, approvals: state.approvals.filter((a) => a.id !== action.id) };
     }
+    case "reminder":
+      // Shown where the user is now: it is about them, whichever chat it was set in.
+      return { ...state, items: [...state.items, reminderItem(action.words)] };
     case "event":
       return onEvent(state, action.event, action.at);
   }
@@ -475,7 +493,18 @@ export const SOME_STEP = "Working on a step";
  * Stored transcript → the chat as it looked live: words, and each step Enzo took in plain words.
  * Tool names, arguments and results stay out of the chat (spec §10.3).
  */
-export function toItems(messages: StoredMessage[], usage?: ConversationUsage | null): ChatItem[] {
+/** A reminder as the chat shows it: "⏰ Reminder: Call mom". */
+export const reminderItem = (words: string): ChatItem => ({
+  role: "notice",
+  text: `⏰ Reminder: ${words}`,
+  reminder: true,
+});
+
+export function toItems(
+  messages: StoredMessage[],
+  usage?: ConversationUsage | null,
+  reminders: DeliveredReminder[] = [],
+): ChatItem[] {
   const results = new Map<string, StepStatus>();
   for (const m of messages) {
     for (const p of m.parts) {
@@ -485,8 +514,21 @@ export function toItems(messages: StoredMessage[], usage?: ConversationUsage | n
   const items: ChatItem[] = [];
   // Where each turn starts in `items`: a turn is a user message and everything until the next.
   const starts: number[] = [];
-  for (const m of messages) {
-    if (m.role !== "user" && m.role !== "assistant") continue;
+  // Reminders sit where they arrived: after that many of the chat's messages.
+  const arrived = (seen: number) => {
+    for (const r of reminders) {
+      if (r.after === seen) items.push(reminderItem(late(r)));
+    }
+  };
+  messages.forEach((m, index) => {
+    arrived(index);
+    addMessage(m);
+  });
+  for (const r of reminders) {
+    if (r.after >= messages.length) items.push(reminderItem(late(r)));
+  }
+  function addMessage(m: StoredMessage): void {
+    if (m.role !== "user" && m.role !== "assistant") return;
     const texts = m.parts.filter((p) => p.type === "text" && p.text).map((p) => p.text as string);
     if (m.role === "user") {
       // A user message's second text part is delivery context (time, device), not words.
@@ -494,7 +536,7 @@ export function toItems(messages: StoredMessage[], usage?: ConversationUsage | n
       const sent = usage?.turns[starts.length]?.started_at;
       starts.push(items.length);
       if (text) items.push(sent ? { role: "user", text, at: sent } : { role: "user", text });
-      continue;
+      return;
     }
     const text = texts.join("");
     if (text) items.push({ role: "assistant", text });
@@ -519,6 +561,10 @@ export function toItems(messages: StoredMessage[], usage?: ConversationUsage | n
     }
   });
   return items;
+}
+
+function late(r: DeliveredReminder): string {
+  return r.late ? `${r.text} (late: due ${r.due}, Enzo wasn't running)` : r.text;
 }
 
 function storedStatus(result: StoredPart): StepStatus {
