@@ -219,10 +219,16 @@ class Router:
         return self._live[name]
 
     def plan(
-        self, task: TaskKind, *, override: str | None = None, affinity: str | None = None
+        self,
+        task: TaskKind,
+        *,
+        override: str | None = None,
+        affinity: str | None = None,
+        quiet: bool = False,
     ) -> RoutePlan:
         """Choose a primary and one fallback. ``override`` is a brain or a tier the user picked;
-        ``affinity`` (the conversation id) keeps a conversation with one provider."""
+        ``affinity`` (the conversation id) keeps a conversation with one provider. ``quiet``: a
+        look ahead (e.g. at the budget) that sends nothing, so it is not logged as a route."""
         brains = self._config.brains
         if override is not None and override not in brains and override not in TIERS:
             msg = f"unknown brain or tier {override!r}"
@@ -250,6 +256,8 @@ class Router:
             if got != tier:
                 reason += f"; {brains[primary].provider_name} has no {tier} brain, using {got}"
             plan = RoutePlan(task, tier, primary, backup[0][0] if backup else None, reason)
+        if quiet:
+            return plan
         log.info(
             "route",
             extra={
@@ -301,6 +309,8 @@ class Router:
         override: str | None = None,
         affinity: str | None = None,
         budget_tokens: int | None = None,
+        fallback: bool = True,
+        label: str | None = None,
     ) -> RoutedResponse:
         done: RoutedDone | None = None
         async for event in self.stream(
@@ -312,6 +322,8 @@ class Router:
             override=override,
             affinity=affinity,
             budget_tokens=budget_tokens,
+            fallback=fallback,
+            label=label,
         ):
             if isinstance(event, RoutedDone):
                 done = event
@@ -331,12 +343,18 @@ class Router:
         override: str | None = None,
         affinity: str | None = None,
         budget_tokens: int | None = None,
+        fallback: bool = True,
+        label: str | None = None,
     ) -> AsyncIterator[TextDelta | RoutedDone]:
+        """``fallback=False``: this brain only, e.g. a summary that must stay with the
+        conversation's provider. ``label``: the task as the ledger records it ("compact")."""
         plan = self.plan(task, override=override, affinity=affinity)
         attempts: list[CallRecord] = []
-        candidates = [plan.primary] + ([plan.fallback] if plan.fallback else [])
+        candidates = [plan.primary] + ([plan.fallback] if plan.fallback and fallback else [])
         for number, name in enumerate(candidates, start=1):
-            attempt = _Attempt(name, task, number, plan.primary, self._clock(), time.perf_counter())
+            attempt = _Attempt(
+                name, label or task, number, plan.primary, self._clock(), time.perf_counter()
+            )
             emitted = False
             try:
                 # Inside the try: a fallback brain with no key must still be recorded as tried.

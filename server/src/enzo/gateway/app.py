@@ -35,12 +35,14 @@ from enzo.gateway.conversations import ServiceDep, conversation_routes
 from enzo.gateway.memory import memory_routes
 from enzo.gateway.scheduled import scheduled_routes
 from enzo.memory import Memory, memory_tools
+from enzo.paths import data_dir
 from enzo.schedule import Background, Bus, FinishedTasks, Runner, Schedule, schedule_tools
 from enzo.schedule.notify import desktop, silent
 from enzo.schedule.tasks import TaskRunner
 from enzo.store.repository import Store
 from enzo.tools.files import file_tools
 from enzo.tools.registry import ToolRegistry
+from enzo.tools.stored import OutputStore, stored_tools
 from enzo.tools.web import web_tools
 
 log = logging.getLogger("enzo.gateway")
@@ -171,16 +173,31 @@ async def _running(
     runner = Runner(schedule, Bus(), notify=notify, on_idle=on_idle)
     app.state.background = Background(schedule, runner.bus, runner)
     finished = FinishedTasks()
+    # Long tool results and pastes are kept whole in Enzo's private data folder (ADR 0024).
+    ctx = config.context
+    outputs = OutputStore(
+        data_dir() / "context",
+        tool_inline_chars=ctx.tool_inline_chars,
+        paste_inline_chars=ctx.paste_inline_chars,
+        excerpt_chars=ctx.excerpt_chars,
+    )
     tools = ToolRegistry(
         [
             *web_tools(tavily_key=lambda: acct.api_key("tavily"), http=http),
             *file_tools(cfg.workspace_dir),
             *memory_tools(memory),
             *schedule_tools(schedule, finished, on_set=runner.poke),
-        ]
+            *stored_tools(outputs),
+        ],
+        retain=outputs,
     )
     service = ConversationService(
-        store, router, tools, developer=install_note(cfg.workspace_dir), memory=memory
+        store,
+        router,
+        tools,
+        developer=install_note(cfg.workspace_dir),
+        memory=memory,
+        outputs=outputs,
     )
     app.state.service = service
     # Scheduled tasks run as agent turns: the runner hands each due one to the task runner.

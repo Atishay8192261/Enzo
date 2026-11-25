@@ -6,6 +6,9 @@
 #   its cost as unknown, never as 0 (spec §1.3.5).
 # - A brain is only "supported" once it passes live conformance (spec §1.4, §16).
 # - tier: fast | balanced | powerful. recommended: Enzo's pick for that provider and tier.
+# - context_window / max_output_tokens: tokens, from the provider's model page on the date in
+#   `limits_source`. Left out when unconfirmed: the brain is then budgeted as the small
+#   `context.default_window` (see [context] at the end).
 
 # ---------- Anthropic (Claude) ----------
 
@@ -16,6 +19,9 @@ api_key_env = "ANTHROPIC_API_KEY"
 effort = "medium"  # the model's default, set explicitly
 tier = "powerful"
 recommended = true
+context_window = 1000000
+max_output_tokens = 128000
+limits_source = "https://platform.claude.com/docs/en/about-claude/models/overview (context window 1M, max output 128K), read 2026-11-25"
 
 [brains.claude-opus.pricing]
 source = "Claude API pricing table (cached 2026-11-03), cache writes 1.25x (5m) / 2x (1h) of input; read 2026-11-17"
@@ -28,6 +34,9 @@ api_key_env = "ANTHROPIC_API_KEY"
 tier = "balanced"
 recommended = true
 note = "Default for everyday replies"
+context_window = 1000000
+max_output_tokens = 128000
+limits_source = "https://platform.claude.com/docs/en/about-claude/models/overview (context window 1M, max output 128K), read 2026-11-25"
 
 [brains.claude-sonnet.pricing]
 source = "Claude API pricing table (cached 2026-11-03), cache writes 1.25x (5m) / 2x (1h) of input; read 2026-11-17"
@@ -39,6 +48,9 @@ model = "claude-haiku-5-5"
 api_key_env = "ANTHROPIC_API_KEY"
 tier = "fast"
 recommended = true
+context_window = 1000000
+max_output_tokens = 128000
+limits_source = "https://platform.claude.com/docs/en/about-claude/models/overview (context window 1M, max output 128K), read 2026-11-25"
 
 [brains.claude-haiku.pricing]
 # Cache-read price is only given as "~0.1x" for this model, so it is left out (unknown).
@@ -54,6 +66,9 @@ model = "gpt-6.2-astra"
 api_key_env = "OPENAI_API_KEY"
 tier = "powerful"
 recommended = true
+context_window = 1050000
+max_output_tokens = 128000
+limits_source = "https://developers.openai.com/api/docs/models/gpt-6.2-astra (1,050,000 context window, 128,000 max output tokens), read 2026-11-25"
 
 [brains.gpt-astra.pricing]
 source = "https://developers.openai.com/api/docs/pricing (standard; short context <=272K input), read 2026-11-17"
@@ -67,6 +82,9 @@ api_key_env = "OPENAI_API_KEY"
 tier = "balanced"
 recommended = true
 note = "Default for everyday replies"
+context_window = 1050000
+max_output_tokens = 128000
+limits_source = "https://developers.openai.com/api/docs/models/gpt-6.2-sol (1,050,000 context window, 128,000 max output tokens), read 2026-11-25"
 
 [brains.gpt-sol.pricing]
 source = "https://developers.openai.com/api/docs/pricing (standard; short context <=272K input), read 2026-11-17"
@@ -79,6 +97,9 @@ model = "gpt-6-luna"
 api_key_env = "OPENAI_API_KEY"
 tier = "fast"
 recommended = true
+context_window = 1050000
+max_output_tokens = 128000
+limits_source = "https://developers.openai.com/api/docs/models/gpt-6-luna (1,050,000 context window, 128,000 max output tokens), read 2026-11-25"
 
 [brains.gpt-luna.pricing]
 source = "https://developers.openai.com/api/docs/pricing (standard; short context <=272K input), read 2026-11-17"
@@ -148,3 +169,35 @@ hard = "powerful"       # planning, tool orchestration, long documents: stronges
 
 [routing.classify]
 long_message_chars = 20000  # a longer new message (a pasted document) is a hard task
+
+# ---------- Context budget (spec §1.3.5, §5.2; ADR 0024) ----------
+# How each brain's context window is split. Checked before every brain call, mid-turn too.
+#   hard limit  = window x (1 - margin) - reply tokens        a prompt above it is never sent
+#   compact at  = min(compact_at, long-context price step, hard limit x (1 - task_share))
+# At the start of a turn a prompt above "compact at" first has its older turns summarized
+# (the newest keep_recent tokens of turns stay word for word); mid-turn only the hard limit does.
+# Grok and Kimi have no confirmed window yet, so they get the small default_window.
+
+[context]
+margin = 0.10              # never filled: estimate error and provider overhead
+reply_tokens = 16000       # reserved for each reply (every call's max_output_tokens)
+task_share = 0.25          # kept free at a turn's start for the new task and its tool results
+compact_at = 150000        # Anthropic's server-side compaction default trigger (platform.claude.com, read 2026-11-25): cost, speed, focus
+keep_recent = 30000        # newest turns kept word for word after a summary
+summary_tokens = 16000     # the summarizer's max_output_tokens
+summary_tier = "fast"      # the conversation's own provider's fast brain writes summaries
+exact_above = 0.8          # local estimate first; above 80% of a limit, ask the provider (exact)
+default_window = 128000    # for a brain whose window is not confirmed
+tool_inline_chars = 20000  # a longer tool result is stored as a file: the context keeps its start
+paste_inline_chars = 100000  # a longer pasted message is stored the same way
+excerpt_chars = 4000       # how much of a stored text stays in the context
+
+# Local estimate: characters per token, kept below each provider's published average so it
+# over-counts. Anthropic: "1M tokens is roughly 2.5M Unicode characters on the current
+# tokenizer" (platform.claude.com models overview, read 2026-11-25). OpenAI: the common
+# characters / 4 rule (developers.openai.com token-counting guide, read 2026-11-25).
+# Anything else: 2.0 until measured. Non-ASCII characters always count as one token each.
+[context.chars_per_token]
+anthropic = 2.0
+openai = 3.0
+default = 2.0

@@ -29,6 +29,7 @@ from enzo.brain.router import (
     Router,
 )
 from enzo.brain.toolcall import ValidatedCall
+from enzo.compaction import Compacted, ContextOverflowError, ContextWindow, Fit
 from enzo.tools.registry import ToolOutcome, ToolRegistry
 
 log = logging.getLogger(__name__)
@@ -85,7 +86,8 @@ class TurnDone:
     outcome: TurnOutcome
 
 
-type AgentEvent = TextDelta | ToolStarted | ToolFinished | ApprovalNeeded | TurnDone
+#: ``Compacted``: older turns were summarized before a brain call (spec §5.2).
+type AgentEvent = TextDelta | ToolStarted | ToolFinished | ApprovalNeeded | Compacted | TurnDone
 
 
 @dataclass
@@ -132,15 +134,25 @@ async def run_turn(  # noqa: PLR0913 - keyword-only turn settings
     stop: asyncio.Event | None = None,
     override: str | None = None,
     affinity: str | None = None,
+    window: ContextWindow | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """Run one user turn. ``history`` already ends with the user's message (or a paused turn).
 
     ``task`` is fixed for the whole turn, so the brain never changes mid-task (spec §1.3.3);
     ``affinity`` (the conversation id) keeps the conversation with one provider (ADR 0010).
+    ``window``: before every brain call the prompt is counted and, when over budget, older turns
+    are summarized first (spec §1.3.5, §5.2). The returned history stays complete either way.
     """
     turn = _Turn(messages=list(history))
     ask = _Ask(
-        router, registry.specs(tools), task, max_output_tokens, budget_tokens, override, affinity
+        router,
+        registry.specs(tools),
+        task,
+        max_output_tokens,
+        budget_tokens,
+        override,
+        affinity,
+        window,
     )
     decided = decisions or {}
     while True:
@@ -186,6 +198,20 @@ class _Ask:
     budget_tokens: int | None
     override: str | None
     affinity: str | None
+    window: ContextWindow | None = None
+
+    async def fit(self, messages: list[Message]) -> Fit:
+        """Count first, and summarize older turns if over budget (spec §1.3.5, §5.2)."""
+        if self.window is None:
+            return Fit(messages)
+        return await self.window.fit(
+            messages,
+            self.specs,
+            task=self.task,
+            override=self.override,
+            affinity=self.affinity,
+            reply=self.max_output_tokens,
+        )
 
 
 def _halt(turn: _Turn, stop: asyncio.Event | None, max_steps: int) -> TurnDone | None:
@@ -198,7 +224,7 @@ def _halt(turn: _Turn, stop: asyncio.Event | None, max_steps: int) -> TurnDone |
 
 async def _ask_brain(
     ask: _Ask, turn: _Turn, stop: asyncio.Event | None
-) -> AsyncIterator[TextDelta | TurnDone]:
+) -> AsyncIterator[TextDelta | Compacted | TurnDone]:
     """Stream one brain reply into the turn; a failure ends the turn with an honest report.
 
     What already streamed is never thrown away: if the reply breaks off (lost connection, Stop),
@@ -206,11 +232,17 @@ async def _ask_brain(
     """
     routed = None
     partial: list[str] = []
+    sent: list[Message] = turn.messages
     try:
         async with _stoppable(stop):
+            fit = await ask.fit(turn.messages)
+            turn.brain_calls.extend(fit.calls)
+            if fit.compacted is not None:
+                yield fit.compacted
+            sent = fit.messages
             async for event in ask.router.stream(
                 ask.task,
-                turn.messages,
+                sent,
                 tools=ask.specs,
                 max_output_tokens=ask.max_output_tokens,
                 override=ask.override,
@@ -226,8 +258,9 @@ async def _ask_brain(
         _keep_partial(turn, partial)
         yield turn.done("cancelled", "Stopped at your request.")
         return
-    except PromptOverBudgetError as exc:
-        yield turn.done("over_budget", f"The conversation is too long for this task: {exc}.")
+    except (PromptOverBudgetError, ContextOverflowError) as exc:
+        for stopped in _over_budget(turn, exc):
+            yield stopped
         return
     except (BrainError, AllBrainsFailedError) as exc:
         turn.brain_calls.extend(a for a in exc.attempts if isinstance(a, CallRecord))
@@ -248,6 +281,19 @@ async def _ask_brain(
     turn.brain_calls.extend(routed.attempts)
     turn.messages.append(routed.response.message)
     turn.last = routed.response
+    if ask.window is not None:  # the exact size of what was sent: sharper estimates next time
+        ask.window.learn(routed.brain, sent, ask.specs, routed.response.usage.input_tokens)
+
+
+def _over_budget(
+    turn: _Turn, exc: PromptOverBudgetError | ContextOverflowError
+) -> list[Compacted | TurnDone]:
+    """Nothing oversized is sent (spec §1.3.5): the turn stops with an honest report."""
+    if isinstance(exc, PromptOverBudgetError):
+        return [turn.done("over_budget", f"The conversation is too long for this task: {exc}.")]
+    turn.brain_calls.extend(exc.calls)
+    events: list[Compacted | TurnDone] = [exc.compacted] if exc.compacted else []
+    return [*events, turn.done("over_budget", str(exc))]
 
 
 class _StoppedError(Exception):

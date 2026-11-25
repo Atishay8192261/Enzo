@@ -64,7 +64,15 @@ class Listing(BaseModel):
 
 class ReadFileParams(_Params):
     path: str = _PATH
-    max_chars: int = Field(default=20_000, ge=100, le=100_000, description="Longest text returned.")
+    max_chars: int = Field(
+        default=20_000,
+        ge=100,
+        le=MAX_WRITE_CHARS,
+        description=(
+            "Longest text returned. A long result is kept whole by Enzo: you get its start and "
+            "an id to read on."
+        ),
+    )
 
 
 class FileText(BaseModel):

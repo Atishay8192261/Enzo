@@ -157,6 +157,38 @@ class ApprovalRow(Base):
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class CompactionRow(Base):
+    """A summary of a chat's older turns (spec §5.2): what the brain reads instead of them.
+
+    The transcript is never changed; the newest row says which turns the prompt replaces with its
+    summary, and which kept messages predate it (their provider replay data is left out).
+    """
+
+    __tablename__ = "compactions"
+    __table_args__ = (
+        CheckConstraint("turns >= 1 AND made_turn >= turns AND made_offset >= 0", name="span"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    #: Turns [0, turns) are summarized.
+    turns: Mapped[int] = mapped_column(Integer)
+    #: Made in turn ``made_turn``, after its first ``made_offset`` messages.
+    made_turn: Mapped[int] = mapped_column(Integer)
+    made_offset: Mapped[int] = mapped_column(Integer)
+    #: The structured summary (``enzo.compaction.Summary``).
+    summary: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    #: The brain that wrote it, and the prompt's size before and after, in tokens.
+    brain: Mapped[str] = mapped_column(Text)
+    tokens_before: Mapped[int] = mapped_column(Integer)
+    tokens_after: Mapped[int] = mapped_column(Integer)
+    #: The run that made it (the same id as its log lines and ledger rows).
+    turn_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+
+
 class MemoryRow(Base):
     """One durable fact about the user, with where it came from (spec §6.2, §6.5).
 

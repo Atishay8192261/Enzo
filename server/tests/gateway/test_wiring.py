@@ -106,7 +106,10 @@ async def test_the_app_registers_the_core_tools(
             "finish_task",
             "list_scheduled",
             "cancel_scheduled",
+            "read_stored_output",
         ]
+        # Long results are kept whole outside the context (ADR 0024).
+        assert registry.retain is app.state.service.outputs is not None
         gated = [n for n in names if registry.get(n).requires_approval]
         fenced = [n for n in names if registry.get(n).untrusted_output]
         # The brain knows where the user's files are (#41), as the user would type it.
@@ -114,4 +117,4 @@ async def test_the_app_registers_the_core_tools(
         assert app.state.service.memory is not None
         assert app.state.background.runner is not None  # reminders are delivered
     assert gated == ["delete_file", "schedule_task"]  # a task acts on its own: approved first
-    assert fenced == ["web_search", "read_page", "read_file"]
+    assert fenced == ["web_search", "read_page", "read_file", "read_stored_output"]
