@@ -24,6 +24,7 @@ from enzo.accounts.chatgpt import host_id
 from enzo.accounts.service import AccountsService
 from enzo.agent.prompt import install_note
 from enzo.agent.service import ConversationService
+from enzo.agent.toolset import core_tools
 from enzo.brain.config import Tier, load_config
 from enzo.brain.factory import build_brain, has_key
 from enzo.brain.router import Router
@@ -34,14 +35,12 @@ from enzo.gateway.connections import build_accounts, connection_routes
 from enzo.gateway.conversations import ServiceDep, conversation_routes
 from enzo.gateway.memory import memory_routes
 from enzo.gateway.scheduled import scheduled_routes
-from enzo.memory import Memory, memory_tools
-from enzo.schedule import Background, Bus, FinishedTasks, Runner, Schedule, schedule_tools
+from enzo.memory import Memory
+from enzo.schedule import Background, Bus, FinishedTasks, Runner, Schedule
 from enzo.schedule.notify import desktop, silent
 from enzo.schedule.tasks import TaskRunner
 from enzo.store.repository import Store
-from enzo.tools.files import file_tools
 from enzo.tools.registry import ToolRegistry
-from enzo.tools.web import web_tools
 
 log = logging.getLogger("enzo.gateway")
 
@@ -172,12 +171,15 @@ async def _running(
     app.state.background = Background(schedule, runner.bus, runner)
     finished = FinishedTasks()
     tools = ToolRegistry(
-        [
-            *web_tools(tavily_key=lambda: acct.api_key("tavily"), http=http),
-            *file_tools(cfg.workspace_dir),
-            *memory_tools(memory),
-            *schedule_tools(schedule, finished, on_set=runner.poke),
-        ]
+        core_tools(
+            workspace=cfg.workspace_dir,
+            memory=memory,
+            schedule=schedule,
+            finished=finished,
+            http=http,
+            tavily_key=lambda: acct.api_key("tavily"),
+            on_set=runner.poke,
+        )
     )
     service = ConversationService(
         store, router, tools, developer=install_note(cfg.workspace_dir), memory=memory
