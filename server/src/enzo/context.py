@@ -11,6 +11,8 @@ conversation_var: ContextVar[str | None] = ContextVar("enzo_conversation", defau
 turn_var: ContextVar[str | None] = ContextVar("enzo_turn", default=None)
 #: The user's time zone, as their app reported it with the message (IANA, e.g. Europe/Paris).
 timezone_var: ContextVar[str | None] = ContextVar("enzo_timezone", default=None)
+#: The scheduled task this run is for, when a schedule started it (its tools need to know).
+job_var: ContextVar[int | None] = ContextVar("enzo_job", default=None)
 
 
 def new_turn_id() -> str:

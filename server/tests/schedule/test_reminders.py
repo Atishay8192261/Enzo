@@ -14,9 +14,9 @@ from enzo.brain import Message, ToolCall
 from enzo.brain.fake import ScriptedBrain
 from enzo.brain.router import Router
 from enzo.context import timezone_var
-from enzo.schedule import Background, Bus, Runner, Schedule, reminder_tools
+from enzo.schedule import Background, Bus, FinishedTasks, Runner, Schedule, schedule_tools
 from enzo.schedule.recurrence import describe, next_after, occurrence
-from enzo.schedule.store import Delivery, ReminderRefusedError
+from enzo.schedule.store import Delivery, ScheduleRefusedError
 from enzo.store.repository import Store
 from enzo.tools.registry import ToolRegistry
 from tests.gateway.test_api import client, config, new_conversation
@@ -127,7 +127,7 @@ async def test_a_cancelled_reminder_never_comes(schedule: Schedule) -> None:
     rid = await remind(schedule, "Gym", la(2026, 11, 21, 7, 0), repeat="weekdays")
     await schedule.cancel(rid)
     assert await schedule.claim_due(la(2026, 12, 31, 12, 0)) == []
-    with pytest.raises(ReminderRefusedError, match=f"no reminder {rid} still to come"):
+    with pytest.raises(ScheduleRefusedError, match=f"no reminder or task {rid} still to come"):
         await schedule.cancel(rid)
 
 
@@ -147,14 +147,14 @@ async def test_one_missed_while_enzo_was_off_comes_once_late_and_moves_on(
 
 async def test_times_in_the_past_and_weekends(schedule: Schedule) -> None:
     with pytest.raises(
-        ReminderRefusedError, match="That time has passed: it is now Fri 20 Nov 09:00"
+        ScheduleRefusedError, match="That time has passed: it is now Fri 20 Nov 09:00"
     ):
         await remind(schedule, "Too late", la(2026, 11, 20, 8, 0))
     # A repeat set for a time already gone today starts with the next one.
     await remind(schedule, "Vitamins", la(2026, 11, 20, 8, 0), repeat="daily")
     # Weekdays set on a Saturday start on Monday.
     await remind(schedule, "Work", la(2026, 11, 21, 9, 0), repeat="weekdays")
-    with pytest.raises(ReminderRefusedError, match="would never fire"):
+    with pytest.raises(ScheduleRefusedError, match="would never run"):
         await remind(
             schedule, "Never", la(2026, 11, 25, 9, 0), repeat="daily", ends_on=date(2026, 11, 24)
         )
@@ -284,7 +284,9 @@ async def test_a_reminder_due_soon_comes_on_time_without_a_poke(schedule: Schedu
 
 async def test_the_tools_set_list_and_cancel_in_the_users_time_zone(schedule: Schedule) -> None:
     poked: list[bool] = []
-    registry = ToolRegistry(reminder_tools(schedule, on_set=lambda: poked.append(True)))
+    registry = ToolRegistry(
+        schedule_tools(schedule, FinishedTasks(), on_set=lambda: poked.append(True))
+    )
     timezone_var.set("Asia/Kolkata")
     try:
         args = {"text": "Call mom", "at": "2030-01-02T09:00"}
@@ -300,8 +302,8 @@ async def test_the_tools_set_list_and_cancel_in_the_users_time_zone(schedule: Sc
     assert registry.activity(ToolCall(id="c1", name="remind", arguments_json=json.dumps(args))) == (
         "Setting a reminder: Call mom"
     )
-    listed = await registry.execute(ToolCall(id="c2", name="list_reminders", arguments_json="{}"))
-    assert [r["text"] for r in json.loads(listed.result.content)["reminders"]] == ["Call mom"]
+    listed = await registry.execute(ToolCall(id="c2", name="list_scheduled", arguments_json="{}"))
+    assert [r["text"] for r in json.loads(listed.result.content)["scheduled"]] == ["Call mom"]
     past = {"text": "x", "at": "2001-01-01T09:00"}
     refused = await registry.execute(
         ToolCall(id="c3", name="remind", arguments_json=json.dumps(past))
@@ -309,7 +311,7 @@ async def test_the_tools_set_list_and_cancel_in_the_users_time_zone(schedule: Sc
     assert refused.status == "failed"
     assert "That time has passed" in refused.result.content
     gone = await registry.execute(
-        ToolCall(id="c4", name="cancel_reminder", arguments_json=json.dumps({"id": out["id"]}))
+        ToolCall(id="c4", name="cancel_scheduled", arguments_json=json.dumps({"id": out["id"]}))
     )
     assert gone.status == "ok"
     assert await schedule.active() == []
@@ -330,12 +332,14 @@ async def test_set_in_a_chat_and_delivered_into_it(store: Store, schedule: Sched
     router = Router(config(), build=lambda _c: brain, available=lambda _c: True)
     bus = Bus()
     runner = Runner(schedule, bus)
-    svc = ConversationService(store, router, ToolRegistry(reminder_tools(schedule)))
+    svc = ConversationService(
+        store, router, ToolRegistry(schedule_tools(schedule, FinishedTasks()))
+    )
     async with client(svc, background=Background(schedule, bus, runner)) as c:
         cid = await new_conversation(c)
         turn = {"message": "remind me tomorrow to call mom", "timezone": "America/Los_Angeles"}
         await c.post(f"/conversations/{cid}/turns", json=turn)
-        (listed,) = (await c.get("/reminders")).json()["reminders"]
+        (listed,) = (await c.get("/scheduled")).json()["scheduled"]
         assert (listed["text"], listed["conversation_id"], listed["timezone"]) == (
             "Call mom",
             cid,
@@ -345,7 +349,7 @@ async def test_set_in_a_chat_and_delivered_into_it(store: Store, schedule: Sched
         due = datetime.fromisoformat(listed["next_at"])
         (delivered,) = await schedule.claim_due(due)
         assert delivered.after == 4  # after the user's message, the call, its result, the reply
-        (shown,) = (await c.get(f"/conversations/{cid}/reminders")).json()
+        (shown,) = (await c.get(f"/conversations/{cid}/scheduled")).json()
         assert (shown["text"], shown["after"], shown["late"]) == ("Call mom", 4, False)
-        assert (await c.get("/reminders")).json()["reminders"] == []
-        assert (await c.delete(f"/reminders/{listed['id']}")).status_code == 404
+        assert (await c.get("/scheduled")).json()["scheduled"] == []
+        assert (await c.delete(f"/scheduled/{listed['id']}")).status_code == 404

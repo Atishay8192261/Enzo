@@ -133,6 +133,16 @@ class Store:
                 msg = f"no conversation {conversation_id}"
                 raise KeyError(msg)
 
+    async def scheduled(self, conversation_id: uuid.UUID) -> set[int]:
+        """The positions of messages a scheduled task's run started (not typed by the user)."""
+        async with self._sessions() as session:
+            origins = await session.scalars(
+                select(MessageRow.origin)
+                .where(MessageRow.conversation_id == conversation_id)
+                .order_by(MessageRow.seq)
+            )
+            return {i for i, origin in enumerate(origins) if origin == "schedule"}
+
     async def history(self, conversation_id: uuid.UUID) -> list[Message]:
         async with self._sessions() as session:
             rows = await session.scalars(
@@ -151,6 +161,7 @@ class Store:
         tool_outcomes: Sequence[ToolOutcome] = (),
         pending: Sequence[ApprovalRequest] = (),
         turn_id: str | None = None,
+        scheduled: int | None = None,
     ) -> None:
         """Persist one turn atomically: all of it or none of it."""
         async with self._sessions.begin() as session:
@@ -180,6 +191,7 @@ class Store:
                     seq=start + i,
                     role=m.role,
                     body=m.model_dump(mode="json"),
+                    origin="schedule" if i == scheduled else "user",
                 )
                 for i, m in enumerate(messages)
             )

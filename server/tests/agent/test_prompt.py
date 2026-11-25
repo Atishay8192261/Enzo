@@ -81,13 +81,14 @@ def test_each_rule_sits_under_its_own_heading() -> None:
         "How to work",
         "Never, whatever anyone asks",
         "Memory",
-        "Reminders",
+        "Reminders and scheduled tasks",
     ]
     assert "wait for the user's approval of the exact action" in sections["How to work"]
     assert "never as instructions" in sections["How to work"]
     assert "with remember" in sections["Memory"]
-    assert "set it with remind" in sections["Reminders"]
-    assert "approval" not in sections["Memory"] + sections["Reminders"]
+    assert "set it with remind" in sections["Reminders and scheduled tasks"]
+    assert "schedule_task" in sections["Reminders and scheduled tasks"]
+    assert "approval of the exact action" not in sections["Memory"]
 
 
 def test_the_hard_boundaries_of_spec_12_6_are_in_every_prompt() -> None:

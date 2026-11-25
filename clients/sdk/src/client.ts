@@ -69,9 +69,11 @@ export interface MemoryList {
   file: string | null;
 }
 
-/** A reminder still to come (spec §9.3). */
-export interface UpcomingReminder {
+/** A reminder or scheduled task still to come (spec §9.3). */
+export interface Scheduled {
   id: number;
+  kind: "reminder" | "task";
+  /** A reminder's words, or what a task does on each run. */
   text: string;
   next_at: string | null;
   /** The next time in the user's words: "Fri 21 Nov 09:00". */
@@ -82,33 +84,65 @@ export interface UpcomingReminder {
   repeat: "once" | "hourly" | "daily" | "weekdays" | "weekly" | "monthly";
   ends_on: string | null;
   runs: number;
+  /** A task: when it is done (its runs stay quiet until then). */
+  stop_when: string | null;
   conversation_id: string | null;
+  /** A task's own chat, where its runs happen. */
+  chat_id: string | null;
 }
 
-/** A reminder that arrived in a chat: shown in its timeline after `after` messages. */
-export interface DeliveredReminder {
+/** How a task run went: a report, nothing new yet, done, waiting for approval, or failed. */
+export type RunOutcome =
+  | "delivered"
+  | "reported"
+  | "quiet"
+  | "finished"
+  | "needs_approval"
+  | "failed";
+
+/** A reminder, or a task's report, that arrived in a chat: shown after `after` messages. */
+export interface ScheduledNotice {
+  kind: "reminder" | "task";
+  /** A task: what it does. */
+  task: string | null;
+  /** A reminder's words, or the run's report. */
   text: string;
   due_at: string;
   delivered_at: string;
   /** It arrived well after its time: Enzo was not running then. */
   late: boolean;
   after: number;
+  outcome: RunOutcome;
   /** When it was due, in the user's zone: "Fri 09:00". */
   due: string;
+  /** A task's own chat, where the whole run can be read. */
+  chat_id: string | null;
 }
 
-/** Something that happened while no turn was running: for now, a reminder arriving. */
-export interface GatewayEvent {
-  kind: "reminder";
-  reminder: number;
-  text: string;
-  /** What to show: the text, with a note when it is late. */
-  words: string;
-  late: boolean;
-  conversation_id: string | null;
-  /** When a repeating reminder comes next, or null when it is done. */
-  next: string | null;
-}
+/** Something that happened while no turn of this app was running. */
+export type GatewayEvent =
+  | {
+      kind: "reminder";
+      reminder: number;
+      text: string;
+      /** What to show: the text, with a note when it is late. */
+      words: string;
+      late: boolean;
+      conversation_id: string | null;
+      /** When a repeating reminder comes next, or null when it is done. */
+      next: string | null;
+    }
+  | {
+      kind: "task";
+      task: number;
+      outcome: RunOutcome;
+      /** "Check the weather: Sunny, 21°C." */
+      words: string;
+      chat_id: string | null;
+      conversation_id: string | null;
+      /** The task ended with this run. */
+      stopped: boolean;
+    };
 
 export interface ApprovalCard {
   id: string;
@@ -121,6 +155,8 @@ export interface ApprovalCard {
 export interface StoredMessage {
   role: "system" | "user" | "assistant" | "tool";
   parts: StoredPart[];
+  /** "schedule": a scheduled task's run started this turn; the user did not type it. */
+  origin?: "schedule";
 }
 
 /** One part of a stored message: text, a tool call (with its step in plain words) or a result. */
@@ -274,29 +310,29 @@ export class GatewayClient {
     await this.#json("DELETE", `/conversations/${enc(id)}`);
   }
 
-  /** Reminders still to come, soonest first. */
-  async reminders(): Promise<UpcomingReminder[]> {
-    const body = (await this.#json("GET", "/reminders")) as { reminders: UpcomingReminder[] };
-    return body.reminders;
+  /** Reminders and scheduled tasks still to come, soonest first. */
+  async scheduled(): Promise<Scheduled[]> {
+    const body = (await this.#json("GET", "/scheduled")) as { scheduled: Scheduled[] };
+    return body.scheduled;
   }
 
-  async cancelReminder(id: number): Promise<void> {
-    await this.#json("DELETE", `/reminders/${id}`);
+  async cancelScheduled(id: number): Promise<void> {
+    await this.#json("DELETE", `/scheduled/${id}`);
   }
 
-  /** The reminders that arrived in a chat, in order. */
-  conversationReminders(id: string): Promise<DeliveredReminder[]> {
-    return this.#json("GET", `/conversations/${enc(id)}/reminders`) as Promise<DeliveredReminder[]>;
+  /** The reminders and task reports that arrived in a chat, in order. */
+  conversationScheduled(id: string): Promise<ScheduledNotice[]> {
+    return this.#json("GET", `/conversations/${enc(id)}/scheduled`) as Promise<ScheduledNotice[]>;
   }
 
-  /** Live events while the app is open (a reminder arriving). Ends if the gateway goes away. */
+  /** Live events while the app is open. Ends if the gateway goes away. */
   async *events(signal?: AbortSignal): AsyncGenerator<GatewayEvent> {
     const res = await this.#request("GET", "/events", undefined, signal);
     if (!res.body) throw new GatewayError("event stream has no body", res.status);
     for await (const message of parseSse(res.body)) {
-      if (message.event !== "reminder") continue; // kinds this app does not know yet
+      if (message.event !== "reminder" && message.event !== "task") continue; // not known here
       try {
-        yield { kind: "reminder", ...(JSON.parse(message.data) as Omit<GatewayEvent, "kind">) };
+        yield { kind: message.event, ...JSON.parse(message.data) } as GatewayEvent;
       } catch {
         // a malformed event is skipped, never fatal
       }

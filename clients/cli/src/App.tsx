@@ -4,12 +4,12 @@ import {
   type ChatsClient,
   type ConversationMemory,
   type MemoryClient,
-  type RemindersClient,
+  type ScheduleClient,
   type Start,
   signInWithChatGPT,
   useChat,
 } from "@enzo/chat";
-import type { ChatSummary, ProviderConnection, Remembered, UpcomingReminder } from "@enzo/sdk";
+import type { ChatSummary, ProviderConnection, Remembered, Scheduled } from "@enzo/sdk";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -33,8 +33,8 @@ import {
   memoryLine,
   type PickerKind,
   type Reply,
-  reminderLine,
   runCommand,
+  scheduledLine,
 } from "./commands.ts";
 import { suggest } from "./complete.ts";
 import { KeyPrompt } from "./KeyPrompt.tsx";
@@ -58,8 +58,8 @@ export const PALETTE: Choice[] = [
   { label: "Message details", description: "show or hide times, tokens, cost", value: "/details" },
   { label: "Memory", description: "what Enzo remembers about you", value: "/memory" },
   { label: "Forget a memory", description: "remove something Enzo remembers", value: "/forget" },
-  { label: "Reminders", description: "your reminders still to come", value: "/reminders" },
-  { label: "Cancel a reminder", description: "asks first", value: "/cancel" },
+  { label: "Scheduled", description: "reminders and tasks still to come", value: "/scheduled" },
+  { label: "Cancel a reminder or task", description: "asks first", value: "/cancel" },
   { label: "Help", description: "commands and keys", value: "/help" },
   { label: "Quit", description: "or type exit, or ctrl+d", value: "/quit" },
 ];
@@ -73,8 +73,8 @@ const PICKER_TITLE: Record<PickerKind | "palette", string> = {
   delete: "Move this chat to the trash?",
   memory: "Forget which memory?",
   forget: "Forget this?",
-  reminders: "Cancel which reminder?",
-  cancel: "Cancel this reminder?",
+  reminders: "Cancel which one?",
+  cancel: "Cancel this?",
 };
 
 /** Waits before opening the live event stream again: from this, doubling, up to the max. */
@@ -118,7 +118,7 @@ export function App({
   healthEveryMs,
   start = "fresh",
 }: {
-  client: ChatClient & AccountsClient & ChatsClient & MemoryClient & RemindersClient;
+  client: ChatClient & AccountsClient & ChatsClient & MemoryClient & ScheduleClient;
   memory: ConversationMemory;
   onQuit: () => void;
   /** Opens sign-in pages; tests pass a fake. */
@@ -156,8 +156,8 @@ export function App({
   const [memories, setMemories] = useState<Remembered[]>([]);
   const [forgetting, setForgetting] = useState<Remembered | null>(null);
   // /cancel: the reminders to come, and the one the user is being asked about.
-  const [reminders, setReminders] = useState<UpcomingReminder[]>([]);
-  const [cancelling, setCancelling] = useState<UpcomingReminder | null>(null);
+  const [reminders, setReminders] = useState<Scheduled[]>([]);
+  const [cancelling, setCancelling] = useState<Scheduled | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -182,7 +182,7 @@ export function App({
         try {
           for await (const event of client.events(stop.signal)) {
             wait = RETRY_MIN_MS;
-            reminded(event.words);
+            reminded(event);
           }
         } catch {
           // the gateway is down or restarting: try again below
@@ -311,17 +311,20 @@ export function App({
     },
     keepMemory: () => setForgetting(null),
     pickReminder: async () => {
-      const all = await client.reminders();
-      if (all.length === 0) return "No reminders to cancel.";
+      const all = await client.scheduled();
+      if (all.length === 0) return "Nothing scheduled to cancel.";
       setReminders(all);
       setPicker("reminders");
       return null;
     },
     askCancel: async (id) => {
       const found =
-        reminders.find((r) => r.id === id) ?? (await client.reminders()).find((r) => r.id === id);
+        reminders.find((r) => r.id === id) ?? (await client.scheduled()).find((r) => r.id === id);
       if (!found)
-        return { text: `There is no reminder #${id} to come. /reminders lists them.`, error: true };
+        return {
+          text: `There is nothing scheduled with #${id}. /scheduled lists them.`,
+          error: true,
+        };
       setCancelling(found);
       setPicker("cancel");
       return null;
@@ -330,8 +333,8 @@ export function App({
       const target = cancelling;
       if (!target) return null;
       setCancelling(null);
-      await client.cancelReminder(target.id);
-      return `Cancelled the reminder “${target.text}”.`;
+      await client.cancelScheduled(target.id);
+      return `Cancelled “${target.text}”.`;
     },
     keepReminder: () => setCancelling(null),
     deleteChat: async () => {
@@ -467,7 +470,7 @@ export function App({
       return memories.map((m) => ({ label: memoryLine(m), value: `/forget ${m.id}` }));
     }
     if (kind === "reminders") {
-      return reminders.map((r) => ({ label: reminderLine(r), value: `/cancel ${r.id}` }));
+      return reminders.map((r) => ({ label: scheduledLine(r), value: `/cancel ${r.id}` }));
     }
     if (kind === "cancel") {
       // Keeping it is first: a stray Enter never cancels anything.
