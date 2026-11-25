@@ -2,22 +2,25 @@
 
 An MCP server lists tools with a JSON Schema each. Every one becomes an Enzo tool and goes through
 the same path as Enzo's own tools: the schema is checked before anything runs, errors come back as
-data, the call is traced, and the result is fenced as untrusted (§12.4: issue bodies, comments
-and logs are outside text, never orders).
+data, the call is traced, and the result is fenced as untrusted (§12.4: issue bodies, emails,
+comments and logs are outside text, never orders).
 
 Approval (§12.3): a tool needs the user's approval unless the server marks it read-only. That is
 the safe default; unknown means "ask".
 
 Failures (§8.3): a rate limit stops that whole connector for a while (no retry, no workaround), and
-a rejected token stops it until the user reconnects. Both say so plainly.
+a rejected token stops it until the user reconnects. Both say so plainly. They are read from the
+real HTTP status when the server sends one (the MCP SDK turns an HTTP error into a generic message),
+and otherwise from error phrases, never from bare numbers in text.
 """
 
 import json
 import logging
 import re
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -36,9 +39,6 @@ log = logging.getLogger("enzo.connectors.mcp")
 RATE_LIMIT_PAUSE_S = 15 * 60
 
 type ClientFactory = Callable[[], Client]
-#: Calls another tool of the same server, by its server-side name, for a ``prepare`` step.
-type CallFn = Callable[[str, dict[str, Any]], Awaitable[str]]
-type PrepareFn = Callable[[dict[str, Any], CallFn], Awaitable[tuple[dict[str, Any], str | None]]]
 
 
 class McpResult(BaseModel):
@@ -46,6 +46,17 @@ class McpResult(BaseModel):
 
     text: str
     data: dict[str, Any] | None = None
+
+    def payload(self) -> Any:  # noqa: ANN401 - whatever the server sent
+        """The structured data, else the text read as JSON (servers send one or both)."""
+        if self.data is not None:
+            return self.data
+        return json.loads(self.text)
+
+
+#: Calls another tool of the same server, by its server-side name, for a ``prepare`` step.
+type CallFn = Callable[[str, dict[str, Any]], Awaitable[McpResult]]
+type PrepareFn = Callable[[dict[str, Any], CallFn], Awaitable[tuple[dict[str, Any], str | None]]]
 
 
 class ConnectorError(Exception):
@@ -60,7 +71,7 @@ class ConnectorStoppedError(ConnectorError):
 class McpServer:
     """How Enzo uses one MCP server."""
 
-    #: Prefix for tool names and the account it uses, e.g. "github".
+    #: Prefix for tool names, e.g. "github".
     name: str
     #: Shown to the user, e.g. "GitHub".
     label: str
@@ -68,17 +79,87 @@ class McpServer:
     allow: frozenset[str] | None = None
     #: Per server-side tool: make a gated call exact before asking (e.g. pin a merge to a commit).
     prepare: Mapping[str, PrepareFn] = field(default_factory=dict)
-    #: Per server-side tool: the action in plain words for the approval card.
+    #: Per server-side tool: the whole action in plain words for the approval card. Without one,
+    #: the card says "<label>: <tool title> (<what it acts on>)".
     summaries: Mapping[str, Callable[[dict[str, Any]], str]] = field(default_factory=dict)
+    #: Per server-side tool: the step in plain words while it runs, e.g. "Searching your email".
+    activities: Mapping[str, Callable[[dict[str, Any]], str]] = field(default_factory=dict)
+    #: Per server-side tool: parameters Enzo never offers (e.g. HTML that the card can't show).
+    drop: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    #: Refuse arguments the schema does not list, so nothing unshown rides along (§12.3).
+    strict: bool = False
+    #: The command that reconnects this server's account, e.g. "/login google".
+    login: str | None = None
+    #: Phrases in this server's errors that mean "rate limited", besides the usual ones.
+    rate_limit_phrases: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class HttpFailure:
+    """An HTTP error answer seen while a call ran: its status and the server's words."""
+
+    status: int
+    text: str
+
+
+#: The HTTP failures of the call running in this task (each call sets its own list).
+_HTTP_FAILURES: ContextVar[list[HttpFailure] | None] = ContextVar("mcp_http_failures", default=None)
+
+
+async def _note_http_failure(response: httpx2.Response) -> None:
+    seen = _HTTP_FAILURES.get()
+    if seen is None or response.status_code < httpx2.codes.BAD_REQUEST:
+        return
+    await response.aread()  # an error body is small; the SDK reads the cached copy after us
+    seen.append(HttpFailure(response.status_code, _error_words(response)))
+
+
+def _error_words(response: httpx2.Response) -> str:
+    """The server's own error message: JSON-RPC result or error, a Google API error, or text."""
+    challenge = response.headers.get("www-authenticate", "")
+    scope_error = "insufficient_scope" if 'error="insufficient_scope"' in challenge else ""
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    words = ""
+    if isinstance(body, dict):
+        result = body.get("result")
+        error = body.get("error")
+        if isinstance(result, dict) and isinstance(result.get("content"), list):
+            words = " ".join(
+                str(c.get("text", "")) for c in result["content"] if isinstance(c, dict)
+            )
+        elif isinstance(error, dict):
+            words = str(error.get("message", ""))
+            status = error.get("status")
+            if isinstance(status, str):
+                words = f"{status}: {words}"
+    if not words:
+        words = response.text[:300]
+    return " ".join(f"{scope_error} {words}".split())[:500]
 
 
 @asynccontextmanager
-async def http_transport(url: str, headers: Mapping[str, str]) -> AsyncIterator[Any]:
-    """Streamable HTTP with Enzo's headers (token, toolsets). The HTTP client lives as long as the
-    session; redirects are handled by the SDK, which only follows same-origin ones."""
+async def http_transport(
+    url: str,
+    headers: Mapping[str, str],
+    *,
+    auth: httpx2.Auth | None = None,
+    transport: httpx2.AsyncBaseTransport | None = None,
+) -> AsyncIterator[Any]:
+    """Streamable HTTP with Enzo's headers (token, toolsets) or an auth flow that adds a fresh
+    token to each request. The HTTP client lives as long as the session; redirects are handled
+    by the SDK, which only follows same-origin ones. ``transport`` is for tests (a fake server)."""
     timeout = httpx2.Timeout(30.0, read=300.0)
     async with (
-        httpx2.AsyncClient(headers=dict(headers), timeout=timeout) as http,
+        httpx2.AsyncClient(
+            headers=dict(headers),
+            timeout=timeout,
+            auth=auth,
+            event_hooks={"response": [_note_http_failure]},
+            transport=transport,
+        ) as http,
         streamable_http_client(url, http_client=http) as streams,
     ):
         yield streams
@@ -91,15 +172,20 @@ class McpConnector:
         connect: ClientFactory,
         *,
         clock: Callable[[], float] = time.monotonic,
+        ready: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
+        """``ready`` runs before each use, e.g. to renew a sign-in; it raises ConnectorError."""
         self.server = server
         self._connect = connect
         self._clock = clock
+        self._ready = ready
         self._stopped_until = 0.0
         self._stopped_why = ""
 
     async def tools(self) -> list[Tool[Any, Any]]:
         """The server's allowed tools as Enzo tools. Fails loudly if the server cannot be listed."""
+        if self._ready is not None:
+            await self._ready()
         listed: list[types.Tool] = []
         async with self._connect() as client:
             cursor: str | None = None
@@ -114,45 +200,61 @@ class McpConnector:
         log.info("mcp tools", extra={"server": self.server.name, "tools": [t.name for t in tools]})
         return tools
 
+    @property
+    def stopped(self) -> str | None:
+        """Why this connector is paused right now, or None while it runs."""
+        return self._stopped_why if self._clock() < self._stopped_until else None
+
     async def call(self, name: str, arguments: dict[str, Any]) -> McpResult:
         """Run one server-side tool. One attempt: no retry, ever (§8.3)."""
         self._check_running()
+        if self._ready is not None:
+            await self._ready()
+        seen: list[HttpFailure] = []
+        mark = _HTTP_FAILURES.set(seen)
         try:
             async with self._connect() as client:
                 result = await client.call_tool(name, arguments)
         except Exception as exc:
-            self._notice_failure(str(exc))
+            self._notice_failure(str(exc), seen)
+            if seen:
+                last = seen[-1]
+                msg = f"{self.server.label} refused the request (HTTP {last.status}): {last.text}"
+                raise ConnectorError(msg) from exc
             msg = f"could not reach {self.server.label} ({type(exc).__name__})"
             raise ConnectorError(msg) from exc
+        finally:
+            _HTTP_FAILURES.reset(mark)
         text = _text(result)
         if result.is_error:
-            self._notice_failure(text)
+            self._notice_failure(text, seen)
             raise ConnectorError(f"{self.server.label} said: {text[:500]}")
         return McpResult(text=text, data=result.structured_content)
-
-    async def _call_text(self, name: str, arguments: dict[str, Any]) -> str:
-        return (await self.call(name, arguments)).text
 
     def _check_running(self) -> None:
         if self._clock() < self._stopped_until:
             raise ConnectorStoppedError(self._stopped_why)
 
-    def _notice_failure(self, text: str) -> None:
-        lowered = text.lower()
+    def _notice_failure(self, text: str, http: Sequence[HttpFailure] = ()) -> None:
+        lowered = " ".join([text, *(f.text for f in http)]).lower()
+        statuses = {f.status for f in http}
         label = self.server.label
-        # Error phrases, not bare numbers: "PR #429" or "issue 401" must not stop anything.
-        if "rate limit" in lowered or "too many requests" in lowered:
+        login = self.server.login or f"/login {self.server.name}"
+        # Error phrases or the real HTTP status, never bare numbers in text: "PR #429" or
+        # "issue 401" must not stop anything.
+        limited = ("rate limit", "too many requests", *self.server.rate_limit_phrases)
+        if httpx2.codes.TOO_MANY_REQUESTS in statuses or any(p in lowered for p in limited):
             self._stop(
                 RATE_LIMIT_PAUSE_S,
                 f"{label} is rate limiting Enzo: all {label} actions are paused for "
                 f"{RATE_LIMIT_PAUSE_S // 60} minutes. Nothing was retried; report what is done.",
             )
-        elif any(
+        elif httpx2.codes.UNAUTHORIZED in statuses or any(
             p in lowered for p in ("bad credentials", "401 unauthorized", "requires authentication")
         ):
             self._stop(
                 float("inf"),
-                f"{label} rejected the token: reconnect with /login {self.server.name}. "
+                f"{label} rejected the sign-in or token: reconnect with {login}. "
                 f"{label} actions are paused until then.",
             )
 
@@ -179,14 +281,23 @@ class McpConnector:
         if prepare_fn is not None:
 
             async def prepare(args: JsonArgs, _fn: PrepareFn = prepare_fn) -> Prepared[JsonArgs]:
-                exact, detail = await _fn(args.as_dict(), self._call_text)
+                exact, detail = await _fn(args.as_dict(), self.call)
                 return Prepared(JsonArgs(**exact), detail)
 
         summarize = self.server.summaries.get(remote.name)
 
         def summary(args: JsonArgs) -> str:
-            plain = summarize(args.as_dict()) if summarize else _target(args.as_dict())
+            if summarize is not None:
+                return summarize(args.as_dict())
+            plain = _target(args.as_dict())
             return f"{self.server.label}: {title}" + (f" ({plain})" if plain else "")
+
+        describe = self.server.activities.get(remote.name)
+        activity = None
+        if describe is not None:
+
+            def activity(args: JsonArgs, _fn: Callable[[dict[str, Any]], str] = describe) -> str:
+                return _fn(args.as_dict())
 
         return Tool(
             name=name,
@@ -198,9 +309,22 @@ class McpConnector:
             timeout_s=120,
             untrusted_output=True,
             summary=summary,
+            activity=activity,
             prepare=prepare,
-            schema=dict(remote.input_schema),
+            schema=self._schema(remote),
         )
+
+    def _schema(self, remote: types.Tool) -> dict[str, Any]:
+        schema = dict(remote.input_schema)
+        dropped = self.server.drop.get(remote.name, frozenset())
+        if not dropped and not self.server.strict:
+            return schema
+        properties = schema.get("properties", {})
+        schema["properties"] = {k: v for k, v in properties.items() if k not in dropped}
+        if "required" in schema:
+            schema["required"] = [r for r in schema["required"] if r not in dropped]
+        schema["additionalProperties"] = False  # a dropped field must not come back unseen
+        return schema
 
 
 def _target(args: dict[str, Any]) -> str:

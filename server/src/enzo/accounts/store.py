@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter
 
 from enzo.accounts.vault import Vault, write_private
 
-type Method = Literal["api_key", "chatgpt"]
+type Method = Literal["api_key", "chatgpt", "google"]
 
 
 class ApiKeyCredential(BaseModel):
@@ -53,7 +53,36 @@ class ChatGPTCredential(BaseModel):
         )
 
 
-type Credential = Annotated[ApiKeyCredential | ChatGPTCredential, Field(discriminator="method")]
+class GoogleCredential(BaseModel):
+    """Signed in with Google: OAuth tokens for Gmail and Google Calendar (ADR 0026)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    method: Literal["google"] = "google"
+    #: The OAuth client that issued the tokens: renewing them needs the same one.
+    client_id: str = Field(min_length=1)
+    #: The Google account (the ID token's subject).
+    subject: str = Field(min_length=1)
+    email: str | None = None
+    access_token: SecretStr
+    refresh_token: SecretStr
+    #: What the user allowed on Google's consent screen (they can untick some).
+    scopes: tuple[str, ...]
+    expires_at: datetime
+
+    def secret_json(self) -> str:
+        return json.dumps(
+            {
+                **self.model_dump(mode="json", exclude={"access_token", "refresh_token"}),
+                "access_token": self.access_token.get_secret_value(),
+                "refresh_token": self.refresh_token.get_secret_value(),
+            }
+        )
+
+
+type Credential = Annotated[
+    ApiKeyCredential | ChatGPTCredential | GoogleCredential, Field(discriminator="method")
+]
 _CREDENTIAL: TypeAdapter[Credential] = TypeAdapter(Credential)
 
 
@@ -67,6 +96,8 @@ class _IndexEntry(BaseModel):
     label: str | None = None
     #: Models this account may use, when the provider lists them per account (a ChatGPT plan).
     models: list[str] | None = None
+    #: What a sign-in allows (e.g. Google's granted scopes): not secret, shown in the app.
+    scopes: list[str] | None = None
 
 
 _INDEX: TypeAdapter[dict[str, _IndexEntry]] = TypeAdapter(dict[str, _IndexEntry])
@@ -81,6 +112,7 @@ class Connection:
     connected_at: datetime
     label: str | None = None
     models: tuple[str, ...] | None = None
+    scopes: tuple[str, ...] | None = None
 
 
 class CredentialStore:
@@ -95,6 +127,7 @@ class CredentialStore:
         *,
         label: str | None = None,
         models: Sequence[str] | None = None,
+        scopes: Sequence[str] | None = None,
     ) -> Connection:
         self._vault.set(_entry(provider), credential.secret_json())
         connection = Connection(
@@ -103,6 +136,7 @@ class CredentialStore:
             datetime.now(UTC),
             label,
             None if models is None else tuple(models),
+            None if scopes is None else tuple(scopes),
         )
         index = self._index()
         index[provider] = _IndexEntry(
@@ -110,6 +144,7 @@ class CredentialStore:
             connected_at=connection.connected_at,
             label=label,
             models=None if models is None else list(models),
+            scopes=None if scopes is None else list(scopes),
         )
         self._save(index)
         return connection
@@ -119,6 +154,13 @@ class CredentialStore:
         entry = index.get(provider)
         if entry is not None:
             index[provider] = entry.model_copy(update={"models": list(models)})
+            self._save(index)
+
+    def set_scopes(self, provider: str, scopes: Sequence[str]) -> None:
+        index = self._index()
+        entry = index.get(provider)
+        if entry is not None:
+            index[provider] = entry.model_copy(update={"scopes": list(scopes)})
             self._save(index)
 
     def replace(self, provider: str, credential: Credential) -> None:
@@ -131,6 +173,9 @@ class CredentialStore:
 
     def keep_record(self, name: str, value: str) -> None:
         self._vault.set(f"record:{name}", value)
+
+    def forget_record(self, name: str) -> None:
+        self._vault.delete(f"record:{name}")
 
     def disconnect(self, provider: str) -> None:
         self._vault.delete(_entry(provider))
@@ -156,6 +201,7 @@ class CredentialStore:
                 e.connected_at,
                 e.label,
                 None if e.models is None else tuple(e.models),
+                None if e.scopes is None else tuple(e.scopes),
             )
             for p, e in self._index().items()
         }
