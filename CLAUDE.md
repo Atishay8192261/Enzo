@@ -228,6 +228,8 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
 - Background jobs from a non-interactive shell ignore SIGINT: test Ctrl+C in a pty, not with `&` + `pkill -INT`.
 - Running as root, pgserver runs Postgres as a `pgserver` system user: root-only failures there are not
   user bugs. Creating test users is blocked in this sandbox; CI runners (non-root, Linux + macOS) cover it.
+- `scripts/dev.sh` is tested by `server/tests/test_dev_script.py`: fake `psql`, `uname`, `node` … on PATH set
+  each state (Mac/Linux, role or database missing, old server). Keep its FIX lines covered there.
 - Pin actions by commit: `git ls-remote https://github.com/<owner>/<repo> refs/tags/<tag>^{}` (the API only
   reaches this repo from cloud sessions).
 
