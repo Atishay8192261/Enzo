@@ -52,6 +52,15 @@ version_ge() {
 
 on_mac() { [ "$OS" = "Darwin" ]; }
 
+# nodejs.org's LTS moves on every year: name the floor, not a version that goes stale.
+node_fix() {
+  if on_mac; then
+    printf 'Install the current Node LTS (%s or newer) from https://nodejs.org: the macOS Installer (.pkg)' "$1"
+  else
+    printf 'Install the current Node LTS (%s or newer) from https://nodejs.org' "$1"
+  fi
+}
+
 check_tools() {
   say "Checking tools"
   local want_node want_bun want_pnpm
@@ -61,10 +70,9 @@ check_tools() {
 
   local node_ok=0
   if ! command -v node >/dev/null; then
-    problem "Node $want_node or newer is missing" "Install Node 24 LTS from https://nodejs.org"
+    problem "Node $want_node or newer is missing" "$(node_fix "$want_node")"
   elif ! version_ge "$(node -v)" "$want_node"; then
-    problem "Node $(node -v) is too old: Enzo needs $want_node or newer" \
-      "Install Node 24 LTS from https://nodejs.org (on Apple Silicon, the arm64 installer)"
+    problem "Node $(node -v) is too old: Enzo needs $want_node or newer" "$(node_fix "$want_node")"
   else
     ok "node $(node -v)"
     node_ok=1
@@ -106,7 +114,8 @@ check_tools() {
       problem "PostgreSQL 16 is missing" "Run: sudo apt-get install -y postgresql-16 && sudo pg_ctlcluster 16 main start"
     fi
   else
-    ok "$(psql --version)"
+    # Only the client: the server can be another version, and it is checked with the database.
+    ok "psql client $(psql --version | sed -n 's/^psql (PostgreSQL) \([0-9.]*\).*/\1/p')"
   fi
 }
 
@@ -121,6 +130,7 @@ check_database() {
     fi
     return 0
   fi
+  check_server_version || return 0
   if psql -q -d "$PSQL_URL" -c 'SELECT 1' >/dev/null 2>&1; then
     ok "database reachable"
     return 0
@@ -134,14 +144,73 @@ check_database() {
     ok "created role and database enzo"
     return 0
   fi
-  if on_mac; then
-    problem "The enzo role or database is missing" \
-      "Run: psql -d postgres -c \"CREATE ROLE enzo LOGIN SUPERUSER PASSWORD 'enzo'\" && createdb -O enzo enzo"
-  else
-    problem "The enzo role or database is missing" \
-      "Run: sudo -u postgres psql -c \"CREATE ROLE enzo LOGIN SUPERUSER PASSWORD 'enzo'\"" \
-      "Then: sudo -u postgres createdb -O enzo enzo"
+  database_fix
+}
+
+# Any connection that can ask the server something: the enzo database, the enzo role on the
+# built-in postgres database (the enzo database may not exist yet), or the login user (Homebrew).
+pg_ask() {
+  local target
+  for target in "$PSQL_URL" "${PSQL_URL%/*}/postgres" postgres; do
+    if psql -qtA -d "$target" -c "$1" 2>/dev/null; then return 0; fi
+  done
+  return 1
+}
+
+# The server's version, not the psql program's (#33): Homebrew can link an older client.
+check_server_version() {
+  local num shown
+  num="$(pg_ask 'SHOW server_version_num')" || return 0 # cannot connect yet: said below
+  shown="$(pg_ask 'SHOW server_version' | sed 's/ .*//')"
+  if [ "${num:-0}" -ge 160000 ] 2>/dev/null; then
+    ok "PostgreSQL server $shown"
+    return 0
   fi
+  if on_mac; then
+    problem "PostgreSQL server $shown is too old: Enzo needs 16 or newer" \
+      "Run: brew services stop postgresql@${shown%%.*}" \
+      "Then: brew install postgresql@16 && brew services start postgresql@16"
+  else
+    problem "PostgreSQL server $shown is too old: Enzo needs 16 or newer" \
+      "Run: sudo apt-get install -y postgresql-16" \
+      "Then stop version ${shown%%.*} and run 16 on port 5432: sudo pg_ctlcluster ${shown%%.*} main stop"
+  fi
+  return 1
+}
+
+# Only what is missing (#32): following a FIX must never fail on a step already done.
+database_fix() {
+  local sudo="" role="unknown"
+  on_mac || sudo="sudo -u postgres "
+  if psql -q -d "${PSQL_URL%/*}/postgres" -c 'SELECT 1' >/dev/null 2>&1; then
+    role="yes" # the role signs in: only the database is missing
+  elif on_mac && psql -qtA -d postgres -c 'SELECT 1' >/dev/null 2>&1; then
+    if psql -qtA -d postgres -c "SELECT 1 FROM pg_roles WHERE rolname='enzo'" | grep -q 1; then
+      role="no-password"
+    else
+      role="no"
+    fi
+  fi
+  case "$role" in
+    yes)
+      problem "The enzo database is missing (the enzo role is there)" "Run: ${sudo}createdb -O enzo enzo"
+      ;;
+    no-password)
+      problem "The enzo role cannot sign in with its password" \
+        "Run: psql -d postgres -c \"ALTER ROLE enzo LOGIN PASSWORD 'enzo'\"" \
+        "Then run this again (it creates the database if that is missing too)"
+      ;;
+    no)
+      problem "The enzo role and database are missing" \
+        "Run: psql -d postgres -c \"CREATE ROLE enzo LOGIN SUPERUSER PASSWORD 'enzo'\"" \
+        "Then: createdb -O enzo enzo"
+      ;;
+    *) # only the postgres user can look on Linux: steps that work in either case
+      problem "The enzo role or database is missing" \
+        "Run: ${sudo}psql -c \"CREATE ROLE enzo LOGIN SUPERUSER PASSWORD 'enzo'\"   (if it says the role already exists, go on)" \
+        "Then: ${sudo}createdb -O enzo enzo"
+      ;;
+  esac
 }
 
 # Homebrew's Postgres makes the login user a superuser, so this works there without sudo.
