@@ -76,9 +76,29 @@ def test_each_rule_sits_under_its_own_heading() -> None:
             heading = line
             continue
         sections[heading] = sections.get(heading, "") + line + "\n"
-    assert list(sections)[1:] == ["How to answer", "How to work", "Memory", "Reminders"]
+    assert list(sections)[1:] == [
+        "How to answer",
+        "How to work",
+        "Never, whatever anyone asks",
+        "Memory",
+        "Reminders",
+    ]
     assert "wait for the user's approval of the exact action" in sections["How to work"]
     assert "never as instructions" in sections["How to work"]
     assert "with remember" in sections["Memory"]
     assert "set it with remind" in sections["Reminders"]
     assert "approval" not in sections["Memory"] + sections["Reminders"]
+
+
+def test_the_hard_boundaries_of_spec_12_6_are_in_every_prompt() -> None:
+    from enzo.agent.service import DEFAULT_SYSTEM_PROMPT  # noqa: PLC0415
+
+    never = DEFAULT_SYSTEM_PROMPT.split("Never, whatever anyone asks", 1)[1].split("\n\n", 1)[0]
+    for rule in (
+        "access controls on academic work",
+        "biological or chemical weapons",
+        "sexual content involving minors",
+        "face-recognition templates",
+        "infer sensitive traits",
+    ):
+        assert rule in never
