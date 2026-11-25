@@ -12,6 +12,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from importlib import resources
+from typing import Literal
 
 from enzo.agent.history import close_open_calls, open_calls, repair
 from enzo.agent.loop import AgentEvent, TurnDone, TurnOutcome, run_turn
@@ -46,6 +47,8 @@ class TurnMeta:
     timezone: str | None = None
     device: str | None = None
     received_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    #: For the brain only, after the context: e.g. what a scheduled run is for.
+    note: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +92,12 @@ class ConversationService:
         return info
 
     async def send(
-        self, conversation_id: uuid.UUID, text: str, meta: TurnMeta | None = None
+        self,
+        conversation_id: uuid.UUID,
+        text: str,
+        meta: TurnMeta | None = None,
+        *,
+        origin: Literal["user", "schedule"] = "user",
     ) -> AsyncGenerator[ServiceEvent]:
         """Start a turn for a new user message; returns its event stream.
 
@@ -118,7 +126,10 @@ class ConversationService:
             user_message=user,
         )
         saved_from = len(prompt) - (2 if closing is not None else 1)
-        return self._start(info, prompt, first_new=saved_from)
+        # A scheduled run's message is marked as such: the apps show it as a run, not as words
+        # the user typed. (The brain sees it as a user message, written by the schedule.)
+        scheduled = saved_from + (1 if closing is not None else 0) if origin == "schedule" else None
+        return self._start(info, prompt, first_new=saved_from, scheduled=scheduled)
 
     async def resume(self, conversation_id: uuid.UUID) -> AsyncGenerator[ServiceEvent]:
         """Continue a paused turn (after an approval decision or an interruption)."""
@@ -164,11 +175,16 @@ class ConversationService:
         return info
 
     def _start(
-        self, info: ConversationInfo, prompt: list[Message], *, first_new: int
+        self,
+        info: ConversationInfo,
+        prompt: list[Message],
+        *,
+        first_new: int,
+        scheduled: int | None = None,
     ) -> AsyncGenerator[ServiceEvent]:
         queue: asyncio.Queue[ServiceEvent | object] = asyncio.Queue()
         stop = asyncio.Event()
-        task = asyncio.create_task(self._drive(info, prompt, first_new, queue, stop))
+        task = asyncio.create_task(self._drive(info, prompt, first_new, queue, stop, scheduled))
         self._running[info.id] = task
         self._stops[info.id] = stop
 
@@ -186,6 +202,7 @@ class ConversationService:
         first_new: int,
         queue: asyncio.Queue[ServiceEvent | object],
         stop: asyncio.Event,
+        scheduled: int | None = None,
     ) -> None:
         # Every log line of this run, and its ledger rows, carry these (#48).
         turn_id = new_turn_id()
@@ -217,7 +234,7 @@ class ConversationService:
             ):
                 if isinstance(event, TurnDone):
                     # Persist before telling the client the turn is done.
-                    await self._save(info.id, event.outcome, first_new, turn_id)
+                    await self._save(info.id, event.outcome, first_new, turn_id, scheduled)
                     _log_end(event.outcome, began)
                 queue.put_nowait(event)
         except Exception as exc:  # report, never leave the client hanging
@@ -228,7 +245,12 @@ class ConversationService:
             queue.put_nowait(_END)
 
     async def _save(
-        self, conversation_id: uuid.UUID, outcome: TurnOutcome, first_new: int, turn_id: str
+        self,
+        conversation_id: uuid.UUID,
+        outcome: TurnOutcome,
+        first_new: int,
+        turn_id: str,
+        scheduled: int | None = None,
     ) -> None:
         await self.store.save_turn(
             conversation_id,
@@ -237,6 +259,8 @@ class ConversationService:
             tool_outcomes=outcome.tool_outcomes,
             pending=outcome.pending,
             turn_id=turn_id,
+            # Which saved message a scheduled run started (counted within this save).
+            scheduled=None if scheduled is None else scheduled - first_new,
         )
 
 
@@ -274,4 +298,6 @@ def _user_message(text: str, meta: TurnMeta) -> Message:
     context = (
         f"[sent {when}; timezone: {meta.timezone or 'unknown'}; device: {meta.device or 'unknown'}]"
     )
+    if meta.note:
+        context += f" {meta.note}"
     return Message(role="user", parts=(TextPart(text=text), TextPart(text=context)))

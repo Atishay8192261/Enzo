@@ -40,7 +40,7 @@ def test_the_last_app_leaves_it_on_while_reminders_are_due(
     launcher.release(state, 8787, say=said.append)
     assert stopped == []
     assert said == [
-        "Enzo stays on in the background for your 2 reminders (next: Fri 21 Nov 09:00). "
+        "Enzo stays on in the background for your 2 scheduled items (next: Fri 21 Nov 09:00). "
         "`enzo stop` turns it off."
     ]
     assert (state / launcher.BACKGROUND).exists()
@@ -132,7 +132,7 @@ def test_a_real_gateway_delivers_after_the_app_closed_then_stops(
         said: list[str] = []
         launcher.release(state, port, say=said.append)
         assert said
-        assert said[0].startswith("Enzo stays on in the background for your reminder")
+        assert said[0].startswith("Enzo stays on in the background for your 1 scheduled item")
         assert launcher.health(port) is not None  # still on, though no app is open
 
         pid = launcher._gateway_pid(state)

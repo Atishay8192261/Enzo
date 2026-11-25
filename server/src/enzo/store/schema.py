@@ -64,7 +64,10 @@ class MessageRow(Base):
     """The transcript (spec §6.1 working memory, §11.2): canonical messages in order."""
 
     __tablename__ = "messages"
-    __table_args__ = (UniqueConstraint("conversation_id", "seq"),)
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "seq"),
+        CheckConstraint("origin IN ('user', 'schedule')", name="origin"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     conversation_id: Mapped[uuid.UUID] = mapped_column(
@@ -74,6 +77,8 @@ class MessageRow(Base):
     role: Mapped[str] = mapped_column(Text)
     body: Mapped[dict[str, Any]] = mapped_column(JSONB)
     created_at: Mapped[datetime] = _created_at()
+    #: "schedule": a scheduled task's run started this turn, not the user typing it.
+    origin: Mapped[str] = mapped_column(Text, server_default="user")
 
 
 class BrainCallRow(Base):
@@ -204,7 +209,7 @@ class JobRow(Base):
 
     __tablename__ = "jobs"
     __table_args__ = (
-        CheckConstraint("kind IN ('reminder')", name="kind"),
+        CheckConstraint("kind IN ('reminder', 'task')", name="kind"),
         CheckConstraint(
             "repeat IN ('once', 'hourly', 'daily', 'weekdays', 'weekly', 'monthly')",
             name="repeat",
@@ -216,8 +221,18 @@ class JobRow(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     kind: Mapped[str] = mapped_column(Text)
-    #: What to remind the user of, in their words.
+    #: A reminder: what to remind the user of. A task: what Enzo does on each run.
     text: Mapped[str] = mapped_column(Text)
+    #: A task: when it is done (Enzo checks on each run and stops once it is met).
+    stop_when: Mapped[str | None] = mapped_column(Text)
+    #: A task's own chat, where its runs happen (the chat it was set in gets the reports).
+    chat_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    #: A task run in progress since then: the next is never started on top of it.
+    running_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Runs that failed in a row: a task stops after a few, rather than fail on and on.
+    failures: Mapped[int] = mapped_column(Integer, server_default="0")
     #: The chat it was set in, where it is delivered (and the run, as on log lines).
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("conversations.id", ondelete="SET NULL")
@@ -242,6 +257,12 @@ class JobRunRow(Base):
     """One delivery: when it was due, when it arrived, and where in the chat it showed."""
 
     __tablename__ = "job_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "outcome IN ('delivered', 'reported', 'quiet', 'finished', 'needs_approval', 'failed')",
+            name="outcome",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
@@ -256,3 +277,6 @@ class JobRunRow(Base):
     late: Mapped[bool]
     #: How many messages the chat had then: clients show the reminder after that many.
     after: Mapped[int] = mapped_column(Integer)
+    #: delivered (a reminder); reported, quiet (nothing new yet), finished (its stop was met),
+    #: needs_approval (it waits for the user) or failed (a task run).
+    outcome: Mapped[str] = mapped_column(Text, server_default="delivered")

@@ -102,8 +102,10 @@ async def test_the_app_registers_the_core_tools(
             "forget",
             "search_memory",
             "remind",
-            "list_reminders",
-            "cancel_reminder",
+            "schedule_task",
+            "finish_task",
+            "list_scheduled",
+            "cancel_scheduled",
         ]
         gated = [n for n in names if registry.get(n).requires_approval]
         fenced = [n for n in names if registry.get(n).untrusted_output]
@@ -111,5 +113,5 @@ async def test_the_app_registers_the_core_tools(
         assert "Enzo folder is" in app.state.service._developer
         assert app.state.service.memory is not None
         assert app.state.background.runner is not None  # reminders are delivered
-    assert gated == ["delete_file"]
+    assert gated == ["delete_file", "schedule_task"]  # a task acts on its own: approved first
     assert fenced == ["web_search", "read_page", "read_file"]

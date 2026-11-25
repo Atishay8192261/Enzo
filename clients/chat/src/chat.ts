@@ -2,8 +2,9 @@ import type {
   AgentEvent,
   Brain,
   ConversationUsage,
-  DeliveredReminder,
   GatewayClient,
+  GatewayEvent,
+  ScheduledNotice,
   StoredMessage,
   StoredPart,
   Usage,
@@ -23,7 +24,7 @@ export type ChatClient = Pick<
   | "decide"
   | "stop"
   | "usage"
-  | "conversationReminders"
+  | "conversationScheduled"
 >;
 
 /** Listing and tidying past chats (#38): not every surface has these yet. */
@@ -32,8 +33,8 @@ export type ChatsClient = Pick<
   "conversations" | "renameConversation" | "deleteConversation"
 >;
 
-/** Reminders (spec §9.3): the ones to come, cancelling one, and live arrivals. */
-export type RemindersClient = Pick<GatewayClient, "reminders" | "cancelReminder" | "events">;
+/** Reminders and scheduled tasks (spec §9.3): the ones to come, cancelling, live arrivals. */
+export type ScheduleClient = Pick<GatewayClient, "scheduled" | "cancelScheduled" | "events">;
 
 /** What Enzo remembers (spec §6.2): seeing it and forgetting a part of it. */
 export type MemoryClient = Pick<GatewayClient, "memories" | "forgetMemory">;
@@ -190,7 +191,7 @@ export type ChatAction =
   | { type: "brains_loaded"; brains: Brain[] }
   | { type: "approval_decided"; id: string; approved: boolean }
   | { type: "event"; event: AgentEvent; at?: number }
-  | { type: "reminder"; words: string };
+  | { type: "scheduled"; text: string };
 
 /** Said when a message is refused because a reply is still being written (HTTP 409). */
 export const BUSY = "Not sent: Enzo is still finishing the last reply.";
@@ -391,9 +392,9 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
         : state.items;
       return { ...state, items, approvals: state.approvals.filter((a) => a.id !== action.id) };
     }
-    case "reminder":
+    case "scheduled":
       // Shown where the user is now: it is about them, whichever chat it was set in.
-      return { ...state, items: [...state.items, reminderItem(action.words)] };
+      return { ...state, items: [...state.items, scheduledItem(action.text)] };
     case "event":
       return onEvent(state, action.event, action.at);
   }
@@ -493,17 +494,43 @@ export const SOME_STEP = "Working on a step";
  * Stored transcript → the chat as it looked live: words, and each step Enzo took in plain words.
  * Tool names, arguments and results stay out of the chat (spec §10.3).
  */
-/** A reminder as the chat shows it: "⏰ Reminder: Call mom". */
-export const reminderItem = (words: string): ChatItem => ({
+/** A reminder or a task's report, as the chat shows it: "⏰ Reminder: Call mom". */
+export const scheduledItem = (text: string): ChatItem => ({
   role: "notice",
-  text: `⏰ Reminder: ${words}`,
+  text: `⏰ ${text}`,
   reminder: true,
 });
+
+/** What a live event says in the chat on screen; null when it should not interrupt. */
+export function eventText(event: GatewayEvent): string | null {
+  if (event.kind === "reminder") return `Reminder: ${event.words}`;
+  return event.outcome === "quiet" ? null : event.words;
+}
+
+/** What a reminder or task report says in a chat's timeline; null for a quiet run. */
+export function noticeText(n: ScheduledNotice): string | null {
+  if (n.kind === "reminder") {
+    return `Reminder: ${n.late ? `${n.text} (late: due ${n.due}, Enzo wasn't running)` : n.text}`;
+  }
+  const what = n.task ?? "Scheduled task";
+  switch (n.outcome) {
+    case "quiet":
+      return null; // "not yet": in the task's own chat, never in this one
+    case "finished":
+      return `${what}: ${n.text} Done: it stops now.`;
+    case "needs_approval":
+      return `${what}: it waits for your approval in its own chat.`;
+    case "failed":
+      return `${what}: the run failed. ${n.text}`;
+    default:
+      return `${what}: ${n.text}`;
+  }
+}
 
 export function toItems(
   messages: StoredMessage[],
   usage?: ConversationUsage | null,
-  reminders: DeliveredReminder[] = [],
+  notices: ScheduledNotice[] = [],
 ): ChatItem[] {
   const results = new Map<string, StepStatus>();
   for (const m of messages) {
@@ -514,22 +541,25 @@ export function toItems(
   const items: ChatItem[] = [];
   // Where each turn starts in `items`: a turn is a user message and everything until the next.
   const starts: number[] = [];
-  // Reminders sit where they arrived: after that many of the chat's messages.
-  const arrived = (seen: number) => {
-    for (const r of reminders) {
-      if (r.after === seen) items.push(reminderItem(late(r)));
-    }
+  // Reminders and task reports sit where they arrived: after that many of the chat's messages.
+  const arrive = (n: ScheduledNotice) => {
+    const text = noticeText(n);
+    if (text) items.push(scheduledItem(text));
   };
   messages.forEach((m, index) => {
-    arrived(index);
+    for (const n of notices) if (n.after === index) arrive(n);
     addMessage(m);
   });
-  for (const r of reminders) {
-    if (r.after >= messages.length) items.push(reminderItem(late(r)));
-  }
+  for (const n of notices) if (n.after >= messages.length) arrive(n);
   function addMessage(m: StoredMessage): void {
     if (m.role !== "user" && m.role !== "assistant") return;
     const texts = m.parts.filter((p) => p.type === "text" && p.text).map((p) => p.text as string);
+    if (m.role === "user" && m.origin === "schedule") {
+      // A scheduled task's run started this turn: show it as a run, not as the user typing.
+      starts.push(items.length);
+      items.push({ role: "notice", text: `⏰ Scheduled run: ${texts[0] ?? ""}`, reminder: true });
+      return;
+    }
     if (m.role === "user") {
       // A user message's second text part is delivery context (time, device), not words.
       const text = texts[0] ?? "";
@@ -561,10 +591,6 @@ export function toItems(
     }
   });
   return items;
-}
-
-function late(r: DeliveredReminder): string {
-  return r.late ? `${r.text} (late: due ${r.due}, Enzo wasn't running)` : r.text;
 }
 
 function storedStatus(result: StoredPart): StepStatus {

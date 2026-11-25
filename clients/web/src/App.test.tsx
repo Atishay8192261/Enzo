@@ -74,7 +74,7 @@ function fakeClient(
     decide: vi.fn(async () => {}),
     stop: vi.fn(async () => false),
     usage: async () => ({ total: NO_USAGE, turns: [] }),
-    conversationReminders: async () => [],
+    conversationScheduled: async () => [],
     ...overrides,
   };
 }

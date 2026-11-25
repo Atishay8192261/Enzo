@@ -33,10 +33,11 @@ from enzo.gateway.chatgpt import RedactAuthQuery, chatgpt_routes
 from enzo.gateway.connections import build_accounts, connection_routes
 from enzo.gateway.conversations import ServiceDep, conversation_routes
 from enzo.gateway.memory import memory_routes
-from enzo.gateway.reminders import reminder_routes
+from enzo.gateway.scheduled import scheduled_routes
 from enzo.memory import Memory, memory_tools
-from enzo.schedule import Background, Bus, Runner, Schedule, reminder_tools
+from enzo.schedule import Background, Bus, FinishedTasks, Runner, Schedule, schedule_tools
 from enzo.schedule.notify import desktop, silent
+from enzo.schedule.tasks import TaskRunner
 from enzo.store.repository import Store
 from enzo.tools.files import file_tools
 from enzo.tools.registry import ToolRegistry
@@ -134,7 +135,7 @@ def create_app(
 
     app.include_router(conversation_routes(auth))
     app.include_router(memory_routes(auth))
-    app.include_router(reminder_routes(auth))
+    app.include_router(scheduled_routes(auth))
     app.include_router(connection_routes(auth))
     app.include_router(chatgpt_routes(auth, cfg.port))
     _finish(app, cfg)
@@ -166,19 +167,25 @@ async def _running(
     app.state.accounts = acct
     memory = Memory(store.engine, cfg.workspace_dir)
     schedule = Schedule(store.engine)
-    runner = Runner(schedule, Bus(), notify=desktop if cfg.notify else silent, on_idle=on_idle)
+    notify = desktop if cfg.notify else silent
+    runner = Runner(schedule, Bus(), notify=notify, on_idle=on_idle)
     app.state.background = Background(schedule, runner.bus, runner)
+    finished = FinishedTasks()
     tools = ToolRegistry(
         [
             *web_tools(tavily_key=lambda: acct.api_key("tavily"), http=http),
             *file_tools(cfg.workspace_dir),
             *memory_tools(memory),
-            *reminder_tools(schedule, on_set=runner.poke),
+            *schedule_tools(schedule, finished, on_set=runner.poke),
         ]
     )
-    app.state.service = ConversationService(
+    service = ConversationService(
         store, router, tools, developer=install_note(cfg.workspace_dir), memory=memory
     )
+    app.state.service = service
+    # Scheduled tasks run as agent turns: the runner hands each due one to the task runner.
+    tasks = TaskRunner(schedule, service, runner.bus, finished, notify=notify)
+    runner.connect(tasks.start, lambda: tasks.running > 0)
     connectors = Connectors(tools, acct, http)
     await connectors.refresh("github")
     acct.on_change(connectors.changed)
@@ -187,6 +194,7 @@ async def _running(
         yield
     finally:
         await runner.stop()
+        await tasks.stop()
         await connectors.close()
         await http.aclose()
         await store.close()

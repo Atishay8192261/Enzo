@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from enzo.schedule.bus import Bus, Event
 from enzo.schedule.notify import Notify, silent
 from enzo.schedule.recurrence import zone
-from enzo.schedule.store import Delivery, Schedule
+from enzo.schedule.store import Delivery, Schedule, TaskStart
 
 log = logging.getLogger("enzo.schedule")
 
@@ -39,11 +39,19 @@ class Runner:
         self._clock = clock
         #: Called after a tick when nothing is left to deliver (an idle gateway may stop).
         self._on_idle = on_idle
+        #: Starts a due task's run (it runs on its own; this never waits for it). Set by connect.
+        self._on_task: Callable[[TaskStart], None] | None = None
+        #: A task run is going: not idle, even with nothing left to schedule.
+        self._busy: Callable[[], bool] = lambda: False
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
 
     def start(self) -> None:
         self._task = asyncio.get_running_loop().create_task(self._loop())
+
+    def connect(self, on_task: Callable[[TaskStart], None], busy: Callable[[], bool]) -> None:
+        """Tasks run through the agent, which is built after the runner: hand it over here."""
+        self._on_task, self._busy = on_task, busy
 
     def poke(self) -> None:
         """Something changed (a reminder was set): look again now."""
@@ -65,14 +73,26 @@ class Runner:
             )
             self.bus.publish(Event("reminder", _event(d)))
             await self._notify("Enzo reminder", _words(d))
+        if self._on_task is not None:
+            for start in await self._schedule.claim_tasks(self._clock()):
+                log.info(
+                    "task.start",
+                    extra={"task": start.job.id, "run": start.run, "late": start.late},
+                )
+                self._on_task(start)
         return deliveries
 
     async def _loop(self) -> None:
+        try:
+            for ended in await self._schedule.recover(self._clock()):
+                log.warning("task.interrupted", extra={"task": ended.job.id, "run": ended.run_id})
+        except Exception:
+            log.exception("task.recover_failed")
         while True:
             try:
                 await self.tick()
                 upcoming = await self._schedule.next_due()
-                if upcoming is None and self._on_idle is not None:
+                if upcoming is None and not self._busy() and self._on_idle is not None:
                     self._on_idle()
             except Exception:  # keep delivering: one bad tick must not end reminders
                 log.exception("reminder.tick_failed")

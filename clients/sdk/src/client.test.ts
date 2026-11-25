@@ -202,19 +202,19 @@ describe("reminders (spec §9.3)", () => {
       baseUrl: "http://enzo",
       fetch: fakeFetch((url, init) => {
         if (init.method === "DELETE") return new Response(null, { status: 204 });
-        if (url.endsWith("/reminders") && url.includes("/conversations/")) {
+        if (url.endsWith("/scheduled") && url.includes("/conversations/")) {
           return Response.json([{ text: "Tea", after: 2, late: false }]);
         }
-        return Response.json({ reminders: [{ id: 3, text: "Call mom" }] });
+        return Response.json({ scheduled: [{ id: 3, text: "Call mom" }] });
       }, seen),
     });
-    expect((await client.reminders()).map((r) => r.text)).toEqual(["Call mom"]);
-    await client.cancelReminder(3);
-    expect((await client.conversationReminders("c 1")).map((r) => r.text)).toEqual(["Tea"]);
+    expect((await client.scheduled()).map((r) => r.text)).toEqual(["Call mom"]);
+    await client.cancelScheduled(3);
+    expect((await client.conversationScheduled("c 1")).map((r) => r.text)).toEqual(["Tea"]);
     expect(seen.map((s) => `${s.init.method} ${s.url}`)).toEqual([
-      "GET http://enzo/reminders",
-      "DELETE http://enzo/reminders/3",
-      "GET http://enzo/conversations/c%201/reminders",
+      "GET http://enzo/scheduled",
+      "DELETE http://enzo/scheduled/3",
+      "GET http://enzo/conversations/c%201/scheduled",
     ]);
   });
 
@@ -225,7 +225,8 @@ describe("reminders (spec §9.3)", () => {
         sse(
           'event: something_new\ndata: {"x":1}\n\n' +
             "event: reminder\ndata: {not json\n\n" +
-            'event: reminder\ndata: {"reminder":3,"text":"Call mom","words":"Call mom","late":false,"conversation_id":"c1","next":null}\n\n',
+            'event: reminder\ndata: {"reminder":3,"text":"Call mom","words":"Call mom","late":false,"conversation_id":"c1","next":null}\n\n' +
+            'event: task\ndata: {"task":5,"outcome":"reported","words":"Weather: sunny","chat_id":"t1","conversation_id":"c1","stopped":false}\n\n',
         ),
       ),
     });
@@ -240,6 +241,15 @@ describe("reminders (spec §9.3)", () => {
         late: false,
         conversation_id: "c1",
         next: null,
+      },
+      {
+        kind: "task",
+        task: 5,
+        outcome: "reported",
+        words: "Weather: sunny",
+        chat_id: "t1",
+        conversation_id: "c1",
+        stopped: false,
       },
     ]);
   });

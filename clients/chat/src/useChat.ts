@@ -3,6 +3,7 @@ import {
   type Brain,
   type Conversation,
   GatewayError,
+  type GatewayEvent,
   GatewayUnreachableError,
   type Usage,
 } from "@enzo/sdk";
@@ -12,6 +13,7 @@ import {
   type ChatClient,
   type ChatItem,
   type ChatState,
+  eventText,
   initialState,
   NO_USAGE,
   type PendingApproval,
@@ -92,13 +94,13 @@ async function load(
   client: ChatClient,
   conversation: Conversation,
 ): Promise<Omit<Connection, "brains">> {
-  const [messages, usage, reminders] = await Promise.all([
+  const [messages, usage, notices] = await Promise.all([
     client.messages(conversation.id),
     // Without these the chat still opens; it just shows no totals or past reminders yet.
     client.usage(conversation.id).catch(() => null),
-    client.conversationReminders(conversation.id).catch(() => []),
+    client.conversationScheduled(conversation.id).catch(() => []),
   ]);
-  const items = toItems(messages, usage, reminders);
+  const items = toItems(messages, usage, notices);
   return {
     conversationId: conversation.id,
     title: conversation.title,
@@ -337,8 +339,11 @@ export function useChat(
 
   /** The chat's new name, after the gateway took it (/rename). */
   const renamed = useCallback((title: string) => dispatch({ type: "renamed", title }), []);
-  /** A reminder arrived while the app is open: it shows in the chat on screen (spec §9.3). */
-  const reminded = useCallback((words: string) => dispatch({ type: "reminder", words }), []);
+  /** A reminder or task report arrived while the app is open: shown in the chat on screen. */
+  const reminded = useCallback((event: GatewayEvent) => {
+    const text = eventText(event);
+    if (text) dispatch({ type: "scheduled", text });
+  }, []);
 
   /** Reload the catalog, e.g. after an account was connected and more models became available. */
   const refreshBrains = useCallback(async () => {
@@ -359,7 +364,7 @@ export function useChat(
     stop,
   } satisfies {
     renamed: (title: string) => void;
-    reminded: (words: string) => void;
+    reminded: (event: GatewayEvent) => void;
     state: ChatState;
     openChat: (conversationId: string) => Promise<void>;
     send: (text: string) => Promise<void>;

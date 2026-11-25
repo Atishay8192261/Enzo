@@ -115,7 +115,7 @@ def release(state: Path, port: int | None = None, *, say: Callable[[str], None] 
         if waiting:
             (state / BACKGROUND).touch()
             count, soonest = waiting
-            things = "reminder" if count == 1 else f"{count} reminders"
+            things = "1 scheduled item" if count == 1 else f"{count} scheduled items"
             say(
                 f"Enzo stays on in the background for your {things} (next: {soonest}). "
                 "`enzo stop` turns it off."
@@ -125,10 +125,10 @@ def release(state: Path, port: int | None = None, *, say: Callable[[str], None] 
 
 
 def upcoming(port: int) -> tuple[int, str] | None:
-    """How many reminders the gateway on ``port`` still has to deliver, and the next one's time."""
+    """How many reminders and tasks the gateway on ``port`` still has to run, and the next time."""
     try:
-        reply = httpx2.get(f"{url_for(port)}/reminders", timeout=3.0)
-        items = reply.json()["reminders"] if reply.status_code == httpx2.codes.OK else []
+        reply = httpx2.get(f"{url_for(port)}/scheduled", timeout=3.0)
+        items = reply.json()["scheduled"] if reply.status_code == httpx2.codes.OK else []
     except (httpx2.HTTPError, ValueError, KeyError, TypeError):
         return None
     if not items:

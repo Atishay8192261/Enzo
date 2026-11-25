@@ -6,10 +6,10 @@ import {
   describeChoice,
   describeConnection,
   type MemoryClient,
-  type RemindersClient,
   resolveChoice,
+  type ScheduleClient,
 } from "@enzo/chat";
-import type { MemoryList, Remembered, UpcomingReminder } from "@enzo/sdk";
+import type { MemoryList, Remembered, Scheduled } from "@enzo/sdk";
 
 /**
  * What a command shows, as a card under its own echo: plain text, text marked as an error, or
@@ -30,7 +30,7 @@ export type PickerKind =
   | "cancel";
 
 export interface CommandContext {
-  client: ChatClient & AccountsClient & MemoryClient & RemindersClient;
+  client: ChatClient & AccountsClient & MemoryClient & ScheduleClient;
   /** The conversation's current choice: a model, a tier, or null for smart routing. */
   current: string | null;
   /** This chat's id; null while it is fresh (created by its first message). */
@@ -105,6 +105,15 @@ const quit: Command = {
   run(ctx) {
     ctx.quit();
     return null;
+  },
+};
+
+const scheduledCommand: Command = {
+  usage: "/scheduled",
+  summary: "your reminders and scheduled tasks still to come (also /reminders, /tasks)",
+  args: 0,
+  async run(ctx) {
+    return scheduledReply(await ctx.client.scheduled());
   },
 };
 
@@ -310,17 +319,12 @@ const COMMANDS: Record<string, Command> = {
       return ctx.askForget(id);
     },
   },
-  "/reminders": {
-    usage: "/reminders",
-    summary: "your reminders still to come, and when",
-    args: 0,
-    async run(ctx) {
-      return remindersReply(await ctx.client.reminders());
-    },
-  },
+  "/scheduled": scheduledCommand,
+  "/reminders": { ...scheduledCommand, usage: "/reminders", hidden: true },
+  "/tasks": { ...scheduledCommand, usage: "/tasks", hidden: true },
   "/cancel": {
     usage: "/cancel",
-    summary: "cancel a reminder (asks first)",
+    summary: "cancel a reminder or scheduled task (asks first)",
     args: 1,
     optional: true,
     also: ["keep", "confirm"],
@@ -448,15 +452,31 @@ export function memoryReply({ memories, file }: MemoryList): Reply {
   return lines.join("\n");
 }
 
-/** A reminder as one line: "Fri 21 Nov 09:00 · Call mom". */
-export const reminderLine = (r: UpcomingReminder) => `${r.next ?? "soon"} · ${r.text}`;
+/** A reminder or task as one line: "Fri 21 Nov 09:00 · Call mom". */
+export const scheduledLine = (r: Scheduled) => `${r.next ?? "soon"} · ${r.text}`;
 
-/** What /reminders shows: each one still to come, soonest first, with its schedule. */
-export function remindersReply(reminders: UpcomingReminder[]): Reply {
-  if (reminders.length === 0) {
-    return "No reminders yet. Ask Enzo, like “remind me Friday at 9 to call mom”.";
+/** What /scheduled shows: reminders, then tasks, each soonest first, with its schedule. */
+export function scheduledReply(all: Scheduled[]): Reply {
+  if (all.length === 0) {
+    return [
+      "Nothing scheduled yet. Ask Enzo, like “remind me Friday at 9 to call mom” or",
+      "“every weekday at 8, check the weather and tell me”.",
+    ].join("\n");
   }
-  const lines = reminders.flatMap((r) => [`• ${reminderLine(r)}`, `  ${r.schedule} · #${r.id}`]);
+  const lines: string[] = [];
+  for (const [kind, heading] of [
+    ["reminder", "Reminders"],
+    ["task", "Scheduled tasks"],
+  ] as const) {
+    const group = all.filter((r) => r.kind === kind);
+    if (group.length === 0) continue;
+    if (lines.length > 0) lines.push("");
+    lines.push(heading);
+    for (const r of group) {
+      const stop = r.stop_when ? `, until ${r.stop_when}` : "";
+      lines.push(`• ${scheduledLine(r)}`, `  ${r.schedule}${stop} · #${r.id}`);
+    }
+  }
   lines.push("", "To change one, just tell Enzo. /cancel removes one.");
   return lines.join("\n");
 }
