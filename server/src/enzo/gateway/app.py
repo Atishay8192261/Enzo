@@ -41,11 +41,13 @@ from enzo.gateway.memory import memory_routes
 from enzo.gateway.scheduled import scheduled_routes
 from enzo.goals import Goals
 from enzo.memory import Memory
+from enzo.paths import data_dir
 from enzo.schedule import Background, Bus, FinishedTasks, Runner, Schedule
 from enzo.schedule.notify import desktop, silent
 from enzo.schedule.tasks import TaskRunner
 from enzo.store.repository import Store
 from enzo.tools.registry import ToolRegistry
+from enzo.tools.stored import OutputStore, stored_tools
 
 log = logging.getLogger("enzo.gateway")
 
@@ -182,17 +184,29 @@ async def _running(
     runner = Runner(schedule, Bus(), notify=notify, on_idle=on_idle)
     app.state.background = Background(schedule, runner.bus, runner)
     finished = FinishedTasks()
+    # Long tool results and pastes are kept whole in Enzo's private data folder (ADR 0024).
+    ctx = config.context
+    outputs = OutputStore(
+        data_dir() / "context",
+        tool_inline_chars=ctx.tool_inline_chars,
+        paste_inline_chars=ctx.paste_inline_chars,
+        excerpt_chars=ctx.excerpt_chars,
+    )
     tools = ToolRegistry(
-        core_tools(
-            workspace=cfg.workspace_dir,
-            memory=memory,
-            schedule=schedule,
-            finished=finished,
-            goals=goals,
-            http=http,
-            tavily_key=lambda: acct.api_key("tavily"),
-            on_set=runner.poke,
-        )
+        [
+            *core_tools(
+                workspace=cfg.workspace_dir,
+                memory=memory,
+                schedule=schedule,
+                finished=finished,
+                goals=goals,
+                http=http,
+                tavily_key=lambda: acct.api_key("tavily"),
+                on_set=runner.poke,
+            ),
+            *stored_tools(outputs),
+        ],
+        retain=outputs,
     )
     service = ConversationService(
         store,
@@ -201,6 +215,7 @@ async def _running(
         developer=install_note(cfg.workspace_dir),
         memory=memory,
         goals=goals,
+        outputs=outputs,
     )
     app.state.service = service
     # Scheduled tasks run as agent turns: the runner hands each due one to the task runner.

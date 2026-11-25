@@ -8,7 +8,7 @@ import asyncio
 import logging
 import time
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from importlib import resources
@@ -19,6 +19,8 @@ from enzo.agent.loop import AgentEvent, TurnDone, TurnOutcome, run_turn
 from enzo.agent.prompt import MemorySnippet, compose_prompt
 from enzo.brain.models import Message, TextPart
 from enzo.brain.router import Router, classify
+from enzo.brain.tokens import TokenCounter
+from enzo.compaction import Compaction, ContextWindow
 from enzo.context import conversation_var, new_turn_id, timezone_var, turn_var
 from enzo.goals import Goals, goals_note
 from enzo.goals.store import user_today
@@ -26,6 +28,7 @@ from enzo.memory import Fact, FileEdits, Memory
 from enzo.store.repository import ConversationInfo, Store
 from enzo.store.schema import ApprovalRow
 from enzo.tools.registry import ToolRegistry
+from enzo.tools.stored import OutputStore
 
 log = logging.getLogger("enzo.agent.service")
 
@@ -76,12 +79,17 @@ class ConversationService:
         memory: Memory | None = None,
         goals: Goals | None = None,
         max_steps: int = 16,
+        outputs: OutputStore | None = None,
     ) -> None:
         self.store = store
         self.router = router
         self.registry = registry
         self.memory = memory
         self.goals = goals
+        #: Long texts kept as files out of the context (pastes, older turns' long parts).
+        self.outputs = outputs
+        #: Learns each brain's real prompt sizes across chats (ADR 0024).
+        self.counter = TokenCounter(router.config)
         self._system = system_prompt
         #: Facts about this install the brain needs, such as where the user's Enzo folder is.
         self._developer = developer
@@ -224,6 +232,13 @@ class ConversationService:
         began = time.perf_counter()
         try:
             decisions = await self.store.decisions(info.id)
+            summaries = await self.store.compactions(info.id)
+            window = ContextWindow(
+                self.router,
+                self.counter,
+                record=summaries[-1] if summaries else None,
+                store=self.outputs,
+            )
             task, why = classify(self.router.config, prompt)
             log.info(
                 "turn.start",
@@ -243,11 +258,15 @@ class ConversationService:
                 override=info.brain,
                 affinity=str(info.id),
                 max_steps=self._max_steps,
+                max_output_tokens=self.router.config.context.reply_tokens,
                 stop=stop,
+                window=window,
             ):
                 if isinstance(event, TurnDone):
                     # Persist before telling the client the turn is done.
-                    await self._save(info.id, event.outcome, first_new, turn_id, scheduled)
+                    await self._save(
+                        info.id, event.outcome, first_new, turn_id, scheduled, window.made
+                    )
                     _log_end(event.outcome, began)
                 queue.put_nowait(event)
         except Exception as exc:  # report, never leave the client hanging
@@ -264,6 +283,7 @@ class ConversationService:
         first_new: int,
         turn_id: str,
         scheduled: int | None = None,
+        compactions: Sequence[Compaction] = (),
     ) -> None:
         await self.store.save_turn(
             conversation_id,
@@ -274,6 +294,7 @@ class ConversationService:
             turn_id=turn_id,
             # Which saved message a scheduled run started (counted within this save).
             scheduled=None if scheduled is None else scheduled - first_new,
+            compactions=compactions,
         )
 
 

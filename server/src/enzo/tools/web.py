@@ -73,7 +73,13 @@ class SearchResults(BaseModel):
 class ReadParams(_Params):
     url: str = Field(min_length=1, max_length=2000, description="The http(s) address to read.")
     max_chars: int = Field(
-        default=12_000, ge=500, le=40_000, description="Longest text to return; the rest is cut."
+        default=12_000,
+        ge=500,
+        le=1_000_000,
+        description=(
+            "Longest text to return; the rest is cut. A long result is kept whole by Enzo: you "
+            "get its start and an id to read on."
+        ),
     )
 
 
