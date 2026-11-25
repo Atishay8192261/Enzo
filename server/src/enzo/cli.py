@@ -5,6 +5,7 @@ enzo -c        the terminal app, in the last chat (--continue)
 enzo web       the web app in your browser
 enzo doctor    check this installation, with a fix for each problem
 enzo logs      what Enzo did, from its log (-f to keep watching; attach it to a bug report)
+enzo trace     one task step by step: models, tokens, tools and approvals (last, or a turn id)
 enzo update    update to the latest release
 enzo stop      stop Enzo running in the background for reminders
 enzo serve     run the gateway in the foreground (for an always-on machine)
@@ -56,6 +57,15 @@ def main(argv: list[str] | None = None) -> int:
     logs_parser.add_argument("-f", "--follow", action="store_true", help="keep showing new lines")
     logs_parser.add_argument("--json", action="store_true", help="the lines as written (JSON)")
     logs_parser.add_argument("--path", action="store_true", help="only say where the log is")
+    trace_parser = commands.add_parser(
+        "trace", help="one task step by step: models, tokens, tools, approvals"
+    )
+    trace_parser.add_argument(
+        "turn", nargs="?", default="last", help="a turn id from `enzo logs` (t_…); default: last"
+    )
+    trace_parser.add_argument("--full", action="store_true", help="whole arguments and results")
+    trace_parser.add_argument("--json", action="store_true", help="the trace as JSON")
+    trace_parser.add_argument("--log", type=Path, metavar="PATH", help="read this log file")
     commands.add_parser("update", help="update Enzo to the latest release")
     commands.add_parser("stop", help="stop Enzo running in the background (for reminders)")
     serve = commands.add_parser("serve", help="run the gateway in the foreground")
@@ -69,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
         "logs": lambda: show_logs(
             lines=args.lines, keep=args.follow, as_json=args.json, path_only=args.path
         ),
+        "trace": lambda: show_trace(args.turn, full=args.full, as_json=args.json, log=args.log),
         "update": update,
         "stop": stop,
         "serve": lambda: serve_gateway(managed=args.managed),
@@ -173,6 +184,48 @@ def show_logs(
         for raw in logs.follow(path, lines=max(lines, 0)):
             print(show(raw), flush=True)
     return 0
+
+
+def show_trace(
+    turn: str = "last", *, full: bool = False, as_json: bool = False, log: Path | None = None
+) -> int:
+    """`enzo trace`: one task from the ledgers, with what the log adds (spec §13.3, §15.4)."""
+    import asyncio  # noqa: PLC0415 - only this command needs the store stack
+
+    from enzo import bundled_db, tracing  # noqa: PLC0415
+    from enzo.store.repository import Store  # noqa: PLC0415
+
+    url = bundled_db.url_for_command(data_dir(), create=False)
+    if url is None:
+        print(f"{NOTE} Nothing to trace yet: Enzo has no database until it first starts.")
+        return 0
+    lines = log_lines(log)
+
+    async def load() -> tracing.Trace:
+        store = Store.from_url(url)
+        try:
+            return await tracing.load(store.engine, turn, log_lines=lines, full=full)
+        finally:
+            await store.close()
+
+    try:
+        found = asyncio.run(load())
+    except tracing.TraceNotFoundError as exc:
+        print(f"{BAD} {exc}")
+        return 1
+    print(found.model_dump_json(indent=2) if as_json else tracing.render(found))
+    return 0
+
+
+def log_lines(path: Path | None = None) -> list[str]:
+    """Every line of the gateway's log, oldest file first (rotated ones included)."""
+    current = path or log_file()
+    files = [current.with_name(f"{current.name}.{n}") for n in range(logs.BACKUPS, 0, -1)]
+    out: list[str] = []
+    for file in [*files, current]:
+        with contextlib.suppress(OSError):
+            out.extend(file.read_text(encoding="utf-8", errors="replace").splitlines())
+    return out
 
 
 def _stop_if_idle(state: Path) -> None:
