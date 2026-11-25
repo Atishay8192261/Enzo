@@ -14,7 +14,15 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 from enzo.agent.approvals import ApprovalRequest
 from enzo.brain.models import Message, TextPart
 from enzo.brain.router import CallRecord
-from enzo.store.schema import ApprovalRow, BrainCallRow, Conversation, MessageRow, ToolCallRow
+from enzo.compaction import Compaction, Summary
+from enzo.store.schema import (
+    ApprovalRow,
+    BrainCallRow,
+    CompactionRow,
+    Conversation,
+    MessageRow,
+    ToolCallRow,
+)
 from enzo.tools.registry import ToolOutcome
 
 type ConversationKind = Literal["main", "side", "external"]
@@ -152,7 +160,7 @@ class Store:
             )
             return [Message.model_validate(body) for body in rows]
 
-    async def save_turn(
+    async def save_turn(  # noqa: PLR0913 - keyword-only parts of one turn
         self,
         conversation_id: uuid.UUID,
         *,
@@ -162,8 +170,9 @@ class Store:
         pending: Sequence[ApprovalRequest] = (),
         turn_id: str | None = None,
         scheduled: int | None = None,
+        compactions: Sequence[Compaction] = (),
     ) -> None:
-        """Persist one turn atomically: all of it or none of it."""
+        """Persist one turn atomically: all of it or none of it (its summaries included)."""
         async with self._sessions.begin() as session:
             # Lock the conversation so two turns cannot interleave their message numbers.
             locked = await session.get(Conversation, conversation_id, with_for_update=True)
@@ -196,6 +205,20 @@ class Store:
                 for i, m in enumerate(messages)
             )
             session.add_all(_brain_call_row(conversation_id, c, turn_id) for c in brain_calls)
+            session.add_all(
+                CompactionRow(
+                    conversation_id=conversation_id,
+                    turns=c.turns,
+                    made_turn=c.made_turn,
+                    made_offset=c.made_offset,
+                    summary=c.summary.model_dump(mode="json"),
+                    brain=c.brain,
+                    tokens_before=c.before,
+                    tokens_after=c.after,
+                    turn_id=turn_id,
+                )
+                for c in compactions
+            )
             session.add_all(
                 ToolCallRow(
                     conversation_id=conversation_id,
@@ -311,6 +334,27 @@ class Store:
                 else:
                     saves.append((at, role == "user"))
             return saves
+
+    async def compactions(self, conversation_id: uuid.UUID) -> list[Compaction]:
+        """Every summary of this chat's older turns, oldest first; the last one applies."""
+        async with self._sessions() as session:
+            rows = await session.scalars(
+                select(CompactionRow)
+                .where(CompactionRow.conversation_id == conversation_id)
+                .order_by(CompactionRow.id)
+            )
+            return [
+                Compaction(
+                    summary=Summary.model_validate(r.summary),
+                    turns=r.turns,
+                    made_turn=r.made_turn,
+                    made_offset=r.made_offset,
+                    brain=r.brain,
+                    before=r.tokens_before,
+                    after=r.tokens_after,
+                )
+                for r in rows
+            ]
 
     async def tool_calls(self, conversation_id: uuid.UUID) -> list[ToolCallRow]:
         async with self._sessions() as session:

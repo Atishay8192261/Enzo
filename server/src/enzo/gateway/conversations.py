@@ -20,6 +20,8 @@ from enzo.agent.service import (
 )
 from enzo.brain.config import TIERS
 from enzo.brain.models import Message, TextDelta, ToolCall
+from enzo.compaction import Compacted, Compaction
+from enzo.compaction.view import turn_positions
 from enzo.gateway.usage import ConversationUsageOut, per_turn, usage_of
 from enzo.store.repository import ApprovalError, ConversationInfo, ConversationKind
 from enzo.tools.registry import ToolRegistry
@@ -90,8 +92,13 @@ class BrainChoice(_In):
     brain: str | None
 
 
+#: The longest message: a very long pasted document is kept as a file and read from there
+#: (ADR 0024), so it is not refused.
+MAX_MESSAGE_CHARS = 1_000_000
+
+
 class TurnIn(_In):
-    message: str = Field(min_length=1, max_length=100_000)
+    message: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
     timezone: str | None = Field(default=None, max_length=64)
     device: str | None = Field(default=None, max_length=64)
 
@@ -175,9 +182,11 @@ def conversation_routes(auth: params.Depends) -> APIRouter:
         await _require(s, conversation_id)
         took = {t.call_id: t.latency_ms for t in await s.store.tool_calls(conversation_id)}
         runs = await s.store.scheduled(conversation_id)
-        shown = [_shown(m, s.registry, took) for m in await s.store.history(conversation_id)]
+        history = await s.store.history(conversation_id)
+        shown = [_shown(m, s.registry, took) for m in history]
         for i in runs:
             shown[i]["origin"] = "schedule"  # a scheduled task's run, not the user typing
+        _mark_summaries(shown, history, await s.store.compactions(conversation_id))
         return shown
 
     @router.get("/{conversation_id}/usage")
@@ -262,6 +271,26 @@ def _known_brain(s: ConversationService, brain: str | None) -> None:
         raise HTTPException(422, f"unknown model or tier {brain!r}")
 
 
+def _mark_summaries(
+    shown: list[dict[str, Any]], history: list[Message], compactions: list[Compaction]
+) -> None:
+    """Each summary is marked on the first message after the moment it was made (how many turns
+    it covers): apps show "older messages were summarized" there."""
+    positions = turn_positions(history)
+    for c in compactions:
+        at = next((i for i, p in enumerate(positions) if p >= (c.made_turn, c.made_offset)), None)
+        if at is not None:
+            shown[at]["summarized"] = c.turns
+
+
+#: What the chat says where older messages were summarized, and when that failed (§10.3).
+SUMMARIZED = (
+    "Older messages were summarized to keep this chat fast. Nothing is deleted: the whole chat "
+    "stays here."
+)
+NOT_SUMMARIZED = "Couldn't summarize older messages this time, so this reply read the whole chat."
+
+
 def _shown(message: Message, registry: ToolRegistry, took: dict[str, float]) -> dict[str, Any]:
     """A stored message for the chat: each tool call carries its step in plain words (#40)
     and how long it took (#49)."""
@@ -274,7 +303,7 @@ def _shown(message: Message, registry: ToolRegistry, took: dict[str, float]) -> 
     return out
 
 
-def _sse(event: ServiceEvent) -> ServerSentEvent:
+def _sse(event: ServiceEvent) -> ServerSentEvent:  # noqa: PLR0911 - one return per event kind
     """Client-facing events. Plain data only: no provider payloads leave the gateway."""
     match event:
         case TextDelta(text=text):
@@ -325,5 +354,12 @@ def _sse(event: ServiceEvent) -> ServerSentEvent:
                 "usage": usage_of(o.brain_calls).model_dump(mode="json"),
             }
             return ServerSentEvent(event="done", data=data)
+        case Compacted(turns=turns, failed=failed):
+            data = {
+                "text": NOT_SUMMARIZED if failed else SUMMARIZED,
+                "turns": turns,
+                "ok": failed is None,
+            }
+            return ServerSentEvent(event="compacted", data=data)
         case TurnFailed(message=message):
             return ServerSentEvent(event="error", data={"message": message})
