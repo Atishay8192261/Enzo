@@ -375,7 +375,12 @@ class Schedule:
             end = TaskEnd(run.id, _job(row), outcome, row.status != "active", run.after)
         log.info(
             "task.run",
-            extra={"task": job_id, "run": end.run_id, "outcome": outcome, "stopped": end.stopped},
+            extra={
+                "task": job_id,
+                "run_id": end.run_id,
+                "outcome": outcome,
+                "stopped": end.stopped,
+            },
         )
         return end
 
