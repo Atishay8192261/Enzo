@@ -85,7 +85,9 @@ class Runner:
     async def _loop(self) -> None:
         try:
             for ended in await self._schedule.recover(self._clock()):
-                log.warning("task.interrupted", extra={"task": ended.job.id, "run": ended.run_id})
+                log.warning(
+                    "task.interrupted", extra={"task": ended.job.id, "run_id": ended.run_id}
+                )
         except Exception:
             log.exception("task.recover_failed")
         while True:
