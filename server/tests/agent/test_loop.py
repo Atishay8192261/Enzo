@@ -18,6 +18,7 @@ from enzo.brain import (
     Message,
     RateLimitError,
     TextDelta,
+    TextPart,
     ToolCall,
     ToolResult,
     Usage,
@@ -118,8 +119,30 @@ async def test_a_looping_task_stops_at_max_steps_with_a_report() -> None:
     _, out = await run(brain, t.registry(), max_steps=3)
     assert (out.stop, out.steps, len(brain.calls)) == ("max_steps", 3, 3)
     assert "Stopped after 3 steps" in out.text
-    assert "step (ok) x3" in out.text
+    assert "Tried: Doing 0, Doing 1, Doing 2." in out.text
     assert "Still open: do the thing" in out.text
+
+
+async def test_the_max_steps_report_is_plain_words_and_only_the_users_request() -> None:
+    """The report reaches the user: steps in plain words, never tool names (§10.3), and the
+    request as they wrote it, without the context note or the memory that rode with it."""
+    looping = [calls(call("step", "again", f"c{i}")) for i in range(2)]
+    failing = [calls(call("boom", "x", f"b{i}")) for i in range(2)]
+    brain = ScriptedBrain([*looping, *failing])
+    asked = Message(
+        role="user",
+        parts=(
+            TextPart(text="check the status"),
+            TextPart(text="[sent 2026-11-25T09:00:00+00:00; timezone: Europe/Paris]"),
+            TextPart(text="Relevant memory from Enzo's records: - #3 Lives in Lyon"),
+        ),
+    )
+    _, out = await run(brain, t.registry(), [asked], max_steps=4)
+    assert out.stop == "max_steps"
+    assert "Tried: Doing again (2 times), Working on a step (failed, 2 times)." in out.text
+    assert "step" not in out.text.replace("steps", "").replace("a step", "")
+    assert "boom" not in out.text
+    assert out.text.endswith("Still open: check the status")
 
 
 async def test_parallel_calls_run_together_and_answer_in_one_message() -> None:
