@@ -27,6 +27,7 @@ from enzo.brain import (
     UnsupportedCapabilityError,
 )
 from enzo.brain.adapters.openai_brain import OpenAIBrain
+from enzo.brain.tokens import estimate_tokens
 from tests.brain.schemas import SearchWeb
 
 MODEL = "gpt-test"
@@ -595,11 +596,28 @@ async def test_a_plan_limit_reached_mid_stream_is_a_rate_limit() -> None:
         await plan_brain(streaming(failed)).chat([Message.user("x")], max_output_tokens=5)
 
 
-async def test_a_plan_has_no_token_counting() -> None:
-    b = plan_brain(streaming(response([])))
-    assert b.capabilities.token_counting == "unsupported"
-    with pytest.raises(UnsupportedCapabilityError):
-        await b.count_tokens([Message.user("x")])
+async def test_a_plan_counts_with_a_labelled_local_estimate_and_no_request() -> None:
+    """A ChatGPT plan has no counting endpoint: the count is the conservative local estimate."""
+    seen: list[dict[str, Any]] = []
+    b = plan_brain(streaming(response([]), seen))
+    assert b.capabilities.token_counting == "estimate"
+    words = Message.user("x" * 300)
+    assert await b.count_tokens([words]) == estimate_tokens([words]) >= 150
+    assert seen == []  # nothing was sent anywhere
+
+
+async def test_compatible_providers_are_not_claimed_to_count_exactly() -> None:
+    """xAI's and Moonshot's counting endpoints are unverified (§16): estimate, no request."""
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return httpx2.Response(404)
+
+    b = brain(handler, provider="xai")
+    assert b.capabilities.token_counting == "estimate"
+    assert await b.count_tokens([Message.user("hi")], tools=[SPEC]) > 0
+    assert seen == []
 
 
 async def test_a_failing_token_source_stops_the_request() -> None:

@@ -14,7 +14,7 @@ import time
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Literal, cast, get_type_hints
+from typing import Any, Literal, Protocol, cast, get_type_hints
 
 import jsonschema
 from pydantic import BaseModel, ConfigDict
@@ -92,6 +92,8 @@ class Tool[P: BaseModel, R: BaseModel]:
     schema: dict[str, Any] | None = None
     #: Tools that come and go together, e.g. a connector's tools when its account connects.
     group: str | None = None
+    #: Its result always stays whole in the context, however long (it reads stored text itself).
+    keep_whole: bool = False
 
     def spec(self) -> ToolSpec:
         # The card is the one confirmation: a model that asks in chat first makes the user
@@ -157,9 +159,21 @@ class ToolOutcome:
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
+class Retainer(Protocol):
+    """Keeps a long result out of the context (spec §5.2 selective retention)."""
+
+    def shorten_result(self, content: str, *, source: str, untrusted: bool) -> str | None:
+        """The shortened result (start + pointer, fenced as needed), or None if it fits."""
+        ...
+
+
 class ToolRegistry:
-    def __init__(self, tools: Iterable[Tool[Any, Any]] = ()) -> None:
+    def __init__(
+        self, tools: Iterable[Tool[Any, Any]] = (), *, retain: Retainer | None = None
+    ) -> None:
         self._tools: dict[str, Tool[Any, Any]] = {}
+        #: Long results are stored whole and shortened in the context (ADR 0024).
+        self.retain = retain
         for t in tools:
             self.register(t)
 
@@ -240,7 +254,14 @@ class ToolRegistry:
             msg = f"{call.name} returned {got}, expected {t.returns.__name__}"
             return self._failed(call, "bad_result", msg, started, began)
         content = value.model_dump_json()
-        if t.untrusted_output:
+        shortened = (
+            self.retain.shorten_result(content, source=call.name, untrusted=t.untrusted_output)
+            if self.retain is not None and not t.keep_whole
+            else None
+        )
+        if shortened is not None:  # stored whole; the brain gets the start and a pointer
+            content = shortened
+        elif t.untrusted_output:
             content = fence(content, source=call.name)
         return ToolOutcome(
             call=call,

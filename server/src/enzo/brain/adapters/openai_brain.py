@@ -49,6 +49,7 @@ from enzo.brain.models import (
     ToolSpec,
     Usage,
 )
+from enzo.brain.tokens import estimate_tokens
 
 PROVIDER = "openai"
 #: A ChatGPT plan sign-in takes function tools only inside a namespace (OpenAI's SIWC docs).
@@ -123,9 +124,15 @@ class OpenAIBrain:
             tool_calling="native",
             forced_tool_choice=self._forced_tool_choice,
             streaming=True,
-            token_counting="unsupported" if self._plan else "exact",
+            token_counting="exact" if self._exact_count else "estimate",
             embeddings=self._embedding_model is not None,
         )
+
+    @property
+    def _exact_count(self) -> bool:
+        """OpenAI's ``input_tokens`` endpoint serves API keys. A ChatGPT plan sign-in has no
+        counting endpoint, and xAI's and Moonshot's are unverified: those get the estimate."""
+        return self._provider == PROVIDER and not self._plan
 
     async def chat(
         self,
@@ -201,9 +208,8 @@ class OpenAIBrain:
     async def count_tokens(
         self, messages: Sequence[Message], *, tools: Sequence[ToolSpec] = ()
     ) -> int:
-        if self._plan:
-            msg = "a ChatGPT plan sign-in has no token-counting endpoint"
-            raise UnsupportedCapabilityError(msg, provider=self._provider, model=self._model)
+        if not self._exact_count:  # labelled "estimate" in capabilities: never passed as exact
+            return estimate_tokens(messages, tools)
         kwargs: dict[str, Any] = {
             "model": self._model,
             "input": to_wire_input(messages, self._provider),
