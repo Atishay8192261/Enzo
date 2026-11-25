@@ -1,6 +1,7 @@
 # ADR 0020 — Memory you can inspect and correct
 
-- **Status:** Accepted (2026-11-20).
+- **Status:** Accepted (2026-11-20). Decision 7's Memory.md is now read back when the user edits
+  it by hand (ADR 0023): it was one-way, so a hand edit was lost at Enzo's next change.
 - **Spec:** §6.2 (curated long-term memory), §6.5 (write discipline), §3 steps 2 and 6 (retrieve,
   then persist and learn), §15.2 (memory you can inspect, correct and trust), §17 "Memory".
 - **Also:** #41 (Enzo could not say where it saved a file).

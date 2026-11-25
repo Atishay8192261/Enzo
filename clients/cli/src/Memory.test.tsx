@@ -49,7 +49,7 @@ describe("/memory (spec §6.2, §15.2)", () => {
       s,
       "Enzo remembers nothing yet. Tell it something, like “remember I prefer",
     );
-    expect(card).toContain("A readable copy:");
+    expect(card).toContain("A copy you can read and edit by hand:");
   });
 });
 

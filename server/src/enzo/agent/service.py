@@ -20,7 +20,7 @@ from enzo.agent.prompt import MemorySnippet, compose_prompt
 from enzo.brain.models import Message, TextPart
 from enzo.brain.router import Router, classify
 from enzo.context import conversation_var, new_turn_id, timezone_var, turn_var
-from enzo.memory import Fact, Memory
+from enzo.memory import Fact, FileEdits, Memory
 from enzo.store.repository import ConversationInfo, Store
 from enzo.store.schema import ApprovalRow
 from enzo.tools.registry import ToolRegistry
@@ -117,6 +117,9 @@ class ConversationService:
         conversation_var.set(str(conversation_id))
         # Tools that deal in times (reminders) read the user's zone from the turn.
         timezone_var.set((meta or TurnMeta()).timezone)
+        # The user may have edited Memory.md by hand: their edits count before anything is
+        # recalled (spec §11.2, §11.3), and the brain hears what was not saved, to tell them.
+        edits = await self.memory.read_edits() if self.memory else None
         recalled = await self.memory.recall(text) if self.memory else []
         prompt = compose_prompt(
             system=self._system,
@@ -124,6 +127,7 @@ class ConversationService:
             memory=[_snippet(f) for f in recalled],
             history=repair(history),
             user_message=user,
+            notes=[edits_note(edits)] if edits else (),
         )
         saved_from = len(prompt) - (2 if closing is not None else 1)
         # A scheduled run's message is marked as such: the apps show it as a run, not as words
@@ -285,8 +289,29 @@ async def _drain(queue: "asyncio.Queue[ServiceEvent | object]") -> AsyncGenerato
         yield item  # type: ignore[misc]  # everything but the sentinel is a ServiceEvent
 
 
+def edits_note(edits: FileEdits) -> str:
+    """What the brain is told about the user's hand edits of Memory.md, to pass on."""
+    counts = ((edits.changed, "changed"), (edits.added, "added"), (edits.removed, "removed"))
+    done = [f"{n} {what}" for n, what in counts if n]
+    note = "Memory.md was edited by hand since the last message"
+    if done:
+        note += f" ({', '.join(done)}): the memory that comes with this message is current."
+    else:
+        note += "."
+    if edits.notes:
+        notes = " ".join(n.removeprefix("> ") for n in edits.notes)
+        note += (
+            f" Enzo's notes on it: {notes} In your reply, tell the user plainly what was not "
+            "saved and why."
+        )
+    return note
+
+
 def _snippet(fact: Fact) -> MemorySnippet:
-    who = "the user said it" if fact.said_by == "user" else "Enzo inferred it"
+    if fact.edited_by_hand:
+        who = "the user edited it by hand in Memory.md"
+    else:
+        who = "the user said it" if fact.said_by == "user" else "Enzo inferred it"
     where = f" in “{fact.chat}”" if fact.chat else ""
     text = f"{fact.about}: {fact.text}" if fact.about else fact.text
     return MemorySnippet(text, f"{who}{where}", fact.learned_at.date(), fact.id)
