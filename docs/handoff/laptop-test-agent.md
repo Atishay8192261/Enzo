@@ -43,10 +43,15 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
 
 **Works now:**
 
-- **Reminders (new, ADR 0021).** "remind me Friday at 9 to call mom": it arrives in the chat, in any
+- **Scheduled tasks (new, ADR 0022).** "every morning at 8 check the weather in Austin and tell me,
+  until Friday": Enzo shows the exact plan for approval, then does it on its own at each time, in its
+  own chat ("⏰ Check the weather…"), and reports back in this chat, in any open app and as a desktop
+  notification. Watches ("tell me when a table for two is free on Friday") stay quiet until the
+  answer is yes, then stop. A repeat must have an end. `/scheduled` (or `/tasks`) lists tasks and
+  reminders, `/cancel` removes one.
+- **Reminders (ADR 0021).** "remind me Friday at 9 to call mom": it arrives in the chat, in any
   open app, and as a desktop notification, also with the app closed (Enzo stays on in the
-  background while reminders are due; `enzo stop` turns it off). `/reminders` lists them,
-  `/cancel` removes one. Missed ones arrive late, once.
+  background while something is scheduled; `enzo stop` turns it off). Missed ones arrive late, once.
 - **Memory (ADR 0020).** Enzo remembers durable facts you tell it across chats: who you
   are, preferences, people, decisions. Each has its source (you said / Enzo inferred, when, which
   chat). `/memory` shows them, `/forget` removes one, `~/Enzo/Memory.md` is a readable copy.
@@ -131,12 +136,13 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
 
 **Not built yet** (don't file these as bugs; do note how much their absence hurts real use):
 
-- **Tools so far:** web search, reading pages, files in `~/Enzo`, and GitHub (with a token). No
-  email, calendar or reminders yet.
-- **No memory** across conversations (spec §6). No context compaction for very long chats (§5).
+- **Tools so far:** web search, reading pages, files in `~/Enzo`, GitHub (with a token), memory,
+  reminders and scheduled tasks. No email or calendar yet.
+- **Memory:** no goals yet (§6.4), no search by meaning (§6.3), and hand edits to `Memory.md` are not
+  read back yet. No context compaction for very long chats (§5).
 - **Not yet verified against the real APIs:** Grok, Kimi, and switching models inside one
   conversation.
-- No background jobs, no scheduled tasks, no deployment.
+- No event hooks (§9.4), no subagents (§9.5), no deployment.
 
 ## Installing like a normal user (issue #23)
 
@@ -359,8 +365,20 @@ For each journey:
     - Close the lid past a reminder's time, wait, open it: the reminder arrives within a minute,
       marked "late: due …, Enzo wasn't running" (or "late" if the computer slept).
     - Daylight saving and time zones: a daily reminder keeps its local time. Note anything odd.
-    - `enzo doctor` shows "reminders: N, next …". `enzo logs` shows `reminder.set`,
+    - `enzo doctor` shows "scheduled: N, next …". `enzo logs` shows `reminder.set`,
       `reminder.delivered`, never the words.
+    - Scheduled tasks (ADR 0022), with a real model:
+        - "in 3 minutes, check the weather in his city for tomorrow and tell me": an approval card
+          with the plan in words ("Schedule a task, once, … at …: …"). After "y", a confirmation.
+          At that minute a "⏰ <task>: <first line of the answer>" line arrives in the open chat and as
+          a notification. `/chats` shows the task's own chat with the full run.
+        - "every 2 minutes until today, tell me a fun fact, at most 3 times": three reports, the last
+          one ending "That was its last run.". `/tasks` is empty afterwards.
+        - "every 5 minutes until tomorrow, tell me when it is past <a time 10 minutes out>": the first
+          runs stay quiet (no notification), the run past that time reports and ends "Done: it stops now."
+        - "every hour, check the news" with no end: Enzo must ask how long, not schedule it forever.
+        - `/cancel` a task: it never runs again. `enzo logs` shows `task.set`, `task.start`,
+          `task.run`, never the instruction or the answer.
 17. **Usability verdict.** After a session, write 5 to 10 bullets with Atishay:
     - Could he use this every day?
     - What is missing first?

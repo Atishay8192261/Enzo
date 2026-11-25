@@ -203,6 +203,9 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
 - Reminders (`enzo.schedule`, ADR 0021): the runner checks the wall clock every ≤30 s (timers stall while a
   Mac sleeps). httpx2's ASGI transport does not stream: test `/events` with a real uvicorn server.
   A gateway stops answering before its exit hooks finish: wait for the process, not for health.
+- Scheduled tasks (ADR 0022): a run is `service.send(..., origin="schedule")` in the task's own chat; its
+  framing rides in `TurnMeta.note` (context part), so clients show only the instruction. `job_var` tells
+  `finish_task` which task is running. A task is claimed only while `running_since` is null.
 - Bun's default 5 s test timeout kills a slow test but leaves it running, which breaks the tests after it:
   `clients/cli/bunfig.toml` sets 20 s. Shared terminal test helpers live in `clients/cli/src/testing.tsx`.
 - React reuses a component at the same spot: dialogs get `key={kind}`, or a typed filter carries over.
@@ -258,7 +261,7 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
   `read_page` (own fetch + SSRF guard), workspace files (list/read/create/edit/delete with approval),
   untrusted-output fence, plain-language approval summaries; [x] batch 2 MCP connectors + GitHub (ADR 0012,
   `docs/connectors/github.md`): schema tools, prepare-before-approval (merge pinned to head + diff), §8.3 stops;
-  [ ] batch 3 Gmail + Calendar via MCP; batch 4 [x] memory tools (ADR 0020), [x] reminders (ADR 0021), [ ] scheduled agent tasks
+  [ ] batch 3 Gmail + Calendar via MCP; batch 4 [x] memory tools (ADR 0020), [x] reminders (ADR 0021), [x] scheduled agent tasks (ADR 0022)
 - [x] Spec §4 agent loop (`enzo.agent`: `run_turn`, approvals, prompt order; ADR 0004)
 - [x] Spec §11 persistence base: Postgres store for transcripts, brain/tool call ledgers, approvals (ADR 0005)
 - [x] Gateway: conversations, SSE turns, approvals, brain choice, auth (`enzo.gateway`, `enzo.agent.service`, ADR 0006)
@@ -291,5 +294,9 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
   message, corrections replace, secrets refused, `/memory` + `/forget`, `~/Enzo/Memory.md`; #41 folder named.
 - [x] Reminders (spec §9.2/§9.3, ADR 0021): `remind`/`list_reminders`/`cancel_reminder`, wall-clock
   repeats, delivered once (late after sleep), chat timeline + live `/events` + desktop notification,
-  gateway stays on in the background while due, `enzo stop`; `/reminders`, `/cancel`. Next: scheduled tasks.
+  gateway stays on in the background while due, `enzo stop`; `/reminders`, `/cancel`.
+- [x] Scheduled tasks (spec §9.3, ADR 0022): approved `schedule_task` (a repeat must end; watches have
+  `stop_when` + `finish_task`), each run a turn in the task's own chat (`origin = schedule`), outcomes
+  reported/quiet/finished/needs_approval/failed, stops after 3 failures, recovered after a restart;
+  `/scheduled` (also `/reminders`, `/tasks`), `/events` `task`. Also §12.6 hard boundaries in the rules.
 - Then continue in the order of the spec §17 checklist.
