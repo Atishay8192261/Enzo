@@ -20,7 +20,7 @@ from enzo.agent.approvals import ApprovalRequest, approval_request
 from enzo.agent.history import open_calls
 from enzo.brain.config import TaskKind
 from enzo.brain.errors import BrainError
-from enzo.brain.models import BrainResponse, Message, TextDelta, ToolCall, ToolSpec
+from enzo.brain.models import BrainResponse, Message, TextDelta, TextPart, ToolCall, ToolSpec
 from enzo.brain.router import (
     AllBrainsFailedError,
     CallRecord,
@@ -29,7 +29,7 @@ from enzo.brain.router import (
     Router,
 )
 from enzo.brain.toolcall import ValidatedCall
-from enzo.tools.registry import ToolOutcome, ToolRegistry
+from enzo.tools.registry import ToolOutcome, ToolRegistry, plain_words
 
 log = logging.getLogger(__name__)
 
@@ -165,7 +165,7 @@ async def run_turn(  # noqa: PLR0913 - keyword-only turn settings
             async for event in _execute(registry, unanswered, gates, decided, turn):
                 yield event
             continue
-        if (halt := _halt(turn, stop, max_steps)) is not None:
+        if (halt := _halt(turn, stop, max_steps, registry)) is not None:
             yield halt
             return
         async for event in _ask_brain(ask, turn, stop):
@@ -188,11 +188,13 @@ class _Ask:
     affinity: str | None
 
 
-def _halt(turn: _Turn, stop: asyncio.Event | None, max_steps: int) -> TurnDone | None:
+def _halt(
+    turn: _Turn, stop: asyncio.Event | None, max_steps: int, registry: ToolRegistry
+) -> TurnDone | None:
     if stop is not None and stop.is_set():
         return turn.done("cancelled", "Stopped at your request.")
     if turn.steps >= max_steps:
-        return turn.done("max_steps", _max_steps_report(turn))
+        return turn.done("max_steps", _max_steps_report(turn, registry))
     return None
 
 
@@ -401,11 +403,36 @@ async def _execute(
     turn.messages.append(Message.tool(*(o.result for o in outcomes)))
 
 
-def _max_steps_report(turn: _Turn) -> str:
-    tried = Counter(f"{o.call.name} ({o.status})" for o in turn.tool_outcomes)
-    summary = ", ".join(f"{name} x{n}" for name, n in tried.items()) or "no tools"
-    request = next((m.text for m in reversed(turn.messages) if m.role == "user"), "")
+#: How a step that did not work out is named in the report.
+_NOT_OK = {
+    "invalid_arguments": "rejected",
+    "unknown_tool": "rejected",
+    "failed": "failed",
+    "bad_result": "failed",
+    "timeout": "timed out",
+    "declined": "declined",
+    "not_run": "not run",
+}
+
+
+def _max_steps_report(turn: _Turn, registry: ToolRegistry) -> str:
+    """What was tried and what is still open, for the user: steps in plain words, never tool
+    names (§10.3), and the request in their own words, without the context note or the memory
+    that rode with it (ADR 0007)."""
+    tried = Counter((registry.activity(o.call), _NOT_OK.get(o.status)) for o in turn.tool_outcomes)
+    steps = [_tried(label, problem, n) for (label, problem), n in tried.items()]
+    summary = ", ".join(steps) or "no steps"
+    asked = next((m for m in reversed(turn.messages) if m.role == "user" and m.parts), None)
+    words = asked.parts[0] if asked else None
+    request = words.text if isinstance(words, TextPart) else ""
     return (
         f"Stopped after {turn.steps} steps without a final answer. "
-        f"Tried: {summary}. Still open: {request[:200]}"
+        f"Tried: {summary}. Still open: {plain_words(request, 200)}"
     )
+
+
+def _tried(label: str, problem: str | None, n: int) -> str:
+    notes = [problem] if problem else []
+    if n > 1:
+        notes.append(f"{n} times")
+    return f"{label} ({', '.join(notes)})" if notes else label
