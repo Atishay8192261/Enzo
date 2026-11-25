@@ -27,12 +27,15 @@ def compose_prompt(
     memory: Sequence[MemorySnippet],
     history: Sequence[Message],
     user_message: str | Message | None,
+    notes: Sequence[str] = (),
 ) -> list[Message]:
     """(1) system, (2) developer, (4) history, (6) the user's message carrying (3) memory.
 
     Retrieved memory rides inside the new user message, after the history (ADR 0007, a deliberate
     change from spec §3's listed order): the conversation stays append-only, so provider prompt
     caches keep covering the whole history and reasoning replay never sees an edited prefix.
+    ``notes`` ride the same way, after the memory, each as its own part: what Enzo's records
+    say beyond the facts recalled (e.g. that the user edited Memory.md by hand).
     (5) tool definitions travel as API parameters and (7) this turn's tool results are appended by
     the loop. With no user message, the prompt resumes a paused turn exactly where it stopped.
     """
@@ -49,8 +52,9 @@ def compose_prompt(
     if user.role != "user":
         msg = "the new message must come from the user"
         raise ValueError(msg)
-    if memory:
-        user = Message(role="user", parts=(*user.parts, TextPart(text=render_memory(memory))))
+    extra = ([render_memory(memory)] if memory else []) + [n for n in notes if n]
+    if extra:
+        user = Message(role="user", parts=(*user.parts, *(TextPart(text=t) for t in extra)))
     prompt.append(user)
     return prompt
 
@@ -78,6 +82,7 @@ def install_note(workspace: Path) -> str:
     return (
         f"The user's Enzo folder is {folder}. Files you create or edit are saved there: when "
         f"you save one, say where it is, like “Saved to {folder}/plan.md”.\n"
-        f"{folder}/Memory.md is a readable copy of your memory, for the user. They can also "
-        "see and forget memories with /memory in the terminal app."
+        f"{folder}/Memory.md is a readable copy of your memory, for the user. They can edit "
+        "it by hand: Enzo reads their edits before each message, as their own corrections. "
+        "They can also see and forget memories with /memory in the terminal app."
     )
