@@ -233,6 +233,12 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
   "Server returned an error response", so `enzo.connectors.mcp` reads the HTTP status through an event hook.
 - Google accepts any loopback port and path for a Desktop OAuth client. Tests fake Google over HTTP with its real
   tool schemas (`tests/connectors/fake_google.py`, `google_tools.json`).
+- Evals: each task runs in a fresh `contextvars.Context()` (`service.send` sets the chat var in the caller). Changing
+  a task means bumping `VERSION` and `FINGERPRINT` (the failing test prints it); the scripted agent is
+  `tests/evals/agent.py`. The router is pinned per run (`evals.harness.pinned`): no fallback.
+- `enzo eval` and the gateway share the vault: ChatGPT renewal holds `.chatgpt-renewal.lock` and re-reads inside it.
+- Time to first token: `CallRecord.first_token_ms`, logged as `ttft_ms`, not in the ledger. `enzo.redact` scrubs keys.
+  JSON escapes C0 control characters but not C1 (`\x9b`): strip both before printing (`tracing.printable`).
 - `scripts/dev.sh` is tested by `server/tests/test_dev_script.py`: fake `psql`, `uname`, `node` … on PATH set
   each state (Mac/Linux, role or database missing, old server). Keep its FIX lines covered there.
 - Pin actions by commit: `git ls-remote https://github.com/<owner>/<repo> refs/tags/<tag>^{}` (the API only
@@ -308,4 +314,8 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
   `stop_when` + `finish_task`), each run a turn in the task's own chat (`origin = schedule`), outcomes
   reported/quiet/finished/needs_approval/failed, stops after 3 failures, recovered after a restart;
   `/scheduled` (also `/reminders`, `/tasks`), `/events` `task`. Also §12.6 hard boundaries in the rules.
+- [x] Evals + traces (spec §13, §15.4/§15.5, ADR 0025, `docs/evals.md`): `enzo eval` runs 20 fixed tasks
+  (`enzo.evals.suite` v1, `FINGERPRINT` pinned) through the real loop and tools on each connected account's
+  everyday brain (`--brain`, `--brain all`, `--task`, `--offline`), in a throwaway DB + workspace, graded from the
+  records; `--compare A B` exits 1 on a pass-rate drop; `enzo trace [turn|last]`. Real-brain run pending on the laptop.
 - Then continue in the order of the spec §17 checklist.
