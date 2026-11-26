@@ -27,6 +27,8 @@ from enzo.agent.service import ConversationService
 from enzo.brain.config import Tier, load_config
 from enzo.brain.factory import build_brain, has_key
 from enzo.brain.router import Router
+from enzo.browser.session import Browsers
+from enzo.browser.tools import browser_tools
 from enzo.config import Settings
 from enzo.connectors.github import github_tools
 from enzo.gateway.chatgpt import RedactAuthQuery, chatgpt_routes
@@ -35,6 +37,7 @@ from enzo.gateway.conversations import ServiceDep, conversation_routes
 from enzo.gateway.memory import memory_routes
 from enzo.gateway.scheduled import scheduled_routes
 from enzo.memory import Memory, memory_tools
+from enzo.paths import data_dir
 from enzo.schedule import Background, Bus, FinishedTasks, Runner, Schedule, schedule_tools
 from enzo.schedule.notify import desktop, silent
 from enzo.schedule.tasks import TaskRunner
@@ -171,16 +174,30 @@ async def _running(
     runner = Runner(schedule, Bus(), notify=notify, on_idle=on_idle)
     app.state.background = Background(schedule, runner.bus, runner)
     finished = FinishedTasks()
+    # Enzo's own browser profile, in its private data folder (ADR 0027).
+    browsers = Browsers(
+        data_dir() / "browser",
+        executable=cfg.browser_path,
+        headless=cfg.browser_headless,
+        own_port=cfg.port,
+    )
+    browsers.recover()  # a browser left behind by a gateway that crashed
     tools = ToolRegistry(
         [
             *web_tools(tavily_key=lambda: acct.api_key("tavily"), http=http),
             *file_tools(cfg.workspace_dir),
             *memory_tools(memory),
             *schedule_tools(schedule, finished, on_set=runner.poke),
+            *browser_tools(browsers),
         ]
     )
     service = ConversationService(
-        store, router, tools, developer=install_note(cfg.workspace_dir), memory=memory
+        store,
+        router,
+        tools,
+        developer=install_note(cfg.workspace_dir),
+        memory=memory,
+        hooks=[browsers],
     )
     app.state.service = service
     # Scheduled tasks run as agent turns: the runner hands each due one to the task runner.
@@ -195,6 +212,7 @@ async def _running(
     finally:
         await runner.stop()
         await tasks.stop()
+        await browsers.close_all()
         await connectors.close()
         await http.aclose()
         await store.close()

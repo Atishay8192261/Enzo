@@ -8,18 +8,25 @@ import asyncio
 import logging
 import time
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from importlib import resources
-from typing import Literal
+from typing import Literal, Protocol
 
 from enzo.agent.history import close_open_calls, open_calls, repair
-from enzo.agent.loop import AgentEvent, TurnDone, TurnOutcome, run_turn
+from enzo.agent.loop import AgentEvent, StopReason, TurnDone, TurnOutcome, run_turn
 from enzo.agent.prompt import MemorySnippet, compose_prompt
 from enzo.brain.models import Message, TextPart
 from enzo.brain.router import Router, classify
-from enzo.context import conversation_var, new_turn_id, timezone_var, turn_var
+from enzo.context import (
+    BrowserInUse,
+    conversation_var,
+    new_turn_id,
+    notice_var,
+    timezone_var,
+    turn_var,
+)
 from enzo.memory import Fact, Memory
 from enzo.store.repository import ConversationInfo, Store
 from enzo.store.schema import ApprovalRow
@@ -58,12 +65,25 @@ class TurnFailed:
     message: str
 
 
-type ServiceEvent = AgentEvent | TurnFailed
+class TurnHooks(Protocol):
+    """Something that lives only as long as a chat's turn (a browser task, ADR 0027)."""
+
+    async def turn_ended(self, conversation_id: uuid.UUID, stop: StopReason | None) -> None:
+        """The turn ended (``stop``; None when it crashed). Runs before the client hears so."""
+
+    async def moved_on(self, conversation_id: uuid.UUID) -> None:
+        """A new message arrived: whatever the last turn left waiting is over."""
+
+    async def stop(self, conversation_id: uuid.UUID) -> bool:
+        """The user pressed Stop. True if something was stopped."""
+
+
+type ServiceEvent = AgentEvent | TurnFailed | BrowserInUse
 _END = object()
 
 
 class ConversationService:
-    def __init__(
+    def __init__(  # noqa: PLR0913 - keyword-only service settings
         self,
         store: Store,
         router: Router,
@@ -73,6 +93,7 @@ class ConversationService:
         developer: str | None = None,
         memory: Memory | None = None,
         max_steps: int = 16,
+        hooks: Sequence[TurnHooks] = (),
     ) -> None:
         self.store = store
         self.router = router
@@ -82,6 +103,7 @@ class ConversationService:
         #: Facts about this install the brain needs, such as where the user's Enzo folder is.
         self._developer = developer
         self._max_steps = max_steps
+        self._hooks = tuple(hooks)
         self._running: dict[uuid.UUID, asyncio.Task[None]] = {}
         self._stops: dict[uuid.UUID, asyncio.Event] = {}
 
@@ -105,6 +127,8 @@ class ConversationService:
         the open approval is dropped, so nothing runs unasked and the history stays valid (#39).
         """
         info = await self._claim(conversation_id)
+        for hook in self._hooks:
+            await hook.moved_on(conversation_id)
         history = await self.store.history(conversation_id)
         closing = close_open_calls(history)
         if closing is not None:
@@ -144,13 +168,14 @@ class ConversationService:
         )
         return self._start(info, prompt, first_new=len(prompt))
 
-    def stop(self, conversation_id: uuid.UUID) -> bool:
-        """Ask the running turn to stop (#46). What already streamed is kept. False: none runs."""
+    async def stop(self, conversation_id: uuid.UUID) -> bool:
+        """Ask the running turn to stop (#46), and end what it left running (the browser).
+        What already streamed is kept. False: nothing was running."""
         stop = self._stops.get(conversation_id)
-        if stop is None:
-            return False
-        stop.set()
-        return True
+        if stop is not None:
+            stop.set()
+        stopped = [await hook.stop(conversation_id) for hook in self._hooks]
+        return stop is not None or any(stopped)
 
     def running(self, conversation_id: uuid.UUID) -> bool:
         return conversation_id in self._running
@@ -208,7 +233,10 @@ class ConversationService:
         turn_id = new_turn_id()
         conversation_var.set(str(info.id))
         turn_var.set(turn_id)
+        # Tools tell the chat what they are doing outside it (the browser sign, ADR 0027).
+        notice_var.set(queue.put_nowait)
         began = time.perf_counter()
+        ended: StopReason | None = None
         try:
             decisions = await self.store.decisions(info.id)
             task, why = classify(self.router.config, prompt)
@@ -233,16 +261,27 @@ class ConversationService:
                 stop=stop,
             ):
                 if isinstance(event, TurnDone):
-                    # Persist before telling the client the turn is done.
+                    # Persist, and end what the turn had running, before telling the client.
                     await self._save(info.id, event.outcome, first_new, turn_id, scheduled)
                     _log_end(event.outcome, began)
+                    ended = event.outcome.stop
+                    await self._ended(info.id, ended)
                 queue.put_nowait(event)
         except Exception as exc:  # report, never leave the client hanging
             log.exception("turn.failed", extra={"ms": round((time.perf_counter() - began) * 1000)})
             queue.put_nowait(TurnFailed(f"{type(exc).__name__}: {exc}"))
             raise
         finally:
+            if ended is None:  # crashed or cancelled: nothing it started may outlive it
+                await self._ended(info.id, None)
             queue.put_nowait(_END)
+
+    async def _ended(self, conversation_id: uuid.UUID, stop: StopReason | None) -> None:
+        for hook in self._hooks:
+            try:
+                await hook.turn_ended(conversation_id, stop)
+            except Exception:  # a hook must never keep the turn from ending
+                log.exception("turn hook failed")
 
     async def _save(
         self,

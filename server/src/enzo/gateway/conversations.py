@@ -20,6 +20,7 @@ from enzo.agent.service import (
 )
 from enzo.brain.config import TIERS
 from enzo.brain.models import Message, TextDelta, ToolCall
+from enzo.context import BrowserInUse
 from enzo.gateway.usage import ConversationUsageOut, per_turn, usage_of
 from enzo.store.repository import ApprovalError, ConversationInfo, ConversationKind
 from enzo.tools.registry import ToolRegistry
@@ -162,7 +163,7 @@ def conversation_routes(auth: params.Depends) -> APIRouter:
     async def stop(conversation_id: uuid.UUID, s: ServiceDep) -> StopOut:
         """Stop the reply being written (#46). What already streamed is kept."""
         await _require(s, conversation_id)
-        return StopOut(stopping=s.stop(conversation_id))
+        return StopOut(stopping=await s.stop(conversation_id))
 
     @router.put("/{conversation_id}/brain", status_code=204)
     async def choose_brain(conversation_id: uuid.UUID, body: BrainChoice, s: ServiceDep) -> None:
@@ -274,7 +275,7 @@ def _shown(message: Message, registry: ToolRegistry, took: dict[str, float]) -> 
     return out
 
 
-def _sse(event: ServiceEvent) -> ServerSentEvent:
+def _sse(event: ServiceEvent) -> ServerSentEvent:  # noqa: PLR0911 - one return per event kind
     """Client-facing events. Plain data only: no provider payloads leave the gateway."""
     match event:
         case TextDelta(text=text):
@@ -327,3 +328,6 @@ def _sse(event: ServiceEvent) -> ServerSentEvent:
             return ServerSentEvent(event="done", data=data)
         case TurnFailed(message=message):
             return ServerSentEvent(event="error", data={"message": message})
+        case BrowserInUse(site=site):
+            # "Enzo is using your browser: <site>"; null when the browser closed (ADR 0027).
+            return ServerSentEvent(event="browser", data={"site": site})

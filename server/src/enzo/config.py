@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     use_env_keys: bool = False
     #: Show reminders as desktop notifications too (ENZO_NOTIFY=0 turns them off).
     notify: bool = True
+    #: The browser Enzo drives (ADR 0027). None: the installed Google Chrome, Edge or Chromium.
+    browser_path: Path | None = None
+    #: Show the browser window (False) or keep it hidden (True). None: shown where there is a
+    #: screen (a Mac, a Linux desktop), hidden on a server.
+    browser_headless: bool | None = None
     #: Host names the gateway answers to (DNS-rebinding defence). Local only unless changed.
     allowed_hosts: tuple[str, ...] = ("127.0.0.1", "localhost", "[::1]", "::1")
 
