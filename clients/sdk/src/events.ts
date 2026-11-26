@@ -9,7 +9,7 @@ export type AgentEvent =
       id: string;
       tool: string;
       label: string;
-      /** "ok", or why not: "declined", "not_run", "failed", "timeout", ... */
+      /** "ok", or why not: "declined", "not_run", "stopped", "failed", "timeout", ... */
       status: string;
       latency_ms: number;
     }
@@ -45,7 +45,9 @@ export type AgentEvent =
    * `text` says so in plain words; `turns` is how many earlier turns the summary covers.
    */
   | { type: "compacted"; text: string; turns: number; ok: boolean }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  /** Enzo is using the browser for this chat, on `site`; null when it closed (ADR 0027). */
+  | { type: "browser"; site: string | null };
 
 /** What brain calls used: for one reply, one turn, or a whole chat (#49). */
 export interface Usage {
@@ -111,6 +113,7 @@ const SHAPES: Record<AgentEvent["type"], Shape> = {
   },
   compacted: { text: "string", turns: "number", ok: "boolean" },
   error: { message: "string" },
+  browser: { site: "string|null" },
 };
 
 export class MalformedEventError extends Error {
