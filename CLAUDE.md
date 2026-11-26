@@ -243,6 +243,10 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
   by then; without the comment nothing is removed. File tools refuse Memory.md and Goals.md by casefold name or samefile.
 - Goal rules live in `enzo.goals.store`, not only in the prompt; `user_today(now)` uses the turn's zone. The OpenAI
   adapter sends tool errors as `Error: {json}`: a mock provider must strip that prefix.
+- Compaction: the prompt is `build_view(transcript, latest compaction)`; never edit stored messages. Kept turns from
+  before a summary lose their replay data (Claude's thinking prefix check). Tools + system prompt are ~6.6K tokens: a
+  small `compact_at` in a test config must sit above that. Helpers: `tests/compaction/fakes.py` (`RuleBrain`, tiny
+  windows; give services a short `system_prompt`). Stored texts: `data_dir()/context/<chat>/`, ids are content hashes.
 - `scripts/dev.sh` is tested by `server/tests/test_dev_script.py`: fake `psql`, `uname`, `node` … on PATH set
   each state (Mac/Linux, role or database missing, old server). Keep its FIX lines covered there.
 - Pin actions by commit: `git ls-remote https://github.com/<owner>/<repo> refs/tags/<tag>^{}` (the API only
@@ -323,6 +327,10 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
 - [x] Goals (spec §6.4, ADR 0023): `create_goal` / `record_goal_progress` / `close_goal` / `list_goals`, evidence for
   every change, a step never closes a goal, closing cancels linked check-ins (`goal` on remind/schedule_task), open
   goals in each message, read-only `~/Enzo/Goals.md`, `/goals [done]`. Goal tools are in `core_tools` (evals see them).
+- [x] Compaction (spec §5, §1.3.5, ADR 0024): local-first token counting (exact count near a limit), per-brain
+  budgets from sourced windows in `brains.toml [context]`, summaries of older turns by the chat's own provider
+  (structured record, corrections verbatim, invariants in code, migration 0010), long tool results and pastes kept
+  as files + `read_stored_output`, a "summarized" line in the chat. Real-model check: `scripts/compaction-check.py`.
 - [x] Evals + traces (spec §13, §15.4/§15.5, ADR 0025, `docs/evals.md`): `enzo eval` runs 20 fixed tasks
   (`enzo.evals.suite` v1, `FINGERPRINT` pinned) through the real loop and tools on each connected account's
   everyday brain (`--brain`, `--brain all`, `--task`, `--offline`), in a throwaway DB + workspace, graded from the
