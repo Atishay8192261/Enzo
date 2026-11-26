@@ -58,9 +58,8 @@ def turn_positions(conversation: Sequence[Message]) -> list[tuple[int, int]]:
     for message in conversation:
         if message.role == "user":
             if seen_user:
-                turn += 1
+                turn, offset = turn + 1, 0
             seen_user = True
-            offset = 0
         out.append((turn, offset))
         offset += 1
     return out
