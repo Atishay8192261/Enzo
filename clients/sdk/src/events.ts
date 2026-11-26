@@ -39,6 +39,12 @@ export type AgentEvent =
       /** Tokens, models and time behind the reply (#49). */
       usage: Usage;
     }
+  /**
+   * Older messages were summarized before this reply, to keep the chat within the model's limits
+   * (spec §5.2), or (`ok: false`) summarizing failed and the reply read the whole chat.
+   * `text` says so in plain words; `turns` is how many earlier turns the summary covers.
+   */
+  | { type: "compacted"; text: string; turns: number; ok: boolean }
   | { type: "error"; message: string };
 
 /** What brain calls used: for one reply, one turn, or a whole chat (#49). */
@@ -103,6 +109,7 @@ const SHAPES: Record<AgentEvent["type"], Shape> = {
     plan: "boolean",
     usage: "object",
   },
+  compacted: { text: "string", turns: "number", ok: "boolean" },
   error: { message: "string" },
 };
 
