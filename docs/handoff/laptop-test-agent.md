@@ -43,6 +43,11 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
 
 **Works now:**
 
+- **Evals and traces (new, ADR 0025, `docs/evals.md`).** After connecting accounts: `enzo eval`, then
+  `enzo eval --brain claude-sonnet --brain gpt-sol`, then `enzo eval --compare previous last` (exit 0 when
+  nothing changed); open the `.md` path it prints. File a `user-testing` issue per task that fails on a real
+  model, with its id and reason line (never a key or the JSON's tool results). After a chat turn with a tool
+  and an approval, `enzo trace` must show the runs, tokens, first token, cost and the approval.
 - **Gmail and Google Calendar (new, ADR 0026).** `/login google` (or `/login google read`): Enzo asks once
   for his own Google OAuth client file (hidden), then the browser signs in. Read and search mail and events,
   find a free time; sending, replying, forwarding, drafts and event changes each show the exact content for
