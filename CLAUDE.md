@@ -247,6 +247,14 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
   before a summary lose their replay data (Claude's thinking prefix check). Tools + system prompt are ~6.6K tokens: a
   small `compact_at` in a test config must sit above that. Helpers: `tests/compaction/fakes.py` (`RuleBrain`, tiny
   windows; give services a short `system_prompt`). Stored texts: `data_dir()/context/<chat>/`, ids are content hashes.
+- Browser (`enzo.browser`, ADR 0027): Playwright 1.65 `page.aria_snapshot(mode="ai")` refs (`[ref=e5]`) stay with
+  their element across snapshots (`page.locator("aria-ref=e5")`); a default-mode snapshot resets them. A missing ref
+  waits the full timeout: pass a short one. Playwright turns Chrome's sandbox off by default: Enzo keeps it on unless
+  root. Routes see only a redirect's first request; a blocked navigation leaves `chrome-error://` (Enzo goes back).
+- Tools that ask only sometimes: `prepare` returns `Prepared(..., ask=True, summary=...)`; `ToolStoppedError` → step
+  "stopped". `service.stop` is async; `ConversationService` hooks (`turn_ended`, `moved_on`, `stop`) end what a turn
+  left running. Browser tests use a real Chrome/Edge/Chromium (or `ENZO_BROWSER_PATH`) and `tests/browser/shop.py`;
+  with `CI` set and no browser they fail, never skip.
 - `scripts/dev.sh` is tested by `server/tests/test_dev_script.py`: fake `psql`, `uname`, `node` … on PATH set
   each state (Mac/Linux, role or database missing, old server). Keep its FIX lines covered there.
 - Pin actions by commit: `git ls-remote https://github.com/<owner>/<repo> refs/tags/<tag>^{}` (the API only
@@ -331,6 +339,10 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
   budgets from sourced windows in `brains.toml [context]`, summaries of older turns by the chat's own provider
   (structured record, corrections verbatim, invariants in code, migration 0010), long tool results and pastes kept
   as files + `read_stored_output`, a "summarized" line in the chat. Real-model check: `scripts/compaction-check.py`.
+- [x] Browser use (spec §7.2.4, §12.3–12.5, ADR 0027): approved once per task (task + exact sites), then steps run
+  on their own; buying/paying, sending/posting, deleting, a password/card/one-time code, submitting a form holding
+  one or on a checkout page, and leaving the sites each ask with the exact action; "Enzo is using your browser"
+  sign, Esc closes it. Desktop-app control (screen recording + accessibility on macOS) still to do.
 - [x] Evals + traces (spec §13, §15.4/§15.5, ADR 0025, `docs/evals.md`): `enzo eval` runs 20 fixed tasks
   (`enzo.evals.suite` v1, `FINGERPRINT` pinned) through the real loop and tools on each connected account's
   everyday brain (`--brain`, `--brain all`, `--task`, `--offline`), in a throwaway DB + workspace, graded from the

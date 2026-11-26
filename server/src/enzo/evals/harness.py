@@ -303,7 +303,7 @@ async def _settle(service: ConversationService, conversation: uuid.UUID | None) 
     """Stop a turn still running (a timeout, a crash) before the next task empties the tables."""
     if conversation is None:
         return
-    service.stop(conversation)
+    await service.stop(conversation)
     with contextlib.suppress(Exception):
         async with asyncio.timeout(30):
             await service.wait_idle(conversation)
