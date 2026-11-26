@@ -5,6 +5,7 @@ import type {
   ChatClient,
   ChatsClient,
   ConversationMemory,
+  GoalsClient,
   MemoryClient,
   ScheduleClient,
   Start,
@@ -137,7 +138,12 @@ export function memory(start: string | null = null): ConversationMemory {
   };
 }
 
-export type Client = ChatClient & AccountsClient & ChatsClient & MemoryClient & ScheduleClient;
+export type Client = ChatClient &
+  AccountsClient &
+  ChatsClient &
+  MemoryClient &
+  ScheduleClient &
+  GoalsClient;
 
 /** An event stream with nothing to say: it stays open until the app closes it. */
 export async function* quiet(signal?: AbortSignal): AsyncGenerator<GatewayEvent> {
@@ -185,6 +191,7 @@ export function fakeClient(overrides: Partial<Client> = {}): Client {
     renameConversation: mock(async () => {}),
     deleteConversation: mock(async () => {}),
     memories: async () => ({ memories: [], file: "~/Enzo/Memory.md" }),
+    goals: async () => ({ goals: [], file: "~/Enzo/Goals.md" }),
     scheduled: async () => [],
     cancelScheduled: mock(async () => {}),
     conversationScheduled: async () => [],
