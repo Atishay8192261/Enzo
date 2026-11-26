@@ -5,6 +5,7 @@ every message while open, and still there after a restart."""
 import io
 import json
 import stat
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ from enzo.brain.fake import ScriptedBrain
 from enzo.brain.router import Router
 from enzo.goals import GoalRefusedError, Goals, goal_tools, goals_note
 from enzo.schedule import Background, Bus, FinishedTasks, Runner, Schedule, schedule_tools
-from enzo.schedule.store import ScheduleRefusedError
+from enzo.schedule.store import Job, ScheduleRefusedError
 from enzo.store.repository import Store
 from enzo.tools.files import FileToolError, Workspace
 from enzo.tools.registry import ToolRegistry
@@ -130,7 +131,7 @@ async def test_a_goal_completed_is_marked_done_and_stops_reminding(
     assert (goal["id"], goal["status"], goal["title"]) == (1, "done", "Renew my passport")
     assert goal["closing"]["basis"] == "user_confirmed"
     assert goal["closing"]["evidence"].startswith("The user said their new passport arrived")
-    assert goal["closing"]["said"].startswith("you confirmed, ")
+    assert goal["closing"]["said"] == f"you confirmed, {datetime.now(UTC):%-d %b %Y}"
     assert still["goals"] == []
     assert scheduled["scheduled"] == []  # it stops reminding (§6.4)
     (stopped,) = results(brain, 4)
@@ -346,7 +347,27 @@ def test_what_the_brain_sees_of_open_goals() -> None:
     assert goals_note([], date(2026, 11, 25)) is None
     many = goals_note([goal] * 12, date(2026, 11, 25))
     assert many is not None
+    assert many.count("- #3 Renew my passport") == 10  # only the first ten ride along
     assert "and 2 more open goals" in many
+    weekly = Job(
+        id=7,
+        kind="reminder",
+        text="Passport",
+        timezone="UTC",
+        first_at=datetime(2026, 11, 30, 9, 0, tzinfo=UTC),
+        repeat="weekly",
+        every=1,
+        ends_on=None,
+        max_runs=None,
+        runs=0,
+        next_run_at=datetime(2026, 11, 30, 9, 0, tzinfo=UTC),
+        status="active",
+        conversation_id=None,
+        goal_id=3,
+    )
+    checked = goals_note([replace(goal, check_ins=(weekly,))], date(2026, 11, 25))
+    assert checked is not None
+    assert "check-ins: reminder #7 (every week on Monday at 09:00)" in checked
 
 
 async def test_goals_md_is_a_read_only_copy_and_a_hand_edit_is_kept_aside(
@@ -445,14 +466,32 @@ async def test_the_tools_say_what_they_do_in_plain_words(goals: Goals) -> None:
     listed = await registry.execute(call("c4", "list_goals", include_closed=True))
     (goal,) = json.loads(listed.result.content)["goals"]
     assert (goal["title"], goal["remaining"]) == ("Renew my passport", 1)
+    # The last step done: still open, and the result says the outcome is what to confirm.
+    last = await registry.execute(
+        call(
+            "c5",
+            "record_goal_progress",
+            goal=1,
+            done_steps=[1],
+            evidence="The user said the photos are taken.",
+            basis="user_confirmed",
+        )
+    )
+    out = json.loads(last.result.content)
+    assert (out["status"], out["remaining"]) == ("open", 0)
+    assert out["next"].startswith("Every step is done. If the outcome itself is achieved")
 
 
 async def test_today_is_the_users_own_date(goals: Goals) -> None:
     from enzo.context import timezone_var  # noqa: PLC0415
     from enzo.goals.store import user_today  # noqa: PLC0415
 
-    token = timezone_var.set("Pacific/Kiritimati")  # UTC+14: often a day ahead
+    noon = datetime(2026, 11, 25, 12, 0, tzinfo=UTC)
+    token = timezone_var.set("Pacific/Kiritimati")  # UTC+14: already the next day
     try:
+        assert user_today(noon) == date(2026, 11, 26)
         assert user_today() == datetime.now(ZoneInfo("Pacific/Kiritimati")).date()
+        timezone_var.set("America/Los_Angeles")
+        assert user_today(noon + timedelta(hours=7)) == date(2026, 11, 25)  # still the 25th
     finally:
         timezone_var.reset(token)
