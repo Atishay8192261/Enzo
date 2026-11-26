@@ -228,6 +228,11 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
 - Background jobs from a non-interactive shell ignore SIGINT: test Ctrl+C in a pty, not with `&` + `pkill -INT`.
 - Running as root, pgserver runs Postgres as a `pgserver` system user: root-only failures there are not
   user bugs. Creating test users is blocked in this sandbox; CI runners (non-root, Linux + macOS) cover it.
+- Google MCP (`gmailmcp`/`calendarmcp.googleapis.com/mcp/v1`, checked 2026-11-25) answers `server/discover` with
+  "Invalid params": use `Client(mode="legacy")`. Its 401/429 bodies are JSON-RPC results, which the SDK turns into
+  "Server returned an error response", so `enzo.connectors.mcp` reads the HTTP status through an event hook.
+- Google accepts any loopback port and path for a Desktop OAuth client. Tests fake Google over HTTP with its real
+  tool schemas (`tests/connectors/fake_google.py`, `google_tools.json`).
 - `scripts/dev.sh` is tested by `server/tests/test_dev_script.py`: fake `psql`, `uname`, `node` … on PATH set
   each state (Mac/Linux, role or database missing, old server). Keep its FIX lines covered there.
 - Pin actions by commit: `git ls-remote https://github.com/<owner>/<repo> refs/tags/<tag>^{}` (the API only
@@ -263,7 +268,9 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
   `read_page` (own fetch + SSRF guard), workspace files (list/read/create/edit/delete with approval),
   untrusted-output fence, plain-language approval summaries; [x] batch 2 MCP connectors + GitHub (ADR 0012,
   `docs/connectors/github.md`): schema tools, prepare-before-approval (merge pinned to head + diff), §8.3 stops;
-  [ ] batch 3 Gmail + Calendar via MCP; batch 4 [x] memory tools (ADR 0020), [x] reminders (ADR 0021), [x] scheduled agent tasks (ADR 0022)
+  [x] batch 3 Gmail + Calendar via Google's MCP servers (ADR 0026, `docs/connectors/google.md`): `/login google [read]`,
+  exact approval cards, reply recipients pinned, `google_status`; OAuth client choice pending Atishay (built for
+  bring-your-own); batch 4 [x] memory tools (ADR 0020), [x] reminders (ADR 0021), [x] scheduled agent tasks (ADR 0022)
 - [x] Spec §4 agent loop (`enzo.agent`: `run_turn`, approvals, prompt order; ADR 0004)
 - [x] Spec §11 persistence base: Postgres store for transcripts, brain/tool call ledgers, approvals (ADR 0005)
 - [x] Gateway: conversations, SSE turns, approvals, brain choice, auth (`enzo.gateway`, `enzo.agent.service`, ADR 0006)

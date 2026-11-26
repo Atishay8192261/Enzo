@@ -43,6 +43,13 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
 
 **Works now:**
 
+- **Gmail and Google Calendar (new, ADR 0026).** `/login google` (or `/login google read`): Enzo asks once
+  for his own Google OAuth client file (hidden), then the browser signs in. Read and search mail and events,
+  find a free time; sending, replying, forwarding, drafts and event changes each show the exact content for
+  approval first. `/check google`, `/logout google` (also removes Enzo's access at Google). Follow "Laptop
+  test with a real account" in `docs/connectors/google.md` (test emails to himself only) and file
+  `user-testing` issues for anything that differs: above all whether sending is offered, any "API not
+  enabled" message, and whether reply works.
 - **Scheduled tasks (new, ADR 0022).** "every morning at 8 check the weather in Austin and tell me,
   until Friday": Enzo shows the exact plan for approval, then does it on its own at each time, in its
   own chat ("⏰ Check the weather…"), and reports back in this chat, in any open app and as a desktop
@@ -137,7 +144,7 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
 **Not built yet** (don't file these as bugs; do note how much their absence hurts real use):
 
 - **Tools so far:** web search, reading pages, files in `~/Enzo`, GitHub (with a token), memory,
-  reminders and scheduled tasks. No email or calendar yet.
+  reminders, scheduled tasks, Gmail and Google Calendar (with his own Google OAuth client).
 - **Memory:** no goals yet (§6.4), no search by meaning (§6.3), and hand edits to `Memory.md` are not
   read back yet. No context compaction for very long chats (§5).
 - **Not yet verified against the real APIs:** Grok, Kimi, and switching models inside one
