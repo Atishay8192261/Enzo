@@ -72,9 +72,11 @@ while anything irreversible still waits for the exact action.
 12. **Lifetime and stop:** one browser task at a time (one profile). It ends when its turn ends,
     except while a step waits for the user's yes (its page stays open, closing after 10 idle
     minutes); a new message ends a waiting task; Esc (`/stop`) closes it at once, also while it
-    waits, and a step cut off by that reports "stopped", not "failed"; gateway shutdown closes it;
-    at start, browsers left on Enzo's profile by a crashed gateway are killed. These are
-    `ConversationService` hooks (`turn_ended`, `moved_on`, `stop`).
+    waits, and a step cut off by that reports "stopped", not "failed"; gateway shutdown closes it.
+    A gateway killed outright takes Chrome with it (its pipe closes; seen live with `kill -9`);
+    as a backstop, browsers still running on Enzo's profile are killed at the next start. These
+    are `ConversationService` hooks (`turn_ended`, `moved_on`, `stop`); a new message's turn
+    cannot keep using the old task's page without a new approval.
 13. **The sign:** while a task runs the gateway streams `browser` events (`{"site": …}`, `null`
     when it closes); the terminal shows "Enzo is using your browser: <site> · esc stops it", the
     web app a banner. Steps read "Opening shop.example/checkout", "Clicking “Add to cart”",

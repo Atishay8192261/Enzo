@@ -3,7 +3,7 @@ conversation service, real Chromium, and the events a client sees."""
 
 import uuid
 
-from enzo.agent.loop import ApprovalNeeded, TurnDone
+from enzo.agent.loop import ApprovalNeeded, ToolFinished, TurnDone
 from enzo.agent.service import ConversationService, ServiceEvent
 from enzo.brain import Message
 from enzo.browser.session import Browsers
@@ -13,7 +13,7 @@ from enzo.gateway.conversations import _sse
 from enzo.store.repository import Store
 from enzo.tools import ToolRegistry
 from tests.agent.test_loop import make_router
-from tests.browser.helpers import PageBrain, call, calls, click
+from tests.browser.helpers import PageBrain, Step, call, calls, click
 from tests.browser.shop import Running
 
 
@@ -63,7 +63,7 @@ async def test_the_browser_sign_shows_while_the_task_runs_and_goes_when_the_turn
 
 
 async def paused_on_buy_now(
-    store: Store, browsers: Browsers, shop: Running, *after: Message
+    store: Store, browsers: Browsers, shop: Running, *after: Step
 ) -> tuple[ConversationService, uuid.UUID]:
     """A chat whose task waits for the user's yes on "Buy now", with its page open."""
     brain = PageBrain([start(shop), click("button", "Buy now", "b1"), *after])
@@ -95,10 +95,20 @@ async def test_esc_closes_a_task_that_waits_for_a_yes(
 async def test_a_new_message_ends_a_task_that_waits_for_a_yes(
     store: Store, browsers: Browsers, shop: Running
 ) -> None:
+    # The next message's turn tries to keep using the old task's page: that task is over, so
+    # nothing runs on it without a new approval.
     svc, chat = await paused_on_buy_now(
-        store, browsers, shop, Message.assistant("Okay, I won't buy it.")
+        store,
+        browsers,
+        shop,
+        click("button", "Add to cart", "c9"),
+        Message.assistant("Okay, I won't buy it."),
     )
-    events = await drain(await svc.send(chat, "never mind"))
+    events = await drain(await svc.send(chat, "never mind, just put it in the cart"))
     assert isinstance(events[-1], TurnDone)
     assert not browsers.active(chat)
+    (refused,) = [e.outcome for e in events if isinstance(e, ToolFinished)]
+    assert refused.status == "failed"
+    assert "no browser task is running" in refused.result.content
+    assert shop.record.cart == {}
     assert shop.record.orders == []
