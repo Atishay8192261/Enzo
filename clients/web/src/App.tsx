@@ -1,5 +1,6 @@
 import {
   type AccountsClient,
+  browserSign,
   CHATGPT_USAGE_URL,
   type ChatClient,
   type ConversationMemory,
@@ -241,6 +242,15 @@ export function App({ client }: { client: ChatClient & AccountsClient }) {
           </section>
         ))}
 
+        {state.browser && (
+          // While Enzo drives the browser for this chat (ADR 0027): where, and how to stop it.
+          <p className="banner browser" role="status">
+            {browserSign(state.browser)}
+            <button type="button" className="link" onClick={() => void stop()}>
+              Stop
+            </button>
+          </p>
+        )}
         {state.error && state.status !== "offline" && (
           <p className="banner error" role="alert">
             {state.error}

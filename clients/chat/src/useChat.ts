@@ -295,7 +295,11 @@ export function useChat(
     const id = state.conversationId;
     if (!id) return false;
     try {
-      return await client.stop(id);
+      const stopping = await client.stop(id);
+      // The browser closes at once on Stop, also while a step waits for an answer and no
+      // reply is streaming to say so (ADR 0027).
+      if (stopping) dispatch({ type: "event", event: { type: "browser", site: null } });
+      return stopping;
     } catch (e: unknown) {
       dispatch({ type: "event", event: { type: "error", message: message(e) } });
       return false;

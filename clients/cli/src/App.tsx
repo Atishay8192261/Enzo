@@ -1,5 +1,6 @@
 import {
   type AccountsClient,
+  browserSign,
   type ChatClient,
   type ChatsClient,
   type ConversationMemory,
@@ -104,6 +105,18 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
       { once: true },
     );
   });
+}
+
+/** Shown while Enzo drives the browser for this chat (ADR 0027): where, and how to stop it. */
+export function BrowserSign({ site }: { site: string }) {
+  return (
+    <box paddingLeft={1} marginTop={1} flexShrink={0}>
+      <text>
+        <span fg={COLOR.warn}>● {browserSign(site)}</span>
+        <span fg={COLOR.dim}> · esc stops it</span>
+      </text>
+    </box>
+  );
 }
 
 /** Typed alone and sent with Enter while an approval card is open: the answer to the card. */
@@ -493,8 +506,11 @@ export function App({
       return onQuit(); // the input was empty (it clears itself otherwise)
     }
     if (key.name === "escape") {
+      // Esc also closes a browser task that waits for an answer, when no reply is running.
+      const waiting = now.state.browser !== null && now.state.status !== "streaming";
+      const what = waiting ? "Closed the browser" : "Stopping the reply…";
       void now.stop().then((stopping) => {
-        if (stopping) say("Stopping the reply…");
+        if (stopping) say(what);
       });
       return;
     }
@@ -702,6 +718,7 @@ export function App({
                 <box height={1} />
               </scrollbox>
               {approval ? <ApprovalCard approval={approval} /> : null}
+              {state.browser ? <BrowserSign site={state.browser} /> : null}
               {banner}
               <box height={1} />
               {prompt}

@@ -194,6 +194,34 @@ describe("App", () => {
     expect(screen.queryByRole("region", { name: "Approval needed" })).toBeNull();
   });
 
+  it("says when Enzo is using the browser, with a way to stop it (ADR 0027)", async () => {
+    const stop = vi.fn(async () => true);
+    const waiting: AgentEvent = {
+      type: "done",
+      stop: "approval_pending",
+      text: "Waiting",
+      steps: 1,
+      cost_usd: null,
+      brain: null,
+      model: null,
+      failure: null,
+      plan: false,
+      usage: NO_USAGE,
+    };
+    const client = fakeClient({
+      stop,
+      send: () => events({ type: "browser", site: "shop.example" }, waiting),
+    });
+    render(<App client={client} />);
+    fireEvent.change(await screen.findByLabelText("Message"), { target: { value: "buy it" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    const sign = await screen.findByRole("status");
+    expect(sign.textContent).toContain("Enzo is using your browser: shop.example");
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(screen.queryByText(/Enzo is using your browser/)).toBeNull());
+    expect(stop).toHaveBeenCalledWith("c1");
+  });
+
   it("restores the conversation history", async () => {
     const client = fakeClient({
       messages: async () => [

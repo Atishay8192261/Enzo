@@ -142,6 +142,13 @@ export interface ChatState {
   /** When the running turn started and its first word arrived (ms since 1970), for timing. */
   turnStartedAt: number | null;
   firstWordAt: number | null;
+  /** The site Enzo is using the browser on for this chat right now; null when it is not. */
+  browser: string | null;
+}
+
+/** The sign every surface shows while Enzo drives the browser (ADR 0027). */
+export function browserSign(site: string): string {
+  return `Enzo is using your browser: ${site}`;
 }
 
 export const initialState: ChatState = {
@@ -161,6 +168,7 @@ export const initialState: ChatState = {
   totals: NO_USAGE,
   turnStartedAt: null,
   firstWordAt: null,
+  browser: null,
 };
 
 export type ChatAction =
@@ -244,6 +252,7 @@ export function stepNote(item: ChatItem): string {
 /** A finished call's status as the chat says it. */
 function stepStatus(status: string): StepStatus {
   if (status === "ok") return "ok";
+  if (status === "stopped") return "stopped"; // the user stopped it: not a failure
   return status === "declined" || status === "not_run" ? "skipped" : "failed";
 }
 
@@ -296,6 +305,7 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
         totals: action.totals ?? NO_USAGE,
         turnStartedAt: null,
         firstWordAt: null,
+        browser: null,
       };
     }
     case "created":
@@ -337,6 +347,8 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
         status: "streaming",
         error: null,
         approvals: [],
+        // A browser task still waiting for a yes ends with a new message (the gateway closes it).
+        browser: null,
         items: [...state.items, ...skipped, sent],
         turnStartedAt: action.at ?? null,
         firstWordAt: null,
@@ -408,6 +420,8 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
 
 function onEvent(state: ChatState, event: AgentEvent, at?: number): ChatState {
   switch (event.type) {
+    case "browser":
+      return { ...state, browser: event.site };
     case "text":
       // Chunks carry their own spacing (even mid-word): join them exactly as they arrive.
       return {
@@ -471,6 +485,8 @@ function onEvent(state: ChatState, event: AgentEvent, at?: number): ChatState {
         totals: addUsage(state.totals, event.usage),
         turnStartedAt: null,
         firstWordAt: null,
+        // The browser closes with the turn, unless a step waits for the user's yes on its page.
+        browser: event.stop === "approval_pending" ? state.browser : null,
       };
     }
     case "compacted":
@@ -484,6 +500,7 @@ function onEvent(state: ChatState, event: AgentEvent, at?: number): ChatState {
         draft: "",
         working: 0,
         error: event.message,
+        browser: null,
       };
   }
 }
