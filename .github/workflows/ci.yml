@@ -42,6 +42,12 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run ruff check .
       - run: uv run mypy src tests
+      # The browser tests drive the runner's Google Chrome (ADR 0027). Its first launch on a fresh
+      # runner reads the binary from a cold disk and once took the first test's whole 30 s timeout.
+      - name: Warm up Chrome
+        run: |
+          google-chrome --version
+          time timeout 120 google-chrome --headless=new --no-sandbox --disable-gpu --dump-dom about:blank > /dev/null
       - run: uv run pytest
 
   clients:
