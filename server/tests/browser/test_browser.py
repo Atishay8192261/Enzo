@@ -415,9 +415,65 @@ def test_enzos_profile_never_saves_or_fills_passwords_or_cards(tmp_path: Path) -
     assert oct(profile.stat().st_mode & 0o777) == "0o700"
 
 
-def test_chrome_keeps_its_sandbox_unless_enzo_runs_as_root(tmp_path: Path) -> None:
-    import os  # noqa: PLC0415
-
-    expected = not (hasattr(os, "geteuid") and os.geteuid() == 0)
-    assert Browsers(tmp_path).sandbox is expected
+def test_chrome_keeps_its_sandbox_unless_enzo_runs_as_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("os.geteuid", lambda: 501)
+    assert Browsers(tmp_path).sandbox is True
+    monkeypatch.setattr("os.geteuid", lambda: 0)
+    assert Browsers(tmp_path).sandbox is False
     assert Browsers(tmp_path, sandbox=False).sandbox is False
+
+
+async def test_a_page_never_reaches_enzos_own_gateway_even_on_an_approved_site(
+    tmp_path: Path, real_browser: None, shop: Running, attacker: Running
+) -> None:
+    # Here the attacker's server plays Enzo's gateway, and its address is even approved.
+    b = Browsers(tmp_path / "p", headless=True, sandbox=False, own_port=attacker.port)
+    try:
+        conversation = chat()
+        gateway = f"127.0.0.1:{attacker.port}"
+        session = await b.start(conversation, "read", [shop.url, gateway], f"{shop.url}/")
+        await session.goto(f"http://{gateway}/conversations")
+        view = await session.view()
+        assert "Blocked a request to Enzo itself" in " ".join(view.notes)
+        assert attacker.record.requests == []
+    finally:
+        await b.close_all()
+
+
+async def test_a_page_that_changes_between_the_check_and_the_step_refuses_the_step(
+    browsers: Browsers, shop: Running
+) -> None:
+    """The step runs only on the element it was checked on (or approved for)."""
+    conversation = chat()
+    registry = ToolRegistry(browser_tools(browsers))
+    session = await browsers.start(conversation, "buy", [shop.url], f"{shop.url}/product/kettle")
+    page = (await session.view()).page
+    click_tool = registry.get("browser_click")
+    assert click_tool is not None
+    assert click_tool.prepare is not None
+    target = ref(page, "button", "Add to cart")
+    checked = await click_tool.prepare(click_tool.params(ref=target, element="Add to cart"))
+    assert not checked.ask
+    # Before the step runs, the page relabels the button into something else.
+    await session.page.locator("aria-ref=" + target).evaluate("b => b.textContent = 'Buy now'")
+    with pytest.raises(BrowserToolError, match="the page changed since this step was checked"):
+        await click_tool.handler(checked.args)
+    assert shop.record.cart == {}
+    assert shop.record.orders == []
+
+
+async def test_resuming_a_waiting_task_keeps_it_open(
+    tmp_path: Path, real_browser: None, shop: Running
+) -> None:
+    b = Browsers(tmp_path / "p", headless=True, sandbox=False, idle_close_s=0.5)
+    try:
+        conversation = chat()
+        await b.start(conversation, "read", [shop.url], f"{shop.url}/")
+        await b.turn_ended(conversation, "approval_pending")
+        b.get(conversation)  # the user answered: the turn resumes on this page
+        await asyncio.sleep(1.2)
+        assert b.active(conversation)
+    finally:
+        await b.close_all()
