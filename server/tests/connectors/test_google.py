@@ -90,6 +90,12 @@ async def test_tools_follow_what_the_user_allowed(tmp_path: Path) -> None:
     assert "gmail_create_draft" in names
     assert not {"gmail_send_message", "gmail_reply", "gmail_forward"} & names
 
+    no_mail = frozenset({"gmail.messages.readonly", "gmail.send", "gmail.drafts.create"})
+    calendar_only, fake, _ = await google(tmp_path / "cal", untick=no_mail)
+    names = {t.name for t in await calendar_only.tools()}
+    assert names == CALENDAR_READS | CALENDAR_WRITES | {"google_status"}
+    assert not [h for h, _m in fake.requests if h.startswith("gmailmcp")]  # Gmail never asked
+
 
 async def test_reads_run_at_once_and_everything_outward_asks_first(tmp_path: Path) -> None:
     connectors, _, _ = await google(tmp_path)
@@ -296,7 +302,45 @@ async def test_escape_codes_in_an_email_never_reach_the_card(tmp_path: Path) -> 
     assert "\x07" not in card.detail
 
 
+async def test_unknown_arguments_are_refused_on_every_google_tool(tmp_path: Path) -> None:
+    connectors, fake, _ = await google(tmp_path)
+    registry = ToolRegistry(await connectors.tools())
+    # delete_event drops nothing; a field Google might act on but the card never shows is
+    # refused all the same.
+    out = await registry.execute(
+        call("calendar_delete_event", eventId="ev1", sendUpdatesTo=["everyone@example.com"])
+    )
+    assert out.status == "invalid_arguments"
+    read = await registry.execute(call("gmail_get_message", messageId="m1", extra=True))
+    assert read.status == "invalid_arguments"
+    assert fake.calls == []
+
+
 # ---------- rate limits and auth failures (§8.3) ----------
+
+
+async def test_a_bare_429_is_a_rate_limit_whatever_its_words(tmp_path: Path) -> None:
+    connectors, fake, _ = await google(tmp_path)
+    await connectors.tools()
+    gmail = connectors._gmail
+    assert gmail is not None
+    fake.mode["gmail"] = "throttled"
+    with pytest.raises(ConnectorError, match="HTTP 429"):
+        await gmail.call("search_threads", {})
+    assert gmail.stopped is not None
+
+
+async def test_after_the_sign_in_ends_a_tool_says_so_and_reads_nothing(tmp_path: Path) -> None:
+    connectors, fake, sign_in = await google(tmp_path)
+    registry = ToolRegistry(await connectors.tools())
+    fake.revoke_all()
+    with pytest.raises(Exception, match="Sign in again"):
+        await sign_in.access_token(renew=True)  # the sign-in ends (e.g. a status check)
+    calls = len(fake.calls)
+    out = await registry.execute(call("gmail_search_threads", query="from:bob"))
+    assert out.status == "failed"
+    assert "Google is not connected: /login google" in out.result.content
+    assert len(fake.calls) == calls  # nothing was read, so nothing can be claimed
 
 
 async def test_a_rate_limit_stops_only_that_service_and_nothing_is_retried(tmp_path: Path) -> None:

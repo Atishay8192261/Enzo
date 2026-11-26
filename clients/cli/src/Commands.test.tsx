@@ -305,6 +305,17 @@ describe("accounts", () => {
     expect(opened).toEqual(["http://127.0.0.1:8787/auth/google/g1"]);
   });
 
+  it("/check google says what was checked live", async () => {
+    const checkConnection = mock(async () => ({
+      ok: true,
+      detail: "Gmail works. Google Calendar works. Allowed: Gmail (read, send, drafts).",
+    }));
+    await using s = await screen(fakeClient({ checkConnection }), { width: 120 });
+    await enter(s, "/check google");
+    await until(s, "google: Gmail works. Google Calendar works.");
+    expect(checkConnection).toHaveBeenCalledWith("google");
+  });
+
   it("/logout google says whether Google removed Enzo's access", async () => {
     let answer: "confirmed" | "not_confirmed" = "confirmed";
     const disconnect = mock(async () => ({ remote_sign_out: answer }));
