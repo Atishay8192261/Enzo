@@ -111,6 +111,15 @@ async def test_the_app_registers_the_core_tools(
             "close_goal",
             "list_goals",
             "read_stored_output",
+            "browser_start",
+            "browser_open",
+            "browser_click",
+            "browser_type",
+            "browser_select",
+            "browser_scroll",
+            "browser_back",
+            "browser_read",
+            "browser_close",
         ]
         # Long results are kept whole outside the context (ADR 0024).
         assert registry.retain is app.state.service.outputs is not None
@@ -121,5 +130,15 @@ async def test_the_app_registers_the_core_tools(
         assert app.state.service.memory is not None
         assert app.state.service.goals is not None  # open goals come with each message
         assert app.state.background.runner is not None  # reminders are delivered
-    assert gated == ["delete_file", "schedule_task"]  # a task acts on its own: approved first
-    assert fenced == ["web_search", "read_page", "read_file", "read_stored_output"]
+        # The browser lives as long as a turn: the service tells it when turns end (ADR 0027).
+        (browsers,) = app.state.service._hooks
+        assert browsers.own_port == settings.port
+    # A task acts on its own: approved first. A browser task is approved once, as a whole.
+    assert gated == ["delete_file", "schedule_task", "browser_start"]
+    assert fenced == [
+        "web_search",
+        "read_page",
+        "read_file",
+        "read_stored_output",
+        *(n for n in names if n.startswith("browser_") and n != "browser_close"),
+    ]

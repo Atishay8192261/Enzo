@@ -43,6 +43,12 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
 
 **Works now:**
 
+- **Browser use (new, ADR 0027).** "find the price of <product> on <site> and put it in my cart": one card
+  naming the task and the site, then steps without cards, a Chrome window with the "controlled by automated
+  software" bar, and the "Enzo is using your browser: <site>" line. Go up to a checkout's payment step: typing
+  a card and pressing "Place order" must each ask with the exact action, the card masked. Esc mid-task closes
+  the window and the step says stopped. File issues if Chrome isn't found, the window doesn't appear, or
+  anything was bought, sent or submitted without a card. **Never use a real card**: use a shop's test mode.
 - **Long chats (new, ADR 0024).** Start the gateway with a copy of `brains.toml` that sets `[context]
   compact_at = 20000` and `keep_recent = 4000` (`ENZO_BRAINS_CONFIG=…`), then `cd server && uv run python
   ../scripts/compaction-check.py http://127.0.0.1:8787` on each connected account (about 55 short turns and

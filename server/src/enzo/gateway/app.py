@@ -29,6 +29,8 @@ from enzo.agent.toolset import core_tools
 from enzo.brain.config import Tier, load_config
 from enzo.brain.factory import build_brain, has_key
 from enzo.brain.router import Router
+from enzo.browser.session import Browsers
+from enzo.browser.tools import browser_tools
 from enzo.config import Settings
 from enzo.connectors.github import github_tools
 from enzo.connectors.google import GoogleConnectors
@@ -192,6 +194,14 @@ async def _running(
         paste_inline_chars=ctx.paste_inline_chars,
         excerpt_chars=ctx.excerpt_chars,
     )
+    # Enzo's own browser profile, in its private data folder (ADR 0027).
+    browsers = Browsers(
+        data_dir() / "browser",
+        executable=cfg.browser_path,
+        headless=cfg.browser_headless,
+        own_port=cfg.port,
+    )
+    browsers.recover()  # a browser left behind by a gateway that crashed
     tools = ToolRegistry(
         [
             *core_tools(
@@ -205,6 +215,7 @@ async def _running(
                 on_set=runner.poke,
             ),
             *stored_tools(outputs),
+            *browser_tools(browsers),
         ],
         retain=outputs,
     )
@@ -216,6 +227,7 @@ async def _running(
         memory=memory,
         goals=goals,
         outputs=outputs,
+        hooks=[browsers],
     )
     app.state.service = service
     # Scheduled tasks run as agent turns: the runner hands each due one to the task runner.
@@ -231,6 +243,7 @@ async def _running(
     finally:
         await runner.stop()
         await tasks.stop()
+        await browsers.close_all()
         await connectors.close()
         await http.aclose()
         await store.close()

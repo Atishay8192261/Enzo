@@ -5,7 +5,9 @@ where something came from read them: a memory notes the chat and run it was lear
 """
 
 import uuid
+from collections.abc import Callable
 from contextvars import ContextVar
+from dataclasses import dataclass
 
 conversation_var: ContextVar[str | None] = ContextVar("enzo_conversation", default=None)
 turn_var: ContextVar[str | None] = ContextVar("enzo_turn", default=None)
@@ -22,3 +24,24 @@ def new_turn_id() -> str:
 def current_conversation() -> uuid.UUID | None:
     value = conversation_var.get()
     return uuid.UUID(value) if value else None
+
+
+@dataclass(frozen=True, slots=True)
+class BrowserInUse:
+    """Enzo is using the browser for this chat, on ``site``; None: it closed (ADR 0027)."""
+
+    site: str | None
+
+
+#: Sends a live notice to the chat whose run this is, beside the turn's own events (the "Enzo is
+#: using your browser" sign). Set per run by the conversation service; None outside a run.
+notice_var: ContextVar[Callable[[BrowserInUse], None] | None] = ContextVar(
+    "enzo_notice", default=None
+)
+
+
+def notify(notice: BrowserInUse) -> None:
+    """Tell the chat whose run this is, if any (a test or a background caller has none)."""
+    send = notice_var.get()
+    if send is not None:
+        send(notice)

@@ -223,22 +223,26 @@ async def check_public(url: str) -> None:
         msg = "that address has no host, or carries a login; it cannot be read"
         raise WebToolError(msg)
     host = parts.hostname
-    literal = _ip(host)
-    if literal is not None:
-        addresses = {literal}
-    else:
-        resolved = await _resolve(host, parts.port or (443 if parts.scheme == "https" else 80))
-        if resolved is None:
-            if _proxied(host):
-                return  # the proxy resolves it (see docstring)
-            msg = f"could not find the address of {host}; this fetch failed"
-            raise WebToolError(msg)
-        addresses = resolved
-    private = sorted(str(a) for a in addresses if not a.is_global)
+    private = await private_addresses(host, parts.port or (443 if parts.scheme == "https" else 80))
+    if private is None:
+        if _proxied(host):
+            return  # the proxy resolves it (see docstring)
+        msg = f"could not find the address of {host}; this fetch failed"
+        raise WebToolError(msg)
     if private:
         where = ", ".join(private)
         msg = f"{host} points inside a private network ({where}); Enzo does not read those"
         raise WebToolError(msg)
+
+
+async def private_addresses(host: str, port: int) -> list[str] | None:
+    """The addresses of ``host`` inside a private network (loopback, LAN, link-local, cloud
+    metadata), sorted; empty when all are public; None when the name does not resolve here."""
+    literal = _ip(host.strip("[]"))
+    addresses = {literal} if literal is not None else await _resolve(host, port)
+    if addresses is None:
+        return None
+    return sorted(str(a) for a in addresses if not a.is_global)
 
 
 type IP = ipaddress.IPv4Address | ipaddress.IPv6Address
