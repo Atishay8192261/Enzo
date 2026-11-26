@@ -561,6 +561,7 @@ class Browsers:
             await context.route_web_socket("**/*", session.guard_socket)
             self._sessions[conversation] = session
         log.info("browser.start", extra={"sites": len(sites), "headless": self.headless})
+        notify(BrowserInUse(host_words(url)))  # the sign shows while the first page loads
         await session.goto(url)
         return session
 

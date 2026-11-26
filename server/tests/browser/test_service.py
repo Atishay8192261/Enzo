@@ -52,7 +52,8 @@ async def test_the_browser_sign_shows_while_the_task_runs_and_goes_when_the_turn
     assert done.outcome.stop == "final_answer"
     site = shop.url.removeprefix("http://")
     signs = [e for e in events if isinstance(e, BrowserInUse)]
-    assert signs == [BrowserInUse(site), BrowserInUse(site), BrowserInUse(None)]
+    # Shown as the first page loads, after each step, and gone when the task ends.
+    assert signs == [BrowserInUse(site)] * 3 + [BrowserInUse(None)]
     # The sign goes before the client hears the turn is done.
     assert events.index(BrowserInUse(None)) < events.index(done)
     assert not browsers.active(chat)
