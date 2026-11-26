@@ -201,6 +201,9 @@ export const LOST =
 /** Said when a message could not be sent because the gateway did not answer at all (#44). */
 export const UNREACHABLE = "Not sent: Enzo can't be reached right now.";
 export const BACK_ONLINE = "Connected to Enzo again.";
+/** Said where older messages were summarized (the gateway's words for it, spec §5.2). */
+export const SUMMARIZED =
+  "Older messages were summarized to keep this chat fast. Nothing is deleted: the whole chat stays here.";
 
 /** Steps still running when a turn ends early did not finish. */
 function stopSteps(items: ChatItem[]): ChatItem[] {
@@ -467,6 +470,9 @@ function onEvent(state: ChatState, event: AgentEvent, at?: number): ChatState {
         firstWordAt: null,
       };
     }
+    case "compacted":
+      // Before the reply: older messages were summarized (or could not be) for this reply.
+      return { ...state, items: [...state.items, { role: "notice", text: event.text }] };
     case "error":
       return {
         ...state,
@@ -548,6 +554,8 @@ export function toItems(
   };
   messages.forEach((m, index) => {
     for (const n of notices) if (n.after === index) arrive(n);
+    // Where older messages were summarized for the model: the chat still shows them all.
+    if (m.summarized) items.push({ role: "notice", text: SUMMARIZED });
     addMessage(m);
   });
   for (const n of notices) if (n.after >= messages.length) arrive(n);

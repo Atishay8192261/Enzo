@@ -57,6 +57,15 @@ describe("toAgentEvent", () => {
     );
   });
 
+  it("says when older messages were summarized (spec §5.2)", () => {
+    expect(
+      toAgentEvent("compacted", '{"text":"Older messages were summarized.","turns":12,"ok":true}'),
+    ).toEqual({ type: "compacted", text: "Older messages were summarized.", turns: 12, ok: true });
+    expect(() => toAgentEvent("compacted", '{"text":"x","turns":"12","ok":true}')).toThrow(
+      "malformed compacted event",
+    );
+  });
+
   it("skips events this client does not know (forward compatible)", () => {
     expect(toAgentEvent("future_event", "{}")).toBeUndefined();
   });

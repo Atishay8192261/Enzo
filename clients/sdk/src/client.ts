@@ -157,6 +157,8 @@ export interface StoredMessage {
   parts: StoredPart[];
   /** "schedule": a scheduled task's run started this turn; the user did not type it. */
   origin?: "schedule";
+  /** Older messages were summarized just before this one (how many turns the summary covers). */
+  summarized?: number;
 }
 
 /** One part of a stored message: text, a tool call (with its step in plain words) or a result. */
