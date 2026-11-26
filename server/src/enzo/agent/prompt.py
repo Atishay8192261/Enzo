@@ -84,5 +84,6 @@ def install_note(workspace: Path) -> str:
         f"you save one, say where it is, like “Saved to {folder}/plan.md”.\n"
         f"{folder}/Memory.md is a readable copy of your memory, for the user. They can edit "
         "it by hand: Enzo reads their edits before each message, as their own corrections. "
-        "They can also see and forget memories with /memory in the terminal app."
+        "They can also see and forget memories with /memory in the terminal app.\n"
+        f"{folder}/Goals.md is a read-only copy of their goals; /goals lists them."
     )

@@ -50,6 +50,7 @@ from enzo.evals.results import (
     summarize,
 )
 from enzo.evals.suite import NAME, SUITE, TIMEZONE, VERSION, EvalTask, fingerprint
+from enzo.goals import Goals
 from enzo.memory import Memory
 from enzo.redact import redact
 from enzo.schedule import FinishedTasks, Schedule
@@ -79,13 +80,14 @@ REPLY_CHARS = 300
 
 @dataclass(frozen=True, slots=True)
 class TaskEnv:
-    """What a task's tools are built on: its own workspace, memory and schedule."""
+    """What a task's tools are built on: its own workspace, memory, schedule and goals."""
 
     task: EvalTask
     workspace: Path
     memory: Memory
     schedule: Schedule
     finished: FinishedTasks
+    goals: Goals
 
 
 type ToolsFactory = Callable[[TaskEnv], Sequence[Tool[Any, Any]]]
@@ -100,6 +102,7 @@ def standard_tools(http: httpx2.AsyncClient, tavily_key: Callable[[], str | None
             memory=env.memory,
             schedule=env.schedule,
             finished=env.finished,
+            goals=env.goals,
             http=http,
             tavily_key=tavily_key,
         )
@@ -264,7 +267,14 @@ async def run_task(
             replaces = ids[seed.replaces] if seed.replaces is not None else None
             ids.append((await memory.remember(seed.text, kind=seed.kind, replaces=replaces)).id)
         schedule = Schedule(store.engine)
-        env = TaskEnv(task, workspace, memory, schedule, FinishedTasks())
+        env = TaskEnv(
+            task,
+            workspace,
+            memory,
+            schedule,
+            FinishedTasks(),
+            Goals(store.engine, workspace, schedule),
+        )
         service = ConversationService(
             store,
             router,

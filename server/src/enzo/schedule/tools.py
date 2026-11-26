@@ -45,6 +45,11 @@ _EVERY: Any = Field(
 )
 _UNTIL: Any = Field(default=None, description="For a repeat: the last local date it may run on.")
 _TIMES: Any = Field(default=None, ge=1, le=1000, description="For a repeat: stop after this many.")
+_GOAL: Any = Field(
+    default=None,
+    ge=1,
+    description="A check-in on one of the user's goals: its number. Closing the goal stops it.",
+)
 
 
 class RemindParams(_Params):
@@ -58,6 +63,7 @@ class RemindParams(_Params):
     every: int = _EVERY
     until: date | None = _UNTIL
     times: int | None = _TIMES
+    goal: int | None = _GOAL
 
 
 class TaskParams(_Params):
@@ -89,6 +95,7 @@ class TaskParams(_Params):
             "free on Friday'. Runs before that stay quiet; the run that finds it reports."
         ),
     )
+    goal: int | None = _GOAL
 
 
 class ScheduledOut(BaseModel):
@@ -101,6 +108,8 @@ class ScheduledOut(BaseModel):
     schedule: str
     stop_when: str | None
     timezone: str
+    #: The goal it checks in on: closing the goal cancels it.
+    goal: int | None = None
 
 
 class ListParams(_Params):
@@ -148,6 +157,7 @@ def scheduled_out(j: Job) -> ScheduledOut:
         schedule=j.schedule,
         stop_when=j.stop_when,
         timezone=j.timezone,
+        goal=j.goal_id,
     )
 
 
@@ -171,7 +181,8 @@ def task_plan(p: TaskParams) -> str:
         limits.append(f"at most {p.times} runs")
     stop = f" It stops when {p.stop_when}." if p.stop_when else ""
     plan = f"{when}{', ' + ', '.join(limits) if limits else ''}"
-    return f"Schedule a task, {plan}: {plain_words(p.instruction, 300)}{stop}"
+    goal = f" It checks in on goal #{p.goal}." if p.goal else ""
+    return f"Schedule a task, {plan}: {plain_words(p.instruction, 300)}{stop}{goal}"
 
 
 def schedule_tools(
@@ -204,6 +215,7 @@ def schedule_tools(
                 every=p.every,
                 ends_on=p.until,
                 max_runs=p.times,
+                goal=p.goal,
             )
         except ScheduleRefusedError as exc:
             raise ValueError(str(exc)) from None
@@ -238,6 +250,7 @@ def schedule_tools(
                 ends_on=p.until,
                 max_runs=p.times,
                 stop_when=p.stop_when,
+                goal=p.goal,
             )
         except ScheduleRefusedError as exc:
             raise ValueError(str(exc)) from None

@@ -501,6 +501,7 @@ def tools_for(
                 memory=env.memory,
                 schedule=env.schedule,
                 finished=env.finished,
+                goals=env.goals,
                 http=http,
                 tavily_key=lambda: None,
             )

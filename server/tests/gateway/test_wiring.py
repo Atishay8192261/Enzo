@@ -106,12 +106,17 @@ async def test_the_app_registers_the_core_tools(
             "finish_task",
             "list_scheduled",
             "cancel_scheduled",
+            "create_goal",
+            "record_goal_progress",
+            "close_goal",
+            "list_goals",
         ]
         gated = [n for n in names if registry.get(n).requires_approval]
         fenced = [n for n in names if registry.get(n).untrusted_output]
         # The brain knows where the user's files are (#41), as the user would type it.
         assert "Enzo folder is" in app.state.service._developer
         assert app.state.service.memory is not None
+        assert app.state.service.goals is not None  # open goals come with each message
         assert app.state.background.runner is not None  # reminders are delivered
     assert gated == ["delete_file", "schedule_task"]  # a task acts on its own: approved first
     assert fenced == ["web_search", "read_page", "read_file"]
