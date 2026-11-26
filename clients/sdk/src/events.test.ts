@@ -66,6 +66,15 @@ describe("toAgentEvent", () => {
     );
   });
 
+  it("says where Enzo is using the browser, and when it closed (ADR 0027)", () => {
+    expect(toAgentEvent("browser", '{"site":"shop.example"}')).toEqual({
+      type: "browser",
+      site: "shop.example",
+    });
+    expect(toAgentEvent("browser", '{"site":null}')).toEqual({ type: "browser", site: null });
+    expect(() => toAgentEvent("browser", '{"site":3}')).toThrow("malformed browser event");
+  });
+
   it("skips events this client does not know (forward compatible)", () => {
     expect(toAgentEvent("future_event", "{}")).toBeUndefined();
   });
