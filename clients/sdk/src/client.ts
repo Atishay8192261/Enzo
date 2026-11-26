@@ -212,6 +212,23 @@ export interface ChatGPTSignInStatus {
   usage_url: string;
 }
 
+/** What a Google sign-in asks for: everything Enzo offers, or reading only. */
+export type GoogleAccess = "full" | "read";
+
+/** A Sign in with Google attempt, or (no OAuth client yet) a request for the user's own. */
+export interface GoogleSignInStart {
+  login_id: string | null;
+  /** A local address on the gateway that forwards to Google's consent page. */
+  url: string | null;
+  needs_client: boolean;
+  message: string | null;
+}
+
+export interface GoogleSignInStatus {
+  status: "pending" | "connected" | "failed";
+  message: string | null;
+}
+
 export interface Disconnected {
   /** For a sign-in: whether the provider confirmed the session ended. Null for a key. */
   remote_sign_out: "confirmed" | "not_confirmed" | null;
@@ -406,6 +423,25 @@ export class GatewayClient {
       "GET",
       `/connections/openai/chatgpt/${enc(loginId)}`,
     ) as Promise<ChatGPTSignInStatus>;
+  }
+
+  /** Start Sign in with Google (Gmail, Calendar); `needs_client` asks for the user's own client. */
+  startGoogleSignIn(access: GoogleAccess = "full"): Promise<GoogleSignInStart> {
+    return this.#json("POST", "/connections/google/sign-in", {
+      access,
+    }) as Promise<GoogleSignInStart>;
+  }
+
+  googleSignIn(loginId: string): Promise<GoogleSignInStatus> {
+    return this.#json(
+      "GET",
+      `/connections/google/sign-in/${enc(loginId)}`,
+    ) as Promise<GoogleSignInStatus>;
+  }
+
+  /** Keep the user's own Google OAuth client (the downloaded file's text) in the vault. */
+  async setGoogleClient(client: string): Promise<void> {
+    await this.#json("PUT", "/connections/google/client", { client });
   }
 
   checkConnection(provider: string): Promise<ConnectionCheck> {

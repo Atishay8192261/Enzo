@@ -164,6 +164,17 @@ export function fakeClient(overrides: Partial<Client> = {}): Client {
       first_time: true,
       usage_url: "https://chatgpt.com/settings/usage",
     }),
+    startGoogleSignIn: mock(async () => ({
+      login_id: "g1",
+      url: "http://127.0.0.1:8787/auth/google/g1",
+      needs_client: false,
+      message: null,
+    })),
+    googleSignIn: async () => ({
+      status: "connected" as const,
+      message: "Connected Google as ada@example.com: Gmail (read, send, drafts).",
+    }),
+    setGoogleClient: mock(async () => {}),
     health: async () => ({ status: "ok", version: "1", env: "test" }),
     brains: async () => BRAINS,
     createConversation: async () => CONVERSATION,

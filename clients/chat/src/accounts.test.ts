@@ -1,6 +1,6 @@
 import { type ChatGPTSignInStatus, GatewayError, type ProviderConnection } from "@enzo/sdk";
 import { describe, expect, it, vi } from "vitest";
-import { describeConnection, signInWithChatGPT } from "./accounts.ts";
+import { describeConnection, signInWithChatGPT, signInWithGoogle } from "./accounts.ts";
 
 const base: ProviderConnection = {
   provider: "anthropic",
@@ -158,5 +158,105 @@ describe("signInWithChatGPT", () => {
       { open: () => {}, newAccount: true, ...instant },
     );
     expect(startChatGPTSignIn).toHaveBeenCalledWith(true);
+  });
+});
+
+const GOOGLE_STARTED = {
+  login_id: "g1",
+  url: "http://127.0.0.1:8787/auth/google/g1",
+  needs_client: false,
+  message: null,
+};
+
+describe("Google accounts", () => {
+  it("names the sign-in and both ways to connect", () => {
+    const google = {
+      ...base,
+      provider: "google",
+      methods: ["google"],
+      models: [],
+      tools: ["gmail", "calendar"],
+      purpose: "Gmail and Google Calendar: read, send and schedule (sign in with Google)",
+    };
+    expect(describeConnection(google)).toBe(
+      "google: not connected: /login google (or /login google read: reading only) · Gmail and Google Calendar: read, send and schedule (sign in with Google)",
+    );
+    const on = {
+      ...google,
+      connected: true,
+      method: "google",
+      label: "ada@example.com",
+      purpose: "Gmail (read, send, drafts) and Google Calendar (read, edit)",
+    };
+    expect(describeConnection(on)).toBe(
+      "google: connected (Google sign-in, ada@example.com) · Gmail (read, send, drafts) and Google Calendar (read, edit)",
+    );
+  });
+
+  it("asks for the user's own client when none is set up, without opening anything", async () => {
+    const open = vi.fn();
+    const googleSignIn = vi.fn();
+    const result = await signInWithGoogle(
+      {
+        startGoogleSignIn: async () => ({
+          login_id: null,
+          url: null,
+          needs_client: true,
+          message: "Google needs your own OAuth client first.",
+        }),
+        googleSignIn,
+      },
+      { open, ...instant },
+    );
+    expect(result).toEqual({
+      ok: false,
+      needsClient: true,
+      text: "Google needs your own OAuth client first.",
+    });
+    expect(open).not.toHaveBeenCalled();
+    expect(googleSignIn).not.toHaveBeenCalled();
+  });
+
+  it("opens Google's page, waits, and reports what was allowed", async () => {
+    const replies = [
+      { status: "pending" as const, message: null },
+      { status: "connected" as const, message: "Connected Google as ada@example.com." },
+    ];
+    const startGoogleSignIn = vi.fn(async () => GOOGLE_STARTED);
+    const open = vi.fn();
+    const result = await signInWithGoogle(
+      {
+        startGoogleSignIn,
+        googleSignIn: async () => replies.shift() ?? { status: "pending", message: null },
+      },
+      { open, access: "read", ...instant },
+    );
+    expect(startGoogleSignIn).toHaveBeenCalledWith("read");
+    expect(open).toHaveBeenCalledWith(GOOGLE_STARTED.url);
+    expect(result).toEqual({ ok: true, text: "Connected Google as ada@example.com." });
+  });
+
+  it("says why it did not connect", async () => {
+    const failed = await signInWithGoogle(
+      {
+        startGoogleSignIn: async () => GOOGLE_STARTED,
+        googleSignIn: async () => ({
+          status: "failed",
+          message: "The Google sign-in was cancelled.",
+        }),
+      },
+      { open: () => {}, ...instant },
+    );
+    expect(failed).toEqual({ ok: false, text: "The Google sign-in was cancelled." });
+    const expired = await signInWithGoogle(
+      {
+        startGoogleSignIn: async () => GOOGLE_STARTED,
+        googleSignIn: async () => {
+          throw new GatewayError("gone", 404);
+        },
+      },
+      { open: () => {}, ...instant },
+    );
+    expect(expired.text).toBe("That Google sign-in expired. Start again: /login google");
   });
 });

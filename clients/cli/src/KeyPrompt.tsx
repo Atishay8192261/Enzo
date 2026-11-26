@@ -8,10 +8,13 @@ import { useRef, useState } from "react";
  */
 export function KeyPrompt({
   provider,
+  what,
   onSubmit,
   onCancel,
 }: {
   provider: string;
+  /** What is pasted, e.g. "Google OAuth client file"; an API key by default. */
+  what?: string;
   onSubmit: (key: string) => void;
   onCancel: () => void;
 }) {
@@ -42,7 +45,7 @@ export function KeyPrompt({
     <box
       border
       borderColor="cyan"
-      title={`Paste your ${provider} API key (hidden) · Enter saves · Esc cancels`}
+      title={`Paste your ${what ?? `${provider} API key`} (hidden) · Enter saves · Esc cancels`}
       height={3}
     >
       <text>{length ? `${"•".repeat(Math.min(length, 40))} ${length} characters` : " "}</text>
