@@ -8,6 +8,7 @@ Google sends), a token without the tool's scope gets 403 ``insufficient_scope``,
 problem gets 429. Never a real account: everything lives in this object.
 """
 
+import asyncio
 import base64
 import hashlib
 import itertools
@@ -89,7 +90,7 @@ class Code:
 
 @dataclass
 class FakeGoogle:
-    #: Per service: "ok", "rate_limited" (429), "quota" (403 rateLimitExceeded) or "down".
+    #: Per service: "ok", "rate_limited" (429), "throttled" (a bare 429), "quota" (403) or "down".
     mode: dict[str, str] = field(default_factory=lambda: {"gmail": "ok", "calendar": "ok"})
     #: Send only text content (no structuredContent), like a server without output schemas.
     text_only: bool = False
@@ -163,6 +164,7 @@ class FakeGoogle:
         if host in HOSTS:
             return self._mcp(HOSTS[host], request)
         self.requests.append((host, request.url.path))
+        await asyncio.sleep(0)  # like a real network: other callers run meanwhile, races are real
         form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
         if host == "oauth2.googleapis.com" and request.url.path == "/token":
             return self._token(form)
@@ -299,8 +301,15 @@ class FakeGoogle:
             return _failed(
                 rid, 429, "Quota exceeded for quota metric 'Queries' (RESOURCE_EXHAUSTED)."
             )
-        if mode == "quota":
-            return _failed(rid, 403, "User-rate limit exceeded. rateLimitExceeded")
+        if mode == "quota":  # Google's own words for a used-up quota, without "rate limit"
+            return _failed(
+                rid,
+                403,
+                "Quota exceeded for quota metric 'Read requests' and limit 'Read requests per "
+                "minute per user'.",
+            )
+        if mode == "throttled":  # a bare 429: only the status says "rate limited"
+            return _failed(rid, 429, "Slow down.")
         if mode == "down":
             return httpx2.Response(503, text="Service Unavailable")
         self.calls.append((service, name, args))
@@ -310,10 +319,11 @@ class FakeGoogle:
             return _rpc(
                 rid, {"content": [{"type": "text", "text": f"Not found: {exc}"}], "isError": True}
             )
-        result: dict[str, Any] = {"content": [{"type": "text", "text": json.dumps(data)}]}
-        if not self.text_only:
-            result["structuredContent"] = data
-        return _rpc(rid, result)
+        if self.text_only:  # a server without output schemas: the JSON is the text
+            return _rpc(rid, {"content": [{"type": "text", "text": json.dumps(data)}]})
+        # With structured data, the text may be prose: never parse it when data came along.
+        words = f"The {name.replace('_', ' ')} result is in the structured data."
+        return _rpc(rid, {"content": [{"type": "text", "text": words}], "structuredContent": data})
 
     # ---------- tools ----------
 
