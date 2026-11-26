@@ -229,6 +229,10 @@ class JobRow(Base):
     chat_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("conversations.id", ondelete="SET NULL")
     )
+    #: The goal it checks in on: closing the goal cancels it (spec §6.4 "stops reminding").
+    goal_id: Mapped[int | None] = mapped_column(
+        ForeignKey("goals.id", ondelete="SET NULL"), index=True
+    )
     #: A task run in progress since then: the next is never started on top of it.
     running_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: Runs that failed in a row: a task stops after a few, rather than fail on and on.
@@ -280,3 +284,79 @@ class JobRunRow(Base):
     #: delivered (a reminder); reported, quiet (nothing new yet), finished (its stop was met),
     #: needs_approval (it waits for the user) or failed (a task run).
     outcome: Mapped[str] = mapped_column(Text, server_default="delivered")
+
+
+class GoalRow(Base):
+    """Something the user is working toward, as a record, not free text (spec §6.4).
+
+    Its status changes only on evidence, kept in ``goal_events``: open until the user confirms it
+    is done (or given up), a check verifies the outcome, or its time is up.
+    """
+
+    __tablename__ = "goals"
+    __table_args__ = (
+        CheckConstraint("status IN ('open', 'done', 'dropped')", name="status"),
+        Index(None, "status"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    title: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, server_default="open")
+    #: The user's local date it should be done by, if they gave one.
+    due_on: Mapped[date | None] = mapped_column(Date)
+    #: Where its work lives in the user's Enzo folder ("passport/", "trip.md"), if anywhere.
+    path: Mapped[str | None] = mapped_column(Text)
+    #: Where it was set: the chat and the run (the same id as its log lines).
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    turn_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class GoalStepRow(Base):
+    """What remains of a goal, one step at a time, in order; done once its evidence is in."""
+
+    __tablename__ = "goal_steps"
+    __table_args__ = (UniqueConstraint("goal_id", "position"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    goal_id: Mapped[int] = mapped_column(ForeignKey("goals.id", ondelete="CASCADE"))
+    #: Its number within the goal, from 1.
+    position: Mapped[int] = mapped_column(Integer)
+    text: Mapped[str] = mapped_column(Text)
+    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class GoalEventRow(Base):
+    """One change of a goal and the evidence for it (spec §6.4, §6.5): what shows it, how that
+    is known (the user confirmed it, a check verified it, or its time ran out), where the
+    evidence can be found again, and when it happened."""
+
+    __tablename__ = "goal_events"
+    __table_args__ = (
+        CheckConstraint(
+            "change IN ('created', 'steps_added', 'step_done', 'done', 'dropped')", name="change"
+        ),
+        CheckConstraint(
+            "basis IS NULL OR basis IN ('user_confirmed', 'verified', 'timeline_ended')",
+            name="basis",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    goal_id: Mapped[int] = mapped_column(ForeignKey("goals.id", ondelete="CASCADE"), index=True)
+    change: Mapped[str] = mapped_column(Text)
+    step_id: Mapped[int | None] = mapped_column(ForeignKey("goal_steps.id", ondelete="CASCADE"))
+    evidence: Mapped[str | None] = mapped_column(Text)
+    basis: Mapped[str | None] = mapped_column(Text)
+    #: Where the evidence can be found again: a page, a file, a pull request, a chat.
+    source: Mapped[str | None] = mapped_column(Text)
+    #: When it happened, when known; else it happened by the time it was recorded.
+    happened_on: Mapped[date | None] = mapped_column(Date)
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    turn_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()

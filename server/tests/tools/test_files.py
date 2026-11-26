@@ -191,6 +191,7 @@ def test_the_brain_is_told_where_the_enzo_folder_is(
     assert "“Saved to ~/Enzo/plan.md”" in note
     assert "~/Enzo/Memory.md is a readable copy of your memory" in note
     assert "They can edit it by hand" in note  # so the brain knows where an edit came from
+    assert "~/Enzo/Goals.md is a read-only copy of their goals" in note
     assert str(tmp_path) not in note  # never the account name in the full path
 
 

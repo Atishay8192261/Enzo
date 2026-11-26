@@ -16,6 +16,7 @@ from enzo.evals.suite import (
     fingerprint,
     select,
 )
+from enzo.goals import Goals
 from enzo.memory import Memory
 from enzo.schedule import FinishedTasks, Schedule
 
@@ -62,6 +63,7 @@ async def test_the_tool_names_list_is_complete(tmp_path: Path) -> None:
             memory=Memory(engine),
             schedule=Schedule(engine),
             finished=FinishedTasks(),
+            goals=Goals(engine),
             http=http,
             tavily_key=lambda: None,
         )

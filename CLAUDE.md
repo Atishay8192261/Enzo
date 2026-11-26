@@ -239,6 +239,10 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
 - `enzo eval` and the gateway share the vault: ChatGPT renewal holds `.chatgpt-renewal.lock` and re-reads inside it.
 - Time to first token: `CallRecord.first_token_ms`, logged as `ttft_ms`, not in the ledger. `enzo.redact` scrubs keys.
   JSON escapes C0 control characters but not C1 (`\x9b`): strip both before printing (`tracing.printable`).
+- Memory.md carries an "Enzo wrote this copy at …" comment: a missing line counts as removed only if its memory existed
+  by then; without the comment nothing is removed. File tools refuse Memory.md and Goals.md by casefold name or samefile.
+- Goal rules live in `enzo.goals.store`, not only in the prompt; `user_today(now)` uses the turn's zone. The OpenAI
+  adapter sends tool errors as `Error: {json}`: a mock provider must strip that prefix.
 - `scripts/dev.sh` is tested by `server/tests/test_dev_script.py`: fake `psql`, `uname`, `node` … on PATH set
   each state (Mac/Linux, role or database missing, old server). Keep its FIX lines covered there.
 - Pin actions by commit: `git ls-remote https://github.com/<owner>/<repo> refs/tags/<tag>^{}` (the API only
@@ -314,6 +318,11 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
   `stop_when` + `finish_task`), each run a turn in the task's own chat (`origin = schedule`), outcomes
   reported/quiet/finished/needs_approval/failed, stops after 3 failures, recovered after a restart;
   `/scheduled` (also `/reminders`, `/tasks`), `/events` `task`. Also §12.6 hard boundaries in the rules.
+- [x] Memory.md hand edits read back (ADR 0023): changed/added/removed lines become the user's corrections before
+  each message; secrets refused and told; malformed edits never lose data; both-changed rules in the ADR.
+- [x] Goals (spec §6.4, ADR 0023): `create_goal` / `record_goal_progress` / `close_goal` / `list_goals`, evidence for
+  every change, a step never closes a goal, closing cancels linked check-ins (`goal` on remind/schedule_task), open
+  goals in each message, read-only `~/Enzo/Goals.md`, `/goals [done]`. Goal tools are in `core_tools` (evals see them).
 - [x] Evals + traces (spec §13, §15.4/§15.5, ADR 0025, `docs/evals.md`): `enzo eval` runs 20 fixed tasks
   (`enzo.evals.suite` v1, `FINGERPRINT` pinned) through the real loop and tools on each connected account's
   everyday brain (`--brain`, `--brain all`, `--task`, `--offline`), in a throwaway DB + workspace, graded from the

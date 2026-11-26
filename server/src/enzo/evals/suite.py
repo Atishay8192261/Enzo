@@ -79,6 +79,10 @@ TOOL_NAMES = (
     "finish_task",
     "list_scheduled",
     "cancel_scheduled",
+    "create_goal",
+    "record_goal_progress",
+    "close_goal",
+    "list_goals",
 )
 WRITES = ("create_file", "edit_file", "delete_file")
 WEB = ("web_search", "read_page")

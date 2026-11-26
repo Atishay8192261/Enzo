@@ -33,6 +33,8 @@ class ScheduledOut(BaseModel):
     conversation_id: uuid.UUID | None
     #: A task's own chat, where its runs happen.
     chat_id: uuid.UUID | None
+    #: The goal it checks in on: closing the goal cancels it.
+    goal_id: int | None = None
 
 
 class ScheduledListOut(BaseModel):
@@ -123,4 +125,5 @@ def _out(j: Job) -> ScheduledOut:
         stop_when=j.stop_when,
         conversation_id=j.conversation_id,
         chat_id=j.chat_id,
+        goal_id=j.goal_id,
     )

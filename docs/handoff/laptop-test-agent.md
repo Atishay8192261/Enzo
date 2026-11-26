@@ -43,6 +43,13 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
 
 **Works now:**
 
+- **Goals and hand edits to Memory.md (new, ADR 0023).** Edit `~/Enzo/Memory.md` in an editor (change a line,
+  add one, delete one), then ask something that depends on it: Enzo must use the new value, and `/memory` says
+  "edited by hand in Memory.md". Adding "my password is x" there must be refused, with a note in the file and a
+  mention in the reply. Say "I need to renew my passport by <date>, remind me weekly", then "I got the photos":
+  the goal stays open and `/goals` shows ✓ for the photos. Then "my passport arrived": the goal is done, the
+  weekly reminder is gone from `/scheduled`, and `/goals done` shows why. Saving over `~/Enzo/Goals.md` must
+  warn it is read-only; if forced, Enzo keeps that copy and asks what he meant.
 - **Evals and traces (new, ADR 0025, `docs/evals.md`).** After connecting accounts: `enzo eval`, then
   `enzo eval --brain claude-sonnet --brain gpt-sol`, then `enzo eval --compare previous last` (exit 0 when
   nothing changed); open the `.md` path it prints. File a `user-testing` issue per task that fails on a real
@@ -150,8 +157,8 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
 
 - **Tools so far:** web search, reading pages, files in `~/Enzo`, GitHub (with a token), memory,
   reminders, scheduled tasks, Gmail and Google Calendar (with his own Google OAuth client).
-- **Memory:** no goals yet (§6.4), no search by meaning (§6.3), and hand edits to `Memory.md` are not
-  read back yet. No context compaction for very long chats (§5).
+- **Memory:** no search by meaning (§6.3); goals have no people or relationships yet (rest of §6.4). No
+  context compaction for very long chats (§5).
 - **Not yet verified against the real APIs:** Grok, Kimi, and switching models inside one
   conversation.
 - No event hooks (§9.4), no subagents (§9.5), no deployment.

@@ -1,9 +1,11 @@
-# ADR 0023 — Memory.md edited by hand is read back
+# ADR 0023 — Memory.md edited by hand is read back; goals as records with evidence
 
 - **Status:** Accepted (2026-11-25).
 - **Spec:** §11.2 ("the structured store and the human-readable files must be reconciled; they
   must not drift into two different truths"), §11.3 ("edit a memory file by hand and confirm Enzo
-  uses the edited value on the next question"), §6.2 (corrections replace; never secrets), §15.2.
+  uses the edited value on the next question"; "create a goal, restart Enzo, and confirm the goal
+  is still there with the same status"), §6.2, §6.4 (structured goals), §6.5 (write
+  discipline), §9.2, §15.2.
 - **Amends:** ADR 0020 decision 7, where `~/Enzo/Memory.md` was written from the table only.
 
 ## Context
@@ -68,3 +70,61 @@ the user's words.
 - The file gained a comment line near the top and a short "how to edit" introduction. Older
   files (without the comment) are read safely: nothing in them can make Enzo forget.
 - One gateway per database (ADR 0021) keeps the lock enough; two gateways never share one.
+
+## Decision: goals (spec §6.4, tier 4)
+
+1. **A goal is a record** (`goals`, `goal_steps`, `goal_events`; migration 0009): a number, a
+   title, a status (`open`, `done`, `dropped`), a due date if any (the user's local date), the
+   place in the user's Enzo folder where its work lives (never outside it), and its steps in
+   order: what remains. Where it was set (chat and run) is kept, as for memories.
+2. **Every change keeps its evidence** (§6.5), in `goal_events`: what shows it (in words), how it
+   is known (`user_confirmed`: the user said or confirmed it; `verified`: a tool result shows
+   it; `timeline_ended`: its due date has passed), a source to reach it again (needed when
+   verified; the chat and run are always kept), and when it happened if known. An inference is
+   not a basis: the tools do not accept one, and the rules say to ask the user instead.
+3. **The rules live in the store, not only in the prompt**, so every caller obeys them:
+   - a step is done, or a goal closed, only with evidence and a basis; a step never by a date;
+   - evidence that reads as a plan or an offer ("will", "going to", "proposed") is refused: a
+     proposed action is never recorded as done (§6.5). It errs on refusing; the brain rewords;
+   - recording steps never closes a goal, even the last one (the result says the goal stays
+     open, or that the outcome itself now needs confirming);
+   - closing a goal as done while steps remain needs the user's own word that the whole goal is
+     done: a verified step or a passed date cannot do it (§6.4 "a single successful step does
+     not close a goal");
+   - `timeline_ended` is checked against the user's own date: a goal not yet due is refused;
+   - titles, steps, evidence and sources pass the memory guard (never secrets); two open goals
+     with the same title are refused.
+4. **Enzo closes goals without being asked**: open goals ride with every message (below), the
+   rules say to close one as soon as the evidence shows it is done, and the progress tool's
+   result says when every step is done that the outcome itself is what to confirm next.
+5. **Open goals ride with each message** in the memory part of the new user message, after the
+   history (ADR 0007, cache-friendly): at most 10 (due soonest first), each with its due date
+   (marked when passed), folder, check-ins, steps done (with their basis) and steps left (at
+   most 8 shown). Labelled as the user's commitments, not instructions.
+6. **Stops reminding** (§6.4): a reminder or scheduled task may check in on a goal (`goal` on
+   `remind` and `schedule_task`; `jobs.goal_id`). Closing or dropping the goal cancels every
+   check-in still to come in the same transaction as the close, and the result names them. A
+   check-in can only be set for an open goal.
+7. **Tools** (no approval: a goal is a local record, each change shows as a step): `create_goal`,
+   `record_goal_progress` (steps done with evidence; steps to add), `close_goal` (done or dropped,
+   with evidence) and `list_goals`. Endpoint `GET /goals?which=open|closed`.
+8. **Goals.md is a read-only copy**, not two-way like Memory.md, because every change of a goal
+   needs its evidence and basis, which a hand edit cannot carry, and a ticked box would bypass
+   the rule that one step never closes a goal. §11.2 asks for editable files for curated memory
+   (tier 2); goals are tier-4 records. So:
+   - it is written with mode 0400 (an editor warns before saving over it) and says how to change
+     a goal (tell Enzo, or `/goals`);
+   - it ends with a check of its own words. If it was edited anyway, Enzo keeps that copy as
+     "Goals (your edit <time>).md", writes the file again from its records, and tells the brain,
+     which asks the user what they wanted to change: never a silent loss, never a second truth;
+   - the file tools refuse it, by any spelling, like Memory.md.
+9. **Restarts** (§9.2, §11.3): goals live in Postgres; nothing about them is held only in memory.
+10. **Logs:** `goal.created`, `goal.progress`, `goal.closed` (outcome, basis, stopped check-ins)
+    and `goals.file_edited`, with numbers only, never the words.
+
+## Not now
+
+- Reopening a closed goal (the user asks Enzo to track it again: a new goal), deleting a goal,
+  and editing a step's words.
+- People and relationships as records (the rest of tier 4).
+- The web app shows no goals yet (the web app comes last, Atishay 2026-11-19).
