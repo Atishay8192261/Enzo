@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   BACK_ONLINE,
   BUSY,
+  browserSign,
   type ChatItem,
   type ChatState,
   describeApproval,
@@ -13,6 +14,7 @@ import {
   reduce,
   SOME_STEP,
   STILL_RUNNING,
+  stepLine,
   toItems,
   UNREACHABLE,
 } from "./chat.ts";
@@ -330,6 +332,40 @@ describe("chat reducer", () => {
     for (const s of [cancelled, answered, lost, failed]) {
       expect(s.items[0]).toMatchObject({ role: "step", status: "stopped" });
     }
+  });
+
+  it("a step the user stopped says stopped, not failed (ADR 0027)", () => {
+    const running = reduce(ready, { type: "event", event: started("b1", "Opening shop.example") });
+    const s = reduce(running, {
+      type: "event",
+      event: finished("b1", "Opening shop.example", "stopped"),
+    });
+    expect(s.items[0]).toMatchObject({ role: "step", status: "stopped" });
+    expect(stepLine(s.items[0] as ChatItem)).toBe("Opening shop.example · stopped");
+  });
+
+  it("shows where Enzo is using the browser until the task ends (ADR 0027)", () => {
+    let s = reduce(ready, { type: "user_sent", text: "buy the kettle" });
+    s = reduce(s, { type: "event", event: { type: "browser", site: "shop.example" } });
+    expect(s.browser).toBe("shop.example");
+    expect(browserSign(s.browser as string)).toBe("Enzo is using your browser: shop.example");
+    // A step waits for the user's yes: its page stays open, and so does the sign.
+    const waiting = reduce(s, { type: "event", event: { ...DONE, stop: "approval_pending" } });
+    expect(waiting.browser).toBe("shop.example");
+    // The turn ends, the gateway says it closed, a new message ends a waiting task, or it fails.
+    expect(reduce(s, { type: "event", event: DONE }).browser).toBeNull();
+    expect(reduce(s, { type: "event", event: { type: "browser", site: null } }).browser).toBeNull();
+    expect(reduce(waiting, { type: "user_sent", text: "never mind" }).browser).toBeNull();
+    const failed = reduce(s, { type: "event", event: { type: "error", message: "x" } });
+    expect(failed.browser).toBeNull();
+    const elsewhere = reduce(s, {
+      type: "connected",
+      conversationId: "c2",
+      brains: [],
+      brain: null,
+      items: [],
+    });
+    expect(elsewhere.browser).toBeNull();
   });
 
   it("holds approvals until decided and says it is waiting", () => {

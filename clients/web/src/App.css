@@ -308,6 +308,13 @@ button.link {
 .banner.error {
   color: var(--error);
 }
+.banner.browser {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--warn-soft);
+  border-color: color-mix(in srgb, var(--warn) 35%, transparent);
+}
 
 /* ---------- approval ---------- */
 .approval {
