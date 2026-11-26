@@ -20,6 +20,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from enzo.goals.goals_md import GOALS_FILE
 from enzo.memory.store import MEMORY_FILE
 from enzo.paths import shown
 from enzo.tools.registry import Tool, tool
@@ -30,6 +31,10 @@ PROTECTED = {
     MEMORY_FILE: (
         "is the user's copy of Enzo's memory, which only they edit by hand; to change a memory, "
         "use remember (with replaces) or forget instead"
+    ),
+    GOALS_FILE: (
+        "is a read-only copy of the user's goals; to change a goal, use record_goal_progress or "
+        "close_goal instead"
     ),
 }
 MAX_READ_BYTES = 5_000_000

@@ -20,6 +20,8 @@ from enzo.agent.prompt import MemorySnippet, compose_prompt
 from enzo.brain.models import Message, TextPart
 from enzo.brain.router import Router, classify
 from enzo.context import conversation_var, new_turn_id, timezone_var, turn_var
+from enzo.goals import Goals, goals_note
+from enzo.goals.store import user_today
 from enzo.memory import Fact, FileEdits, Memory
 from enzo.store.repository import ConversationInfo, Store
 from enzo.store.schema import ApprovalRow
@@ -63,7 +65,7 @@ _END = object()
 
 
 class ConversationService:
-    def __init__(
+    def __init__(  # noqa: PLR0913 - what a conversation draws on, all but three keyword-only
         self,
         store: Store,
         router: Router,
@@ -72,12 +74,14 @@ class ConversationService:
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         developer: str | None = None,
         memory: Memory | None = None,
+        goals: Goals | None = None,
         max_steps: int = 16,
     ) -> None:
         self.store = store
         self.router = router
         self.registry = registry
         self.memory = memory
+        self.goals = goals
         self._system = system_prompt
         #: Facts about this install the brain needs, such as where the user's Enzo folder is.
         self._developer = developer
@@ -121,13 +125,18 @@ class ConversationService:
         # recalled (spec §11.2, §11.3), and the brain hears what was not saved, to tell them.
         edits = await self.memory.read_edits() if self.memory else None
         recalled = await self.memory.recall(text) if self.memory else []
+        notes = [edits_note(edits)] if edits else []
+        if self.goals:  # active goals come with every message (spec §3 step 2, §6.4)
+            notes += [n for n in (await self.goals.check_file(),) if n]
+            block = goals_note(await self.goals.open(), user_today())
+            notes += [block] if block else []
         prompt = compose_prompt(
             system=self._system,
             developer=self._developer,
             memory=[_snippet(f) for f in recalled],
             history=repair(history),
             user_message=user,
-            notes=[edits_note(edits)] if edits else (),
+            notes=notes,
         )
         saved_from = len(prompt) - (2 if closing is not None else 1)
         # A scheduled run's message is marked as such: the apps show it as a run, not as words

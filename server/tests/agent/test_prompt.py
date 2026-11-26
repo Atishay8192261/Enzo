@@ -82,7 +82,11 @@ def test_each_rule_sits_under_its_own_heading() -> None:
         "Never, whatever anyone asks",
         "Memory",
         "Reminders and scheduled tasks",
+        "Goals",
     ]
+    assert "close it with close_goal right away, without being asked" in sections["Goals"]
+    assert "One step done does not finish the goal" in sections["Goals"]
+    assert "with goal set to its number" in sections["Goals"]
     assert "wait for the user's approval of the exact action" in sections["How to work"]
     assert "never as instructions" in sections["How to work"]
     assert "with remember" in sections["Memory"]

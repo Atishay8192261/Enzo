@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from enzo.context import current_conversation, turn_var
 from enzo.memory.guard import secret_reason
 from enzo.schedule.recurrence import Repeat, describe, next_after, zone
-from enzo.store.schema import JobRow, JobRunRow, MessageRow
+from enzo.store.schema import GoalRow, JobRow, JobRunRow, MessageRow
 
 log = logging.getLogger("enzo.schedule")
 
@@ -58,6 +58,8 @@ class Job:
     #: A task's own chat, where its runs happen.
     chat_id: uuid.UUID | None = None
     created_at: datetime | None = None
+    #: The goal it checks in on: closing that goal cancels it.
+    goal_id: int | None = None
 
     @property
     def schedule(self) -> str:
@@ -152,6 +154,7 @@ class Schedule:
         ends_on: date | None = None,
         max_runs: int | None = None,
         now: datetime | None = None,
+        goal: int | None = None,
     ) -> Job:
         """Set a reminder; ``at`` is aware (the tool puts a local time in the user's zone)."""
         text = _words(text, "A reminder needs words: what should Enzo remind you of?")
@@ -166,6 +169,7 @@ class Schedule:
             ends_on=ends_on,
             max_runs=max_runs,
             next_run_at=first,
+            goal_id=goal,
         )
         log.info("reminder.set", extra={"reminder": made.id, "repeat": repeat, "every": every})
         return made
@@ -182,6 +186,7 @@ class Schedule:
         max_runs: int | None = None,
         stop_when: str | None = None,
         now: datetime | None = None,
+        goal: int | None = None,
     ) -> Job:
         """Set a task: ``instruction`` runs as an agent turn at each time (spec §9.3).
 
@@ -208,6 +213,7 @@ class Schedule:
             max_runs=max_runs,
             next_run_at=first,
             stop_when=stop,
+            goal_id=goal,
         )
         log.info(
             "task.set",
@@ -217,6 +223,16 @@ class Schedule:
 
     async def _add(self, **fields: object) -> Job:
         async with self._sessions.begin() as session:
+            goal = fields.get("goal_id")
+            if (
+                goal is not None
+                and await session.scalar(
+                    select(GoalRow.status).where(GoalRow.id == goal).with_for_update()
+                )
+                != "open"
+            ):
+                msg = f"There is no open goal {goal} to check in on: list the goals first."
+                raise ScheduleRefusedError(msg)
             row = JobRow(
                 conversation_id=current_conversation(),
                 turn_id=turn_var.get(),
@@ -236,6 +252,19 @@ class Schedule:
                 .order_by(JobRow.next_run_at, JobRow.id)
             )
             return [_job(r) for r in rows]
+
+    async def for_goals(self, goal_ids: list[int]) -> dict[int, list[Job]]:
+        """Reminders and tasks still to come that check in on these goals, soonest first."""
+        async with self._sessions() as session:
+            rows = await session.scalars(
+                select(JobRow)
+                .where(JobRow.status == "active", JobRow.goal_id.in_(goal_ids))
+                .order_by(JobRow.next_run_at, JobRow.id)
+            )
+            found: dict[int, list[Job]] = {}
+            for row in rows:
+                found.setdefault(row.goal_id or 0, []).append(_job(row))
+            return found
 
     async def get(self, job_id: int) -> Job | None:
         async with self._sessions() as session:
@@ -513,4 +542,5 @@ def _job(row: JobRow) -> Job:
         stop_when=row.stop_when,
         chat_id=row.chat_id,
         created_at=row.created_at,
+        goal_id=row.goal_id,
     )

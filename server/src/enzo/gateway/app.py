@@ -32,8 +32,10 @@ from enzo.connectors.github import github_tools
 from enzo.gateway.chatgpt import RedactAuthQuery, chatgpt_routes
 from enzo.gateway.connections import build_accounts, connection_routes
 from enzo.gateway.conversations import ServiceDep, conversation_routes
+from enzo.gateway.goals import goal_routes
 from enzo.gateway.memory import memory_routes
 from enzo.gateway.scheduled import scheduled_routes
+from enzo.goals import Goals, goal_tools
 from enzo.memory import Memory, memory_tools
 from enzo.schedule import Background, Bus, FinishedTasks, Runner, Schedule, schedule_tools
 from enzo.schedule.notify import desktop, silent
@@ -135,6 +137,7 @@ def create_app(
 
     app.include_router(conversation_routes(auth))
     app.include_router(memory_routes(auth))
+    app.include_router(goal_routes(auth))
     app.include_router(scheduled_routes(auth))
     app.include_router(connection_routes(auth))
     app.include_router(chatgpt_routes(auth, cfg.port))
@@ -167,6 +170,7 @@ async def _running(
     app.state.accounts = acct
     memory = Memory(store.engine, cfg.workspace_dir)
     schedule = Schedule(store.engine)
+    goals = Goals(store.engine, cfg.workspace_dir, schedule)
     notify = desktop if cfg.notify else silent
     runner = Runner(schedule, Bus(), notify=notify, on_idle=on_idle)
     app.state.background = Background(schedule, runner.bus, runner)
@@ -177,10 +181,16 @@ async def _running(
             *file_tools(cfg.workspace_dir),
             *memory_tools(memory),
             *schedule_tools(schedule, finished, on_set=runner.poke),
+            *goal_tools(goals),
         ]
     )
     service = ConversationService(
-        store, router, tools, developer=install_note(cfg.workspace_dir), memory=memory
+        store,
+        router,
+        tools,
+        developer=install_note(cfg.workspace_dir),
+        memory=memory,
+        goals=goals,
     )
     app.state.service = service
     # Scheduled tasks run as agent turns: the runner hands each due one to the task runner.
