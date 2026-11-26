@@ -123,10 +123,10 @@ class Closed:
     stopped: tuple[Job, ...]
 
 
-def user_today() -> date:
+def user_today(now: datetime | None = None) -> date:
     """Today in the user's zone (from their app, else this computer's)."""
     tz = timezone_var.get()
-    return datetime.now(zone(tz) if tz else local_zone()).date()
+    return (now or datetime.now(UTC)).astimezone(zone(tz) if tz else local_zone()).date()
 
 
 class Goals:

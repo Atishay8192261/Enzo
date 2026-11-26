@@ -8,7 +8,7 @@ const SAID: GoalEvidence = {
   source: null,
   happened_on: null,
   recorded_at: "2026-11-24T10:00:00Z",
-  said: "you confirmed, 24 Nov 2026, in “Passport”",
+  said: "you confirmed, 24 Nov 2026",
 };
 const PASSPORT: Goal = {
   id: 3,
@@ -64,7 +64,7 @@ describe("/goals (spec §6.4)", () => {
     await enter(s, "/goals");
     const card = await until(s, "Open goals");
     expect(card).toContain("• Renew my passport · due Tue 15 Dec 2026 · #3");
-    expect(card).toContain("✓ Get photos (you confirmed, 24 Nov 2026, in “Passport”)");
+    expect(card).toContain("✓ Get photos (you confirmed, 24 Nov 2026)");
     expect(card).toContain("○ Fill in the form");
     expect(card).toContain("Check-in: every Monday at 09:00 (next Mon 30 Nov 09:00)");
     expect(card).toContain("In ~/Enzo/passport");
