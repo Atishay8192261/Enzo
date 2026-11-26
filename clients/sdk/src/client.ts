@@ -102,7 +102,7 @@ export interface GoalEvidence {
   source: string | null;
   happened_on: string | null;
   recorded_at: string;
-  /** All of it in words: "you confirmed, 24 Nov 2026, in “Passport”". */
+  /** How it is known and when, in words: "you confirmed, 24 Nov 2026". */
   said: string;
 }
 
