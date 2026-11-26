@@ -340,7 +340,7 @@ async def test_the_browser_closes_with_the_turn_unless_it_waits_for_a_yes(
     await browsers.start(conversation, "read", [shop.url], f"{shop.url}/")
     await browsers.get(conversation).view()
     site = shop.url.removeprefix("http://")
-    assert seen == [BrowserInUse(site)]
+    assert seen == [BrowserInUse(site), BrowserInUse(site)]  # as it opens, then the page
     await browsers.turn_ended(conversation, "approval_pending")
     assert browsers.active(conversation)  # the card's page stays open
     await browsers.turn_ended(conversation, "final_answer")
