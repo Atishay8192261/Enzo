@@ -96,6 +96,10 @@ class _NothingToSummarizeError(Exception):
     pass
 
 
+class _NotWorthItError(Exception):
+    """Under the hard limit, and a summary would take out too little to pay for itself."""
+
+
 class ContextWindow:
     """The context of one turn of one conversation. ``made`` holds new summaries to save."""
 
@@ -148,8 +152,14 @@ class ContextWindow:
         if before.tokens <= bound:
             return Fit(view)
         calls: list[CallRecord] = []
+        must = before.tokens > budget.limit
         try:
-            record = await self._compact(messages, plan.primary, budget, calls)
+            record = await self._compact(messages, plan.primary, budget, calls, must=must)
+        except _NotWorthItError:
+            # Only the soft trigger, and too little older chat to gain from a summary (the bulk
+            # is instructions and tools): not a failure. The prompt fits; it goes as it is.
+            log.info("context.compact skipped", extra={"tokens": before.tokens})
+            return Fit(view)
         except (SummaryError, BrainError, AllBrainsFailedError, _NothingToSummarizeError) as exc:
             why = _plain(exc)
             log.error(
@@ -203,9 +213,19 @@ class ContextWindow:
             return None
 
     async def _compact(
-        self, messages: Sequence[Message], primary: str, budget: Budget, calls: list[CallRecord]
+        self,
+        messages: Sequence[Message],
+        primary: str,
+        budget: Budget,
+        calls: list[CallRecord],
+        *,
+        must: bool,
     ) -> Compaction:
-        """Summarize the older turns, keeping the newest ``budget.keep`` tokens of whole turns."""
+        """Summarize the older turns, keeping the newest ``budget.keep`` tokens of whole turns.
+
+        ``must``: over the hard limit, so everything older may go. Otherwise a summary has to be
+        worth a model call and a cache reset: it must take out at least ``budget.keep`` tokens.
+        """
         _, conversation = split_lead(messages)
         positions = turn_positions(conversation)
         turns: dict[int, list[Message]] = {}
@@ -213,18 +233,24 @@ class ContextWindow:
             turns.setdefault(turn, []).append(message)
         current = positions[-1][0] if positions else 0
         start = self.record.turns if self.record else 0
+        sizes = {
+            t: self._counter.estimate(primary, _plain_turn(turns[t]), ())
+            for t in range(start, current)
+        }
         keep_from, kept = current, 0
         for turn in range(current - 1, start - 1, -1):
-            size = self._counter.estimate(primary, _plain_turn(turns[turn]), ())
-            if kept + size > budget.keep:
+            if kept + sizes[turn] > budget.keep:
                 break
-            kept += size
+            kept += sizes[turn]
             keep_from = turn
-        if keep_from == start:  # everything older fits the tail: fold it all to gain room
+        if keep_from == start and must:  # everything older fits the tail: fold it all for room
             keep_from = current
         if keep_from <= start:
             msg = "there are no older messages to summarize"
-            raise _NothingToSummarizeError(msg)
+            raise (_NothingToSummarizeError if must else _NotWorthItError)(msg)
+        if not must and sum(sizes[t] for t in range(start, keep_from)) < budget.keep:
+            msg = "too little older chat to be worth a summary"
+            raise _NotWorthItError(msg)
         writer = self._summarizer(primary)
         previous = self.record.summary if self.record else None
         summary = await self._summarize(
