@@ -1,4 +1,9 @@
-import { type GatewayClient, GatewayError, type ProviderConnection } from "@enzo/sdk";
+import {
+  type GatewayClient,
+  GatewayError,
+  type GoogleAccess,
+  type ProviderConnection,
+} from "@enzo/sdk";
 
 /** What the account screens need from the gateway. */
 export type AccountsClient = Pick<
@@ -9,10 +14,16 @@ export type AccountsClient = Pick<
   | "checkConnection"
   | "startChatGPTSignIn"
   | "chatGPTSignIn"
+  | "startGoogleSignIn"
+  | "googleSignIn"
+  | "setGoogleClient"
 >;
 
 /** Where users review and limit what Enzo uses of their ChatGPT plan (OpenAI's guidance). */
 export const CHATGPT_USAGE_URL = "https://chatgpt.com/settings/usage";
+
+/** Where users see, and remove, what Enzo may do with their Google account. */
+export const GOOGLE_PERMISSIONS_URL = "https://myaccount.google.com/connections";
 
 /** One plain line per provider: state, how to fix it, and which models it unlocks. */
 export function describeConnection(c: ProviderConnection): string {
@@ -25,7 +36,9 @@ export function describeConnection(c: ProviderConnection): string {
     .join(", ");
   const login = c.methods.includes("chatgpt")
     ? "/login chatgpt (your ChatGPT plan) or /login openai (API key)"
-    : `/login ${c.provider}`;
+    : c.methods.includes("google")
+      ? "/login google (or /login google read: reading only)"
+      : `/login ${c.provider}`;
   const state = c.connected ? `connected (${how})` : `not connected: ${login}`;
   const unlocks = c.models.length > 0 ? c.models.join(", ") : (c.purpose ?? c.tools.join(", "));
   return `${c.provider}: ${state} · ${unlocks}`;
@@ -34,6 +47,7 @@ export function describeConnection(c: ProviderConnection): string {
 export function methodName(method: string | null): string {
   if (method === "api_key") return "API key";
   if (method === "chatgpt") return "ChatGPT plan";
+  if (method === "google") return "Google sign-in";
   if (method === "environment") return "environment variable";
   return method ?? "unknown";
 }
@@ -100,6 +114,63 @@ export async function signInWithChatGPT(
   } catch (e: unknown) {
     if (e instanceof GatewayError && e.status === 404) {
       return { ok: false, text: "That ChatGPT sign-in expired. Start again: /login chatgpt" };
+    }
+    return { ok: false, text: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export interface GoogleSignInOptions extends Omit<SignInOptions, "newAccount"> {
+  /** "full" (read, send, edit; the default) or "read" (reading only). */
+  access?: GoogleAccess;
+}
+
+export interface GoogleSignInResult extends SignInResult {
+  /** No OAuth client is set up yet: ask for the user's own client file, then try again. */
+  needsClient?: boolean;
+}
+
+/**
+ * Sign in with Google (Gmail and Calendar) from any surface: start, open the browser, then wait
+ * for the gateway to hear back from Google. Never throws: the result says what happened.
+ */
+export async function signInWithGoogle(
+  client: Pick<AccountsClient, "startGoogleSignIn" | "googleSignIn">,
+  options: GoogleSignInOptions,
+): Promise<GoogleSignInResult> {
+  const sleep = options.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  const pollMs = options.pollMs ?? 1000;
+  const deadline = Date.now() + (options.timeoutMs ?? 10 * 60_000);
+  try {
+    const started = await client.startGoogleSignIn(options.access ?? "full");
+    if (started.needs_client || !started.login_id || !started.url) {
+      return {
+        ok: false,
+        needsClient: true,
+        text: started.message ?? "Google needs your own OAuth client first.",
+      };
+    }
+    const { login_id, url } = started;
+    try {
+      await options.open(url);
+    } catch {
+      // No browser could be opened: the link below still works.
+    }
+    options.waiting?.(url);
+    while (Date.now() < deadline) {
+      if (options.signal?.aborted) return { ok: false, text: "Google sign-in cancelled." };
+      await sleep(pollMs);
+      const attempt = await client.googleSignIn(login_id);
+      if (attempt.status === "connected") {
+        return { ok: true, text: attempt.message ?? "Signed in with Google." };
+      }
+      if (attempt.status === "failed") {
+        return { ok: false, text: attempt.message ?? "Google sign-in failed." };
+      }
+    }
+    return { ok: false, text: "The Google sign-in timed out. Start again: /login google" };
+  } catch (e: unknown) {
+    if (e instanceof GatewayError && e.status === 404) {
+      return { ok: false, text: "That Google sign-in expired. Start again: /login google" };
     }
     return { ok: false, text: e instanceof Error ? e.message : String(e) };
   }

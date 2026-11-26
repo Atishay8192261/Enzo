@@ -54,7 +54,35 @@ function fake(
         usage_url: "https://chatgpt.com/settings/usage",
       };
     },
+    startGoogleSignIn: vi.fn(async () => ({
+      login_id: "g1",
+      url: "http://127.0.0.1:8787/auth/google/g1",
+      needs_client: false,
+      message: null,
+    })),
+    googleSignIn: async () => {
+      rows = rows.map((r) =>
+        r.provider === "google"
+          ? { ...r, connected: true, method: "google", label: "ada@example.com" }
+          : r,
+      );
+      return {
+        status: "connected" as const,
+        message: "Connected Google as ada@example.com: Gmail (read, send, drafts).",
+      };
+    },
+    setGoogleClient: vi.fn(async () => {}),
     ...overrides,
+  };
+}
+
+function googleRow(): ProviderConnection {
+  return {
+    ...row("google", false),
+    methods: ["google"],
+    models: [],
+    tools: ["gmail", "calendar"],
+    purpose: "Gmail and Google Calendar: read, send and schedule (sign in with Google)",
   };
 }
 
@@ -125,5 +153,53 @@ describe("Accounts", () => {
     await screen.findByText("Disconnected anthropic. Its key was deleted.");
     expect(client.disconnect).toHaveBeenCalledWith("anthropic");
     await screen.findByLabelText("anthropic API key");
+  });
+
+  it("asks for the user's own Google client, then continues with Google", async () => {
+    const tab = { opener: {} as unknown, location: { href: "about:blank" }, close: vi.fn() };
+    vi.spyOn(window, "open").mockReturnValue(tab as unknown as Window);
+    let clientSet = false;
+    const setGoogleClient = vi.fn(async () => {
+      clientSet = true;
+    });
+    const startGoogleSignIn = vi.fn(async () =>
+      clientSet
+        ? {
+            login_id: "g1",
+            url: "http://127.0.0.1:8787/auth/google/g1",
+            needs_client: false,
+            message: null,
+          }
+        : {
+            login_id: null,
+            url: null,
+            needs_client: true,
+            message:
+              "Google needs your own OAuth client first.\nhttps://github.com/Atishay8192261/Enzo/blob/main/docs/connectors/google.md",
+          },
+    );
+    const client = fake({ setGoogleClient, startGoogleSignIn }, [googleRow()]);
+    render(<Accounts client={client} />);
+    expect(screen.queryByLabelText("google API key")).toBeNull(); // Google takes no key
+    fireEvent.click(await screen.findByRole("button", { name: "Continue with Google" }));
+    await screen.findByText("Google needs your own OAuth client first.");
+    expect(tab.close).toHaveBeenCalled(); // no empty tab left behind
+    expect(screen.getByRole("link", { name: "Setup steps" }).getAttribute("href")).toContain(
+      "docs/connectors/google.md",
+    );
+    const field = screen.getByLabelText("Google OAuth client file") as HTMLInputElement;
+    expect(field.type).toBe("password");
+    fireEvent.change(field, { target: { value: '{"installed":{}}' } });
+    fireEvent.submit(field.closest("form") as HTMLFormElement);
+    expect(field.value).toBe(""); // out of the page at once
+    await waitFor(() => expect(setGoogleClient).toHaveBeenCalledWith('{"installed":{}}'));
+    await waitFor(() => expect(tab.location.href).toBe("http://127.0.0.1:8787/auth/google/g1"), {
+      timeout: 3000,
+    });
+    await screen.findByText(/Connected Google as ada@example.com/, {}, { timeout: 3000 });
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("Connected (Google sign-in, ada@example.com"),
+    );
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
   });
 });

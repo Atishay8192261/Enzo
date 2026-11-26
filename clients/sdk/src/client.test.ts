@@ -163,6 +163,34 @@ describe("GatewayClient", () => {
     expect(JSON.parse(String(seen[0]?.init.body))).toEqual({ api_key: "fake-key-000000" });
   });
 
+  it("sets up a Google client and signs in with Google", async () => {
+    const seen: Seen[] = [];
+    const client = new GatewayClient({
+      baseUrl: "http://enzo",
+      fetch: fakeFetch((url, init) => {
+        if (init.method === "PUT") return new Response(null, { status: 204 });
+        if (init.method === "POST") {
+          return Response.json({ login_id: "L1", url: "http://127.0.0.1:8787/auth/google/L1" });
+        }
+        return Response.json({ status: "connected", message: `seen ${url}` });
+      }, seen),
+    });
+    await client.setGoogleClient('{"installed":{}}');
+    const started = await client.startGoogleSignIn("read");
+    expect(started.login_id).toBe("L1");
+    await expect(client.googleSignIn("L/1")).resolves.toEqual({
+      status: "connected",
+      message: "seen http://enzo/connections/google/sign-in/L%2F1",
+    });
+    expect(seen.map((s) => `${s.init.method} ${s.url}`)).toEqual([
+      "PUT http://enzo/connections/google/client",
+      "POST http://enzo/connections/google/sign-in",
+      "GET http://enzo/connections/google/sign-in/L%2F1",
+    ]);
+    expect(JSON.parse(String(seen[0]?.init.body))).toEqual({ client: '{"installed":{}}' });
+    expect(JSON.parse(String(seen[1]?.init.body))).toEqual({ access: "read" });
+  });
+
   it("reports a rejected key with the server's reason and never the key", async () => {
     const client = new GatewayClient({
       baseUrl: "http://enzo",

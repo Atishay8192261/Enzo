@@ -38,7 +38,7 @@ describe("the slash-command list (#34)", () => {
     await type(s, "lo");
     const filtered = await until(s, "/logout [provider]");
     expect(filtered).toContain("/login [provider|chatgpt]");
-    expect(filtered).toContain("your ChatGPT plan, or an API key (typed hidden)"); // whole
+    expect(filtered).toContain("your ChatGPT plan, Google, or a key (hidden)"); // whole
     const rows = lines(filtered).filter((l) => l.trim().startsWith("│ /"));
     expect(rows.map((l) => l.trim().split(/\s+/)[1])).toEqual(["/login", "/logout"]);
   });
@@ -173,10 +173,10 @@ describe("command output (#36)", () => {
     await enter(s, "/help");
     const frame = await until(s, "commands and keys");
     const rows = lines(frame);
-    const login = rows.findIndex((l) => l.includes("/login [provider|chatgpt]"));
-    const first = rows[login] ?? "";
-    const next = rows[login + 1] ?? "";
-    const column = first.indexOf("your ChatGPT plan");
+    const long = rows.findIndex((l) => l.includes("/scheduled "));
+    const first = rows[long] ?? "";
+    const next = rows[long + 1] ?? "";
+    const column = first.indexOf("your reminders and scheduled tasks");
     expect(column).toBeGreaterThan(0);
     // the wrapped rest starts under the description, never back at the left edge
     expect(next.slice(0, column).replace(/[│\s]/g, "")).toBe("");
@@ -259,6 +259,64 @@ describe("accounts", () => {
     await press(s, "RETURN");
     const frame = await until(s, "xai rejected this key");
     expect(frame).not.toContain(KEY);
+  });
+
+  it("/login google asks for the user's own client file, hidden, then signs in", async () => {
+    const SETUP = "https://github.com/Atishay8192261/Enzo/blob/main/docs/connectors/google.md";
+    const FILE =
+      '{"installed": {"client_id": "1-x.apps.googleusercontent.com", "client_secret": "not-a-secret"}}';
+    const opened: string[] = [];
+    let clientSet = false;
+    const setGoogleClient = mock(async (_file: string) => {
+      clientSet = true;
+    });
+    const startGoogleSignIn = mock(async (_access?: "full" | "read") =>
+      clientSet
+        ? {
+            login_id: "g1",
+            url: "http://127.0.0.1:8787/auth/google/g1",
+            needs_client: false,
+            message: null,
+          }
+        : {
+            login_id: null,
+            url: null,
+            needs_client: true,
+            message: `Google needs your own OAuth client first: a one-time setup.\n${SETUP}`,
+          },
+    );
+    await using s = await screen(fakeClient({ setGoogleClient, startGoogleSignIn }), {
+      width: 120,
+      openUrl: async (url) => {
+        opened.push(url);
+      },
+    });
+    await enter(s, "/login google read");
+    const asked = await until(s, "Paste your Google OAuth client file (hidden)");
+    expect(lines(asked).some((l) => l.includes(`│ ${SETUP}`))).toBe(true); // the link stays whole
+    expect(opened).toEqual([]); // nothing opens before there is a client
+    await paste(s, FILE);
+    const frame = await until(s, "characters");
+    expect(frame).not.toContain("not-a-secret");
+    await press(s, "RETURN");
+    await until(s, "Connected Google as ada@example.com", 5000);
+    expect(setGoogleClient).toHaveBeenCalledWith(FILE.replace(/\s+/g, ""));
+    expect(startGoogleSignIn.mock.calls.map((c) => c[0])).toEqual(["read", "read"]);
+    expect(opened).toEqual(["http://127.0.0.1:8787/auth/google/g1"]);
+  });
+
+  it("/logout google says whether Google removed Enzo's access", async () => {
+    let answer: "confirmed" | "not_confirmed" = "confirmed";
+    const disconnect = mock(async () => ({ remote_sign_out: answer }));
+    await using s = await screen(fakeClient({ disconnect }), { width: 120 });
+    await enter(s, "/logout google");
+    await until(s, "Signed out of Google. Google removed Enzo's access to Gmail and Calendar.");
+    answer = "not_confirmed";
+    await enter(s, "/logout google");
+    const frame = await until(s, "Google did not confirm it");
+    expect(lines(frame).some((l) => l.includes("│ https://myaccount.google.com/connections"))).toBe(
+      true,
+    );
   });
 
   it("refuses keys typed on the command line and unknown providers", async () => {

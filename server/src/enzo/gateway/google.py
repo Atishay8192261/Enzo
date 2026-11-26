@@ -27,7 +27,7 @@ from enzo.accounts.google import (
 from enzo.gateway.chatgpt import _NO_STORE, LOOPBACK, _page
 from enzo.gateway.connections import AccountsDep
 
-SETUP_DOC = "docs/connectors/google.md"
+SETUP_DOC = "https://github.com/Atishay8192261/Enzo/blob/main/docs/connectors/google.md"
 _LINK = (PERMISSIONS_URL, "See what Enzo may do in your Google Account")
 
 
@@ -86,9 +86,11 @@ def google_routes(auth: params.Depends, port: int) -> APIRouter:
         except NoClientError:
             return StartOut(
                 needs_client=True,
+                # The link gets its own line: a terminal must never wrap it into other words.
                 message=(
-                    "Google needs your own OAuth client first (a one-time setup of about 10 "
-                    f"minutes, steps in {SETUP_DOC}). Then paste the client file you downloaded."
+                    "Google needs your own OAuth client first: a one-time setup of about 10 "
+                    "minutes. Follow these steps, then paste the client file you downloaded "
+                    f"below.\n{SETUP_DOC}"
                 ),
             )
         return StartOut(login_id=attempt.id, url=f"{base}/auth/google/{attempt.id}")

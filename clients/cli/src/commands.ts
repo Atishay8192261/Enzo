@@ -5,11 +5,12 @@ import {
   describeCatalog,
   describeChoice,
   describeConnection,
+  GOOGLE_PERMISSIONS_URL,
   type MemoryClient,
   resolveChoice,
   type ScheduleClient,
 } from "@enzo/chat";
-import type { MemoryList, Remembered, Scheduled } from "@enzo/sdk";
+import type { GoogleAccess, MemoryList, Remembered, Scheduled } from "@enzo/sdk";
 
 /**
  * What a command shows, as a card under its own echo: plain text, text marked as an error, or
@@ -42,6 +43,9 @@ export interface CommandContext {
   startLogin(provider: string): void;
   /** Sign in with ChatGPT in the browser. Shows progress itself; resolves with the outcome. */
   signInWithChatGPT(newAccount: boolean): Promise<Reply>;
+  /** Sign in with Google (Gmail, Calendar) in the browser; asks for the user's own OAuth client
+   * file first when none is set up. Shows progress itself; resolves with the outcome. */
+  signInWithGoogle(access: GoogleAccess): Promise<Reply>;
   /** Open a picker (Up/Down and Enter) instead of typing the argument. */
   pick(kind: PickerKind): void;
   /** Copy the last reply, or its last code block, to the clipboard. */
@@ -130,10 +134,10 @@ const chats: Command = {
 const COMMANDS: Record<string, Command> = {
   "/login": {
     usage: "/login [provider|chatgpt]",
-    summary: "your ChatGPT plan, or an API key (typed hidden)",
+    summary: "your ChatGPT plan, Google, or a key (hidden)",
     args: 1,
     optional: true,
-    also: ["chatgpt new"],
+    also: ["chatgpt new", "google read"],
     // A key typed on the command line is on screen and may land in history: refuse it.
     tooMany:
       "Never type a key on the command line. Run /login <provider> and paste it at the hidden prompt.",
@@ -144,6 +148,9 @@ const COMMANDS: Record<string, Command> = {
       }
       if (provider === "chatgpt" || provider === "chatgpt new") {
         return ctx.signInWithChatGPT(provider === "chatgpt new");
+      }
+      if (provider === "google" || provider === "google read") {
+        return ctx.signInWithGoogle(provider === "google read" ? "read" : "full");
       }
       const known = (await ctx.client.connections()).map((c) => c.provider);
       if (!known.includes(provider)) {
@@ -167,6 +174,12 @@ const COMMANDS: Record<string, Command> = {
       }
       const out = await ctx.client.disconnect(provider);
       ctx.accountsChanged();
+      if (provider === "google" && out.remote_sign_out === "confirmed") {
+        return "Signed out of Google. Google removed Enzo's access to Gmail and Calendar.";
+      }
+      if (provider === "google" && out.remote_sign_out === "not_confirmed") {
+        return `Signed out here, but Google did not confirm it. To be sure, remove Enzo in your Google Account:\n${GOOGLE_PERMISSIONS_URL}`;
+      }
       if (out.remote_sign_out === "confirmed") return `Signed out of ChatGPT (${provider}).`;
       if (out.remote_sign_out === "not_confirmed") {
         return `Signed out here, but OpenAI did not confirm it. To be sure, disconnect Enzo in your ChatGPT settings:\n${CHATGPT_USAGE_URL}`;
@@ -188,7 +201,8 @@ const COMMANDS: Record<string, Command> = {
     args: 1,
     async run(ctx, provider) {
       const r = await ctx.client.checkConnection(provider);
-      return r.ok ? `${provider}: the connection works.` : error(`${provider}: ${r.detail}`);
+      if (!r.ok) return error(`${provider}: ${r.detail}`);
+      return `${provider}: ${r.detail ?? "the connection works."}`;
     },
   },
   "/models": {
