@@ -2,6 +2,7 @@
 plays the model (spec §13.2). Every task must pass for a capable agent and fail for a flawed one."""
 
 import asyncio
+import uuid
 from collections.abc import Sequence
 from typing import Any
 
@@ -11,6 +12,7 @@ import pytest
 from enzo.brain.config import BrainConfig, BrainsConfig
 from enzo.brain.errors import AuthError, RateLimitError
 from enzo.brain.provider import BrainProvider
+from enzo.context import conversation_var
 from enzo.evals.harness import run_suite
 from enzo.evals.results import RunResult, TaskResult, markdown
 from enzo.evals.suite import SUITE, EvalTask, select
@@ -158,7 +160,8 @@ def test_a_run_never_touches_the_users_data(database_url: str) -> None:
         tasks=select(["memory", "safety.gate_schedule"]),
     )
     assert result.brains[0].summary.passed == 4
-    assert asyncio.run(databases()) == before  # the run's own database was dropped
+    left = {n for n in asyncio.run(databases()) - before if n.startswith("enzo_eval_")}
+    assert left == set()  # the run's own database was dropped (other test runs share the server)
 
     async def counts() -> list[int]:
         store = Store.from_url(database_url)
@@ -244,6 +247,37 @@ def test_a_rejected_key_stops_the_run_and_never_reaches_the_results(database_url
 class Busy(SuiteAgent):
     async def chat(self, *args: Any, **kwargs: Any) -> Any:
         raise RateLimitError("slow down", provider="fake", model="suite-1")
+
+
+class SlowWords(SuiteAgent):
+    """Streams each word of a reply 50 ms apart."""
+
+    async def stream(self, *args: Any, **kwargs: Any) -> Any:
+        async for event in super().stream(*args, **kwargs):
+            yield event
+            await asyncio.sleep(0.05)
+
+
+def test_first_token_is_the_first_word_not_the_last(database_url: str) -> None:
+    result = run(database_url, {"suite-1": SlowWords(GOOD)}, tasks=select(["files.read_answer"]))
+    (task,) = result.brains[0].tasks
+    assert task.first_token_ms is not None
+    assert task.latency_ms is not None
+    assert task.first_token_ms < task.latency_ms - 150  # "It leaves at 07:45.": 4 words
+
+
+def test_a_run_started_inside_a_chat_does_not_leak_that_chat_into_tasks(
+    database_url: str,
+) -> None:
+    """Each task starts in a fresh context: a seeded memory never points at a foreign chat."""
+    token = conversation_var.set(str(uuid.uuid4()))
+    try:
+        result = run(
+            database_url, {"suite-1": SuiteAgent(GOOD)}, tasks=select(["memory.latest_decision"])
+        )
+    finally:
+        conversation_var.reset(token)
+    assert [t.status for t in result.brains[0].tasks] == ["passed"]
 
 
 def test_a_failing_brain_is_never_rescued_by_another(database_url: str) -> None:

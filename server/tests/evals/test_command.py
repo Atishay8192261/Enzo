@@ -162,6 +162,21 @@ def test_skipped_tasks_do_not_count_as_a_drop(tmp_path: Path) -> None:
     assert command.compare_runs("r1", "r2", tmp_path) == 0
 
 
+def test_only_tasks_graded_in_both_runs_are_compared(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An offline run, then an online one whose internet tasks fail: 16 compared, no drop."""
+    offline = a_run("r1", ALL)
+    for t in offline.brains[0].tasks:
+        if t.needs_network:
+            t.status = "skipped"
+    online = a_run("r2", {t.id for t in SUITE if not t.needs_network})
+    save(offline, tmp_path)
+    save(online, tmp_path)
+    assert command.compare_runs("r1", "r2", tmp_path) == 0
+    assert "on the 16 tasks graded in both: 16/16 (100%) → 16/16" in capsys.readouterr().out
+
+
 def test_saved_runs_are_listed_and_private(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

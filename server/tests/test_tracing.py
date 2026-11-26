@@ -54,7 +54,7 @@ async def two_tasks(url: str) -> tuple[uuid.UUID, list[str]]:
     """Task 1: a step, then an email that waits for approval, approved, sent. Task 2: a reply."""
     brain = ScriptedBrain(
         [
-            call("step", f"a {KEY} \x1b[31mred", "c1"),
+            call("step", f"a {KEY} \x1b[31mred \x9b31m", "c1"),
             call("send_email", "hello", "c2"),
             Message.assistant("sent it"),
             Message.assistant("second answer"),
@@ -172,6 +172,7 @@ def test_the_trace_reads_well_and_leaks_nothing(
     assert KEY not in shown  # a key-shaped argument is redacted
     assert "[redacted]" in shown
     assert "\x1b" not in shown  # escape codes from the brain never reach the terminal
+    assert "\x9b" not in shown  # nor a one-byte (C1) one, which JSON leaves as it is
 
 
 def test_enzo_trace_prints_it(
