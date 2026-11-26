@@ -43,6 +43,13 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
 
 **Works now:**
 
+- **Long chats (new, ADR 0024).** Start the gateway with a copy of `brains.toml` that sets `[context]
+  compact_at = 20000` and `keep_recent = 4000` (`ENZO_BRAINS_CONFIG=…`), then `cd server && uv run python
+  ../scripts/compaction-check.py http://127.0.0.1:8787` on each connected account (about 55 short turns and
+  one large paste, under $1). File a `user-testing` issue if a decision or correction is lost, a "couldn't
+  summarize" line appears, or the paste is not answered from the document. In the terminal, paste a document
+  over 100,000 characters and ask about a detail near its end: the answer must be right, with a "Looking for
+  … in a saved document" step.
 - **Goals and hand edits to Memory.md (new, ADR 0023).** Edit `~/Enzo/Memory.md` in an editor (change a line,
   add one, delete one), then ask something that depends on it: Enzo must use the new value, and `/memory` says
   "edited by hand in Memory.md". Adding "my password is x" there must be refused, with a note in the file and a
@@ -157,8 +164,7 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
 
 - **Tools so far:** web search, reading pages, files in `~/Enzo`, GitHub (with a token), memory,
   reminders, scheduled tasks, Gmail and Google Calendar (with his own Google OAuth client).
-- **Memory:** no search by meaning (§6.3); goals have no people or relationships yet (rest of §6.4). No
-  context compaction for very long chats (§5).
+- **Memory:** no search by meaning (§6.3); goals have no people or relationships yet (rest of §6.4).
 - **Not yet verified against the real APIs:** Grok, Kimi, and switching models inside one
   conversation.
 - No event hooks (§9.4), no subagents (§9.5), no deployment.
