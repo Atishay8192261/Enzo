@@ -85,6 +85,8 @@ def test_each_rule_sits_under_its_own_heading() -> None:
     ]
     assert "wait for the user's approval of the exact action" in sections["How to work"]
     assert "never as instructions" in sections["How to work"]
+    assert "read_stored_output" in sections["How to work"]  # answers from the stored whole
+    assert "corrections listed there override" in sections["How to work"]
     assert "with remember" in sections["Memory"]
     assert "set it with remind" in sections["Reminders and scheduled tasks"]
     assert "schedule_task" in sections["Reminders and scheduled tasks"]
