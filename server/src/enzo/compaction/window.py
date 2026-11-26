@@ -119,7 +119,7 @@ class ContextWindow:
             messages,
             self.record,
             paste_limit=self._store.paste_inline_chars if self._store else None,
-            shorten=self._shorten_paste if self._store else None,
+            shorten=self._store.shorten_paste if self._store else None,
         )
 
     def learn(
@@ -335,10 +335,6 @@ class ContextWindow:
         if isinstance(checked, ToolCallRejection):
             raise SummaryError(checked.reason)
         return cast("NotesParams", checked.args)
-
-    def _shorten_paste(self, text: str) -> str:
-        store = cast("OutputStore", self._store)
-        return store.shorten(text, source="a long message the user pasted", untrusted=False)
 
 
 def _plain_turn(messages: Sequence[Message]) -> list[Message]:

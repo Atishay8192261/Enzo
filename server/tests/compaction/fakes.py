@@ -174,17 +174,17 @@ class RuleBrain:
 
     def _answer(self, messages: Sequence[Message]) -> Message:
         last = messages[-1]
+        words = next((m.text for m in reversed(messages) if m.role == "user"), "")
+        asked = re.search(r"what does (CLAUSE-\d+) say", words, re.IGNORECASE)
         if last.role == "tool":
             result = next(p for p in last.parts if isinstance(p, ToolResult))
-            if result.name == "read_stored_output":
-                found = re.search(r"CLAUSE-\d+: [^\\\n]+", result.content)
+            if result.name == "read_stored_output" and asked:
+                found = re.search(rf"{asked.group(1)}: [^.]+\.", result.content)
                 return Message.assistant(f"From the document: {found.group(0) if found else '?'}")
             return Message.assistant("Done.")
-        words = next((m.text for m in reversed(messages) if m.role == "user"), "")
         stored = re.search(r"stored text (s_[0-9a-f]{16})", words)
-        asked = re.search(r"what does (CLAUSE-\d+) say", words)
         if stored and asked:
-            args = {"id": stored.group(1), "find": asked.group(1)}
+            args = {"id": stored.group(1), "find": asked.group(1) + ":", "max_chars": 1_000}
             call = ToolCall(id="read1", name="read_stored_output", arguments_json=json.dumps(args))
             return Message.assistant(tool_calls=(call,))
         return Message.assistant("Okay.")

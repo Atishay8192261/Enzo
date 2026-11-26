@@ -94,13 +94,22 @@ class OutputStore:
             msg = f"there is no stored text {stored} in this chat"
             raise StoredTextError(msg) from None
 
-    def shorten(self, text: str, *, source: str, untrusted: bool, shown: int | None = None) -> str:
-        """The whole text stored; what stays in context: its start (fenced if outside content)
-        and a pointer the brain can follow."""
+    def shorten(self, text: str, *, source: str, untrusted: bool, tail: int = 0) -> str:
+        """The whole text stored; what stays in context: its start (and its last ``tail``
+        characters), fenced if outside content, and a pointer the brain can follow."""
         stored = self.keep(text, source=source, untrusted=untrusted)
-        start = text[: shown or self.excerpt_chars]
-        body = fence(start, source=source) if untrusted else start
-        return f"{body}\n{pointer(stored, len(start))}"
+        start = text[: self.excerpt_chars]
+        end = text[len(start) :][-tail:] if tail else ""
+        shown = f"{start}\n[…]\n{end}" if end else start
+        body = fence(shown, source=source) if untrusted else shown
+        return f"{body}\n{pointer(stored, len(start), len(end))}"
+
+    def shorten_paste(self, text: str) -> str:
+        """A long pasted message: its start and its end stay (the question usually follows the
+        document), the whole is stored."""
+        return self.shorten(
+            text, source="a long message the user pasted", untrusted=False, tail=self.excerpt_chars
+        )
 
     def shorten_result(self, content: str, *, source: str, untrusted: bool) -> str | None:
         """For the tool registry: a result too long for the context, shortened; else None."""
@@ -116,11 +125,12 @@ class OutputStore:
         return private_dir(private_dir(self.root) / chat)
 
 
-def pointer(stored: Stored, shown: int) -> str:
+def pointer(stored: Stored, shown: int, tail: int = 0) -> str:
     """The note after a shortened text: what was kept, and how to read the rest."""
+    above = f"the first {shown:,}" + (f" and the last {tail:,}" if tail else "")
     return (
         f"[Enzo kept this whole ({stored.chars:,} characters, from {stored.source}) as stored "
-        f"text {stored.id}; only the first {shown:,} characters are above. To read on, call "
+        f"text {stored.id}; only {above} characters are above. To read on, call "
         f'{TOOL_NAME} with id "{stored.id}" and offset {shown}; to look for something in it, '
         "pass find.]"
     )
