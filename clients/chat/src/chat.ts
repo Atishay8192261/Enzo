@@ -39,6 +39,9 @@ export type ScheduleClient = Pick<GatewayClient, "scheduled" | "cancelScheduled"
 /** What Enzo remembers (spec §6.2): seeing it and forgetting a part of it. */
 export type MemoryClient = Pick<GatewayClient, "memories" | "forgetMemory">;
 
+/** The user's goals (spec §6.4): the open ones and the closed ones, with their evidence. */
+export type GoalsClient = Pick<GatewayClient, "goals">;
+
 /** How a step went: running now, done, failed, not run (declined, moved on) or stopped. */
 export type StepStatus = "running" | "ok" | "failed" | "skipped" | "stopped";
 

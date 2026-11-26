@@ -47,6 +47,8 @@ class GoalOut(BaseModel):
     title: str
     status: str
     due_on: date | None
+    #: The due date in words: "Tue 15 Dec 2026".
+    due: str | None
     #: Where its work lives, as the user types it: ~/Enzo/passport.
     folder: str | None
     created_at: datetime
@@ -108,6 +110,7 @@ def _out(g: Goal, goals: Goals) -> GoalOut:
         title=g.title,
         status=g.status,
         due_on=g.due_on,
+        due=f"{g.due_on:%a %-d %b %Y}" if g.due_on else None,
         folder=goals.shown_folder(g.path) if g.path else None,
         created_at=g.created_at,
         closed_at=g.closed_at,

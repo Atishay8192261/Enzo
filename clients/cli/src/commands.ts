@@ -6,11 +6,12 @@ import {
   describeChoice,
   describeConnection,
   GOOGLE_PERMISSIONS_URL,
+  type GoalsClient,
   type MemoryClient,
   resolveChoice,
   type ScheduleClient,
 } from "@enzo/chat";
-import type { GoogleAccess, MemoryList, Remembered, Scheduled } from "@enzo/sdk";
+import type { Goal, GoalList, GoogleAccess, MemoryList, Remembered, Scheduled } from "@enzo/sdk";
 
 /**
  * What a command shows, as a card under its own echo: plain text, text marked as an error, or
@@ -31,7 +32,7 @@ export type PickerKind =
   | "cancel";
 
 export interface CommandContext {
-  client: ChatClient & AccountsClient & MemoryClient & ScheduleClient;
+  client: ChatClient & AccountsClient & MemoryClient & ScheduleClient & GoalsClient;
   /** The conversation's current choice: a model, a tier, or null for smart routing. */
   current: string | null;
   /** This chat's id; null while it is fresh (created by its first message). */
@@ -333,6 +334,16 @@ const COMMANDS: Record<string, Command> = {
       return ctx.askForget(id);
     },
   },
+  "/goals": {
+    usage: "/goals [done]",
+    summary: "what you are working toward (done: the finished ones)",
+    args: 0,
+    also: ["done"],
+    async run(ctx, which) {
+      const done = which === "done";
+      return goalsReply(await ctx.client.goals(done ? "closed" : "open"), done);
+    },
+  },
   "/scheduled": scheduledCommand,
   "/reminders": { ...scheduledCommand, usage: "/reminders", hidden: true },
   "/tasks": { ...scheduledCommand, usage: "/tasks", hidden: true },
@@ -463,6 +474,54 @@ export function memoryReply({ memories, file }: MemoryList): Reply {
     for (const m of group) lines.push(`• ${memoryLine(m)}`, `  ${m.source} · #${m.id}`);
   }
   lines.push("", "To change one, just tell Enzo. /forget removes one.", ...copy);
+  return lines.join("\n");
+}
+
+/** A goal's first line: "Renew my passport · due Tue 15 Dec 2026 · #3". */
+function goalLine(g: Goal): string {
+  const when =
+    g.status === "open"
+      ? g.due
+        ? ` · due ${g.due}`
+        : ""
+      : g.status === "done"
+        ? " · done"
+        : " · given up";
+  return `• ${g.title}${when} · #${g.id}`;
+}
+
+/** What /goals shows: each open goal with its steps (done ones with their evidence), its
+ * check-ins and its folder; with `done`, the finished ones and why each was closed. */
+export function goalsReply({ goals, file }: GoalList, done = false): Reply {
+  const copy = file ? ["A read-only copy:", file] : [];
+  if (goals.length === 0) {
+    const none = done
+      ? "No finished goals yet."
+      : "No open goals. Tell Enzo what you are working toward, like “I need to renew my passport by December”.";
+    return [none, ...(done ? [] : ["/goals done lists finished ones."])].join("\n");
+  }
+  const lines: string[] = [done ? "Finished goals" : "Open goals"];
+  for (const g of goals) {
+    lines.push(goalLine(g));
+    if (done) {
+      if (g.closing) lines.push(`  ${g.closing.said}: ${g.closing.evidence ?? ""}`.trimEnd());
+      continue;
+    }
+    for (const s of g.steps) {
+      lines.push(s.done ? `  ✓ ${s.text} (${s.evidence?.said ?? "done"})` : `  ○ ${s.text}`);
+    }
+    for (const c of g.check_ins) {
+      lines.push(`  Check-in: ${c.schedule}${c.next ? ` (next ${c.next})` : ""}`);
+    }
+    if (g.folder) lines.push(`  In ${g.folder}`);
+  }
+  lines.push(
+    "",
+    done
+      ? "To track one again, just tell Enzo."
+      : "To change one, just tell Enzo. /goals done lists finished ones.",
+    ...copy,
+  );
   return lines.join("\n");
 }
 

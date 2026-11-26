@@ -89,6 +89,67 @@ export interface Scheduled {
   conversation_id: string | null;
   /** A task's own chat, where its runs happen. */
   chat_id: string | null;
+  /** The goal it checks in on: closing the goal cancels it. */
+  goal_id?: number | null;
+}
+
+/** What a change of a goal rests on (spec §6.5). */
+export interface GoalEvidence {
+  evidence: string | null;
+  /** The user confirmed it, a check verified it, or its date passed. */
+  basis: "user_confirmed" | "verified" | "timeline_ended" | null;
+  /** Where the evidence can be found again. */
+  source: string | null;
+  happened_on: string | null;
+  recorded_at: string;
+  /** All of it in words: "you confirmed, 24 Nov 2026, in “Passport”". */
+  said: string;
+}
+
+export interface GoalStep {
+  number: number;
+  text: string;
+  done: boolean;
+  done_at: string | null;
+  evidence: GoalEvidence | null;
+}
+
+/** A reminder or scheduled task that checks in on a goal. */
+export interface GoalCheckIn {
+  id: number;
+  kind: "reminder" | "task";
+  text: string;
+  /** "every Monday at 09:00". */
+  schedule: string;
+  /** "Mon 30 Nov 09:00". */
+  next: string | null;
+}
+
+/** Something the user is working toward (spec §6.4). */
+export interface Goal {
+  id: number;
+  title: string;
+  status: "open" | "done" | "dropped";
+  due_on: string | null;
+  /** "Tue 15 Dec 2026". */
+  due: string | null;
+  /** Where its work lives, as the user types it: ~/Enzo/passport. */
+  folder: string | null;
+  created_at: string;
+  closed_at: string | null;
+  /** The chat it was set in, when that chat still exists. */
+  chat: string | null;
+  conversation_id: string | null;
+  steps: GoalStep[];
+  check_ins: GoalCheckIn[];
+  /** Why it was closed, when it is. */
+  closing: GoalEvidence | null;
+}
+
+export interface GoalList {
+  goals: Goal[];
+  /** Where the read-only copy is, as the user types it: ~/Enzo/Goals.md. */
+  file: string | null;
 }
 
 /** How a task run went: a report, nothing new yet, done, waiting for approval, or failed. */
@@ -364,6 +425,11 @@ export class GatewayClient {
   /** Forgets a memory for good, with its earlier versions. */
   async forgetMemory(id: number): Promise<void> {
     await this.#json("DELETE", `/memory/${id}`);
+  }
+
+  /** Open goals (due soonest first), or closed ones (done and given up, newest first). */
+  goals(which: "open" | "closed" = "open"): Promise<GoalList> {
+    return this.#json("GET", `/goals?which=${which}`) as Promise<GoalList>;
   }
 
   conversation(id: string): Promise<Conversation> {

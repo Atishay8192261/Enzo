@@ -223,6 +223,25 @@ describe("GatewayClient", () => {
   });
 });
 
+describe("goals (spec §6.4)", () => {
+  it("lists the open ones, or the closed ones", async () => {
+    const seen: Seen[] = [];
+    const client = new GatewayClient({
+      baseUrl: "http://enzo",
+      fetch: fakeFetch(
+        () => Response.json({ goals: [{ id: 1, title: "Renew my passport" }], file: null }),
+        seen,
+      ),
+    });
+    expect((await client.goals()).goals.map((g) => g.title)).toEqual(["Renew my passport"]);
+    await client.goals("closed");
+    expect(seen.map((s) => `${s.init.method} ${s.url}`)).toEqual([
+      "GET http://enzo/goals?which=open",
+      "GET http://enzo/goals?which=closed",
+    ]);
+  });
+});
+
 describe("reminders (spec §9.3)", () => {
   it("lists and cancels them, and reads a chat's delivered ones", async () => {
     const seen: Seen[] = [];
