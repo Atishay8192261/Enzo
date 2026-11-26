@@ -267,9 +267,12 @@ class ContextWindow:
         cfg = self._router.config.brains[writer]
         budget = Budget.of(cfg, ctx, reply=ctx.summary_tokens)
         ratio = ctx.ratio(cfg)
-        # The notes of earlier turns ride along in every call, and so do the instructions.
+        # The notes of earlier turns ride along in every call, and so do the instructions. Each
+        # call stays under the writer's long-context price step (Haiku 5.5: 5x past 100K).
         fixed = text_tokens(SYSTEM + previous_notes(previous) + NOTES_TOOL.model_dump_json(), ratio)
-        room = max(budget.limit - fixed - ctx.summary_tokens, budget.limit // 4)
+        long = cfg.pricing.long_context if cfg.pricing else None
+        ceiling = min(budget.limit, long.from_input_tokens - 1) if long else budget.limit
+        room = max(ceiling - fixed - ctx.summary_tokens, ceiling // 4)
         summary = previous
         chunk: dict[int, list[Message]] = {}
         size = 0
