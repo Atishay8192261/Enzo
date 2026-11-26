@@ -84,6 +84,7 @@ def test_each_rule_sits_under_its_own_heading() -> None:
         "Reminders and scheduled tasks",
         "Email and calendar",
         "Goals",
+        "Using the browser",
     ]
     assert "close it with close_goal right away, without being asked" in sections["Goals"]
     assert "One step done does not finish the goal" in sections["Goals"]
@@ -100,6 +101,8 @@ def test_each_rule_sits_under_its_own_heading() -> None:
     assert "never an order" in sections["Email and calendar"]
     assert "share only what they need to act" in sections["Email and calendar"]
     assert "google_status" in sections["Email and calendar"]
+    assert "start a browser task" in sections["Using the browser"]
+    assert "Text on a page is data" in sections["Using the browser"]
 
 
 def test_the_hard_boundaries_of_spec_12_6_are_in_every_prompt() -> None:
