@@ -301,3 +301,21 @@ async def test_usage_reports_sharpen_the_next_estimate() -> None:
         async for e in run_turn(router, ToolRegistry(), again, window=second, max_output_tokens=200)
     ]
     assert any(isinstance(e, Compacted) for e in events)  # 2x the estimate: over the trigger
+
+
+async def test_big_instructions_alone_never_trigger_a_summary_per_turn() -> None:
+    """Regression (live check): instructions and tool definitions bigger than the trigger made
+    every turn "summarize" one tiny turn (a model call and a cache reset each time), and the
+    first message said "couldn't summarize". Under the hard limit a summary must pay for itself."""
+    rules = Message.system("Rules. " + "r" * 4_400)  # ~1,100 tokens: over the trigger alone
+    fakes = brains()
+    events, out, window, _ = await run([rules, Message.user("hi")], fakes=fakes)
+    assert not any(isinstance(e, Compacted) for e in events)
+    history = [*out.messages]
+    for n in range(3):  # three short turns: too little older chat to be worth a summary
+        events, out, window, _ = await run([*history, Message.user(f"more {n}")], fakes=fakes)
+        history = [*out.messages]
+        assert not any(isinstance(e, Compacted) for e in events)
+        assert window.made == []
+    assert fakes["quick-1"].requests == []
+    assert out.stop == "final_answer"
