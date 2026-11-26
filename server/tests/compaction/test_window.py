@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from typing import Any
 
+import pytest
 from pydantic import BaseModel, ConfigDict
 
 from enzo.agent.loop import AgentEvent, TurnDone, TurnOutcome, run_turn
@@ -319,3 +320,74 @@ async def test_big_instructions_alone_never_trigger_a_summary_per_turn() -> None
         assert window.made == []
     assert fakes["quick-1"].requests == []
     assert out.stop == "final_answer"
+
+
+async def test_a_summary_that_would_take_out_too_little_waits() -> None:
+    """Over the trigger, but the older turns past the kept tail hold less than keep_recent: a
+    summary would cost a call and a cache reset for almost nothing, so it waits."""
+    rules = Message.system("Rules. " + "r" * 3_400)  # most of the trigger
+    history = [rules, *turn(1, size=250), *turn(2, size=250), *turn(3, size=250)]
+    events, _, window, fakes = await run([*history, Message.user("next")])
+    assert not any(isinstance(e, Compacted) for e in events)
+    assert window.made == []
+    assert fakes["quick-1"].requests == []
+
+
+async def test_the_fallback_brain_must_fit_the_prompt_too() -> None:
+    """A prompt that fits the primary but not its fallback is compacted first: if the primary
+    failed over, the fallback would get the same prompt."""
+    raw = config().model_dump()
+    raw["brains"]["other"]["context_window"] = 1_000  # the fallback compacts above 600 tokens
+    cfg = BrainsConfig.model_validate(raw)
+    history = [*chat(10), Message.user("next")]  # ~730 tokens: under main's trigger (1,000)
+    _, _, _, alone = await run(history, cfg=cfg, fakes=brains())  # no fallback connected
+    assert alone["quick-1"].requests == []
+    events, _, _, fakes = await run(
+        history, cfg=cfg, available=lambda n: True, override="main", fakes=brains()
+    )
+    assert any(isinstance(e, Compacted) and e.failed is None for e in events)
+    assert fakes["other-1"].requests == []
+
+
+async def test_a_failed_summary_never_falls_back_to_another_provider() -> None:
+    fakes = brains(
+        quick={"summary_errors": [ProviderServerError("down", provider="anthropic", model="q")]}
+    )
+    history = [*chat(24), Message.user("next")]
+    events, out, _, _ = await run(history, fakes=fakes, available=lambda n: True, override="main")
+    assert [e.failed for e in events if isinstance(e, Compacted)] == [
+        "the model could not be reached"
+    ]
+    assert fakes["other-1"].requests == []  # connected, same tier: still never asked
+    assert [c.brain for c in out.brain_calls if c.task == "compact"] == ["quick"]
+
+
+async def test_a_summary_that_would_lose_a_correction_is_never_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The invariants run on every summary: a lossy one fails loudly and the chat goes whole
+    (it fits), instead of a summary without the user's correction."""
+    import enzo.compaction.window as window_module  # noqa: PLC0415
+    from enzo.compaction.summary import merge as real  # noqa: PLC0415
+
+    def lossy(*args: Any) -> Any:
+        return real(*args).model_copy(update={"corrections": ()})
+
+    monkeypatch.setattr(window_module, "merge", lossy)
+    history = [*chat(24, special={3: "Actually, make it 4 people, not 3."}), Message.user("next")]
+    events, _, window, fakes = await run(history)
+    assert [e.failed for e in events if isinstance(e, Compacted)] == [
+        "the summary could not be written"
+    ]
+    assert window.made == []
+    assert list(main_requests(fakes)[0].messages) == history
+
+
+async def test_still_too_long_after_a_summary_stops_and_sends_nothing() -> None:
+    history = [*chat(5), Message.user("w" * 12_000)]  # the new message alone is over the limit
+    events, out, window, fakes = await run(history)
+    assert [e.failed for e in events if isinstance(e, Compacted)] == [None]  # it did summarize
+    assert len(window.made) == 1  # kept for the next turn
+    assert out.stop == "over_budget"
+    assert "even the newest messages alone are too long" in out.text
+    assert main_requests(fakes) == []
