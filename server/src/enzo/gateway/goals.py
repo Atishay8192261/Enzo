@@ -20,7 +20,7 @@ class EvidenceOut(BaseModel):
     source: str | None
     happened_on: date | None
     recorded_at: datetime
-    #: All of it in words: "you confirmed, 24 Nov 2026, in “Passport”".
+    #: How it is known and when, in words: "you confirmed, 24 Nov 2026".
     said: str
 
 
@@ -92,8 +92,8 @@ def _evidence(e: Evidence | None) -> EvidenceOut | None:
     if e is None:
         return None
     when = e.happened_on or e.recorded_at.date()
-    where = f", in “{e.chat}”" if e.chat and not e.source else ""
-    said = f"{BASIS_WORDS.get(e.basis or '', 'recorded')}, {when:%-d %b %Y}{where}"
+    # Short, for a one-line step: the chat and the source are in their own fields and Goals.md.
+    said = f"{BASIS_WORDS.get(e.basis or '', 'recorded')}, {when:%-d %b %Y}"
     return EvidenceOut(
         evidence=e.evidence,
         basis=e.basis,
