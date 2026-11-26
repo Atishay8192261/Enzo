@@ -3,6 +3,7 @@ import {
   type ChatClient,
   type ChatsClient,
   type ConversationMemory,
+  type GoalsClient,
   type MemoryClient,
   type ScheduleClient,
   type Start,
@@ -58,6 +59,8 @@ export const PALETTE: Choice[] = [
   { label: "Message details", description: "show or hide times, tokens, cost", value: "/details" },
   { label: "Memory", description: "what Enzo remembers about you", value: "/memory" },
   { label: "Forget a memory", description: "remove something Enzo remembers", value: "/forget" },
+  { label: "Goals", description: "what you are working toward", value: "/goals" },
+  { label: "Finished goals", description: "done or given up", value: "/goals done" },
   { label: "Scheduled", description: "reminders and tasks still to come", value: "/scheduled" },
   { label: "Cancel a reminder or task", description: "asks first", value: "/cancel" },
   { label: "Help", description: "commands and keys", value: "/help" },
@@ -118,7 +121,7 @@ export function App({
   healthEveryMs,
   start = "fresh",
 }: {
-  client: ChatClient & AccountsClient & ChatsClient & MemoryClient & ScheduleClient;
+  client: ChatClient & AccountsClient & ChatsClient & MemoryClient & ScheduleClient & GoalsClient;
   memory: ConversationMemory;
   onQuit: () => void;
   /** Opens sign-in pages; tests pass a fake. */
