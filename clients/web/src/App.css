@@ -547,6 +547,29 @@ button.chatgpt:hover:not(:disabled) {
     background: #e8e8e8;
   }
 }
+/* A neutral "Continue with Google" button: outlined, like the account's own sign-in pages. */
+button.google {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 999px;
+  border: 1px solid #747775;
+  background: #fff;
+  color: #1f1f1f;
+  font-weight: 600;
+}
+button.google:hover:not(:disabled) {
+  background: #f2f2f2;
+}
+@media (prefers-color-scheme: dark) {
+  button.google {
+    background: #131314;
+    border-color: #8e918f;
+    color: #e3e3e3;
+  }
+  button.google:hover:not(:disabled) {
+    background: #222;
+  }
+}
 
 /* ---------- small screens ---------- */
 @media (max-width: 560px) {

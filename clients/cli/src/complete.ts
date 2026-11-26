@@ -57,6 +57,9 @@ function argumentsFor(
       return [
         ["chatgpt", "your ChatGPT plan pays, no key needed"],
         ...connections.map((c): [string, string] => [c.provider, loginNote(c)]),
+        ...(connections.some((c) => c.methods.includes("google"))
+          ? [["google read", "Gmail and Calendar, reading only"] as [string, string]]
+          : []),
       ];
     case "/logout":
     case "/check":
@@ -87,6 +90,7 @@ function loginNote(c: ProviderConnection): string {
 /** An account as people know it: "ChatGPT plan (ada@example.com)", "anthropic · API key". */
 export function accountName(c: ProviderConnection): string {
   if (c.method === "chatgpt") return `ChatGPT plan${c.label ? ` (${c.label})` : ""}`;
+  if (c.method === "google") return `Google${c.label ? ` (${c.label})` : ""}`;
   return `${c.provider} · ${methodName(c.method)}`;
 }
 

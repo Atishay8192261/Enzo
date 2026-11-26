@@ -1,4 +1,11 @@
-import { type AccountsClient, CHATGPT_USAGE_URL, methodName, signInWithChatGPT } from "@enzo/chat";
+import {
+  type AccountsClient,
+  CHATGPT_USAGE_URL,
+  GOOGLE_PERMISSIONS_URL,
+  methodName,
+  signInWithChatGPT,
+  signInWithGoogle,
+} from "@enzo/chat";
 import type { ProviderConnection } from "@enzo/sdk";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 
@@ -17,7 +24,17 @@ const NAMES: Record<string, string> = {
   moonshot: "Moonshot",
   tavily: "Tavily",
   github: "GitHub",
+  google: "Google",
 };
+
+/** The gateway's message puts a link on its last line: show it as a link. */
+function withLink(text: string, label: string): Notice {
+  const [words, ...rest] = text.split("\n");
+  const href = rest.at(-1);
+  return href?.startsWith("https://")
+    ? { text: words ?? text, link: { href, label } }
+    : { text, error: true };
+}
 
 /** A tab opened inside the click (so it is not blocked), cut off from this page. */
 function blankTab(): Window | null {
@@ -43,6 +60,8 @@ export function Accounts({
   const [rows, setRows] = useState<ProviderConnection[] | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  /** Google asked for the user's own OAuth client file: show where to paste it. */
+  const [needsGoogleClient, setNeedsGoogleClient] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -77,6 +96,32 @@ export function Accounts({
             link: { href: result.usageUrl ?? CHATGPT_USAGE_URL, label: "Manage usage" },
           }
         : { text: result.text, error: true };
+    });
+  };
+
+  /** Opens its tab inside the click (or submit), so the browser does not block it. */
+  const continueWithGoogle = (clientFile?: string) => {
+    const tab = blankTab();
+    void run("google", async () => {
+      if (clientFile) await client.setGoogleClient(clientFile);
+      const result = await signInWithGoogle(client, {
+        open: (url) => {
+          if (tab) tab.location.href = url;
+          else throw new Error("no tab");
+        },
+        waiting: (url) =>
+          setNotice({
+            text: "Finish signing in with Google in the new tab.",
+            link: { href: url, label: "Open the sign-in page" },
+          }),
+      });
+      if (result.needsClient) {
+        tab?.close();
+        setNeedsGoogleClient(true);
+        return withLink(result.text, "Setup steps");
+      }
+      setNeedsGoogleClient(false);
+      return result.ok ? { text: result.text } : { text: result.text, error: true };
     });
   };
 
@@ -137,7 +182,7 @@ export function Accounts({
                       void run(c.provider, async () => {
                         const r = await client.checkConnection(c.provider);
                         return r.ok
-                          ? { text: `${c.provider}: the connection works.` }
+                          ? { text: `${c.provider}: ${r.detail ?? "the connection works."}` }
                           : { text: `${c.provider}: ${r.detail}`, error: true };
                       })
                     }
@@ -150,6 +195,15 @@ export function Accounts({
                     onClick={() =>
                       void run(c.provider, async () => {
                         const out = await client.disconnect(c.provider);
+                        if (c.method === "google") {
+                          return out.remote_sign_out === "confirmed"
+                            ? { text: "Signed out of Google. Google removed Enzo's access." }
+                            : {
+                                text: "Signed out here, but Google did not confirm it. To be sure, remove Enzo in your Google Account.",
+                                error: true,
+                                link: { href: GOOGLE_PERMISSIONS_URL, label: "Google Account" },
+                              };
+                        }
                         if (out.remote_sign_out === "confirmed") {
                           return { text: "Signed out of ChatGPT." };
                         }
@@ -164,9 +218,29 @@ export function Accounts({
                       })
                     }
                   >
-                    {c.method === "chatgpt" ? "Sign out" : "Disconnect"}
+                    {c.method === "chatgpt" || c.method === "google" ? "Sign out" : "Disconnect"}
                   </button>
                 </span>
+              ) : c.methods.includes("google") ? (
+                <>
+                  <button
+                    type="button"
+                    className="google"
+                    disabled={busy !== null}
+                    onClick={() => continueWithGoogle()}
+                  >
+                    Continue with Google
+                  </button>
+                  {needsGoogleClient && (
+                    <KeyForm
+                      provider={c.provider}
+                      label="Google OAuth client file"
+                      placeholder="Paste the client file (JSON)"
+                      disabled={busy !== null}
+                      onSubmit={async (file) => continueWithGoogle(file)}
+                    />
+                  )}
+                </>
               ) : (
                 <>
                   {c.methods.includes("chatgpt") && (
@@ -201,10 +275,15 @@ export function Accounts({
 
 function KeyForm({
   provider,
+  label,
+  placeholder = "Paste API key",
   disabled,
   onSubmit,
 }: {
   provider: string;
+  /** What is pasted, for screen readers; "<provider> API key" by default. */
+  label?: string;
+  placeholder?: string;
   disabled: boolean;
   onSubmit: (key: string) => Promise<void>;
 }) {
@@ -219,8 +298,8 @@ function KeyForm({
     <form onSubmit={submit}>
       <input
         type="password"
-        aria-label={`${provider} API key`}
-        placeholder="Paste API key"
+        aria-label={label ?? `${provider} API key`}
+        placeholder={placeholder}
         autoComplete="off"
         spellCheck={false}
         value={key}

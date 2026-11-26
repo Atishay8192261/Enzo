@@ -7,9 +7,16 @@ import {
   type ScheduleClient,
   type Start,
   signInWithChatGPT,
+  signInWithGoogle,
   useChat,
 } from "@enzo/chat";
-import type { ChatSummary, ProviderConnection, Remembered, Scheduled } from "@enzo/sdk";
+import type {
+  ChatSummary,
+  GoogleAccess,
+  ProviderConnection,
+  Remembered,
+  Scheduled,
+} from "@enzo/sdk";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -145,7 +152,12 @@ export function App({
 
   const [cards, setCards] = useState<Card[]>([]);
   const nextCard = useRef(0);
-  const [login, setLogin] = useState<{ provider: string; card: CardHandle } | null>(null);
+  // `google`: the prompt takes the user's Google OAuth client file, then signs in with that access.
+  const [login, setLogin] = useState<{
+    provider: string;
+    card: CardHandle;
+    google?: GoogleAccess;
+  } | null>(null);
   const [picker, setPicker] = useState<PickerKind | "palette" | null>(null);
   const [sidebar, setSidebar] = useState<boolean | null>(null); // null: by terminal width
   const [details, setDetails] = useState(true);
@@ -245,6 +257,27 @@ export function App({
     return `Copied ${what === "code" ? "the last code block" : "the last reply"} (${lines} line${lines === 1 ? "" : "s"}).`;
   };
 
+  /** Sign in with Google; with no OAuth client yet, the hidden prompt asks for the user's own. */
+  const googleSignIn = async (access: GoogleAccess, card: CardHandle): Promise<Reply> => {
+    card.show("Opening your browser to sign in with Google…");
+    const result = await signInWithGoogle(client, {
+      access,
+      open: openUrl,
+      // The link gets its own line: a terminal must never wrap it into other words.
+      waiting: (url) =>
+        card.show(
+          `Finish signing in with Google in your browser. If no page opened, go to:\n${url}`,
+        ),
+    });
+    if (result.needsClient) {
+      setLogin({ provider: "google", card, google: access });
+      return result.text;
+    }
+    if (!result.ok) return { text: result.text, error: true };
+    accountsChanged();
+    return result.text;
+  };
+
   const contextFor = (card: CardHandle): CommandContext => ({
     client,
     current: state.brain,
@@ -255,6 +288,7 @@ export function App({
       setCards([]);
     },
     startLogin: (provider) => setLogin({ provider, card }),
+    signInWithGoogle: (access) => googleSignIn(access, card),
     signInWithChatGPT: async (newAccount) => {
       card.show("Opening your browser to sign in with ChatGPT…");
       const result = await signInWithChatGPT(client, {
@@ -365,6 +399,22 @@ export function App({
     const card = cardFor(echoOf(line));
     const reply = await runCommand(line, contextFor(card));
     if (reply !== null) card.show(reply);
+  };
+
+  /** The user's own Google OAuth client: kept in the vault, then the sign-in goes on. */
+  const saveGoogleClient = (file: string, access: GoogleAccess, card: CardHandle) => {
+    setLogin(null);
+    card.show("Saving your Google OAuth client…");
+    void (async () => {
+      try {
+        await client.setGoogleClient(file);
+      } catch (e: unknown) {
+        card.show({ text: e instanceof Error ? e.message : String(e), error: true });
+        return;
+      }
+      const reply = await googleSignIn(access, card);
+      if (reply !== null) card.show(reply);
+    })();
   };
 
   const saveKey = (provider: string, key: string, card: CardHandle) => {
@@ -528,7 +578,12 @@ export function App({
   const prompt = login ? (
     <KeyPrompt
       provider={login.provider}
-      onSubmit={(key) => saveKey(login.provider, key, login.card)}
+      {...(login.google ? { what: "Google OAuth client file" } : {})}
+      onSubmit={(key) => {
+        const access = login.google;
+        if (access) saveGoogleClient(key, access, login.card);
+        else saveKey(login.provider, key, login.card);
+      }}
       onCancel={() => {
         login.card.show("Login cancelled. Nothing was saved.");
         setLogin(null);
