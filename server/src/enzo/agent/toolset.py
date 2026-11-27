@@ -10,6 +10,7 @@ import httpx2
 from enzo.goals import Goals, goal_tools
 from enzo.memory import Memory, memory_tools
 from enzo.schedule import FinishedTasks, Schedule, schedule_tools
+from enzo.semantic import SemanticIndex, search_tools
 from enzo.tools.files import file_tools
 from enzo.tools.registry import Tool
 from enzo.tools.web import web_tools
@@ -25,13 +26,15 @@ def core_tools(  # noqa: PLR0913 - keyword-only, one per store
     http: httpx2.AsyncClient,
     tavily_key: Callable[[], str | None],
     on_set: Callable[[], None] = lambda: None,
+    index: SemanticIndex | None = None,
 ) -> list[Tool[Any, Any]]:
-    """Web, files, memory, scheduling and goals. Connectors (GitHub, Google) come and go with
-    their accounts."""
+    """Web, files, memory, past chats, scheduling and goals. Connectors (GitHub, Google) come
+    and go with their accounts."""
     return [
         *web_tools(tavily_key=tavily_key, http=http),
         *file_tools(workspace),
         *memory_tools(memory),
+        *(search_tools(index) if index is not None else []),
         *schedule_tools(schedule, finished, on_set=on_set),
         *goal_tools(goals),
     ]

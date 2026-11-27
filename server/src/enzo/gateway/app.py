@@ -26,7 +26,7 @@ from enzo.accounts.service import AccountsService
 from enzo.agent.prompt import install_note
 from enzo.agent.service import ConversationService
 from enzo.agent.toolset import core_tools
-from enzo.brain.config import Tier, load_config
+from enzo.brain.config import BrainsConfig, Tier, load_config
 from enzo.brain.factory import build_brain, has_key
 from enzo.brain.router import Router
 from enzo.browser.session import Browsers
@@ -49,6 +49,7 @@ from enzo.privacy import Discretion, Rules, privacy_tools
 from enzo.schedule import Background, Bus, FinishedTasks, Runner, Schedule
 from enzo.schedule.notify import desktop, silent
 from enzo.schedule.tasks import TaskRunner
+from enzo.semantic import LocalEmbedder, Off, SemanticIndex
 from enzo.store.repository import Store
 from enzo.tools.registry import ToolRegistry
 from enzo.tools.stored import OutputStore, stored_tools
@@ -182,7 +183,8 @@ async def _running(
     )
     acct.on_change(router.forget)
     app.state.accounts = acct
-    memory = Memory(store.engine, cfg.workspace_dir)
+    outputs, index = _context_stores(store, config, cfg)
+    memory = Memory(store.engine, cfg.workspace_dir, index=index)
     # What is sent out is checked for private details; the user's discretion rules (ADR 0029).
     discretion = Discretion(Rules(store.engine), memory)
     schedule = Schedule(store.engine)
@@ -191,14 +193,6 @@ async def _running(
     runner = Runner(schedule, Bus(), notify=notify, on_idle=on_idle)
     app.state.background = Background(schedule, runner.bus, runner)
     finished = FinishedTasks()
-    # Long tool results and pastes are kept whole in Enzo's private data folder (ADR 0024).
-    ctx = config.context
-    outputs = OutputStore(
-        data_dir() / "context",
-        tool_inline_chars=ctx.tool_inline_chars,
-        paste_inline_chars=ctx.paste_inline_chars,
-        excerpt_chars=ctx.excerpt_chars,
-    )
     # Enzo's own browser profile, in its private data folder (ADR 0027).
     browsers = Browsers(
         data_dir() / "browser",
@@ -218,6 +212,7 @@ async def _running(
                 http=http,
                 tavily_key=lambda: acct.api_key("tavily"),
                 on_set=runner.poke,
+                index=index,
             ),
             *stored_tools(outputs),
             *browser_tools(browsers),
@@ -232,6 +227,7 @@ async def _running(
         developer=install_note(cfg.workspace_dir),
         memory=memory,
         goals=goals,
+        index=index,
         outputs=outputs,
         hooks=[browsers],
         discretion=discretion,
@@ -245,15 +241,34 @@ async def _running(
     await connectors.refresh("google")
     acct.on_change(connectors.changed)
     runner.start()  # reminders due while Enzo was not running arrive now, marked late
+    index.start()  # fetch the model if needed, then index what is new (the first time: all)
     try:
         yield
     finally:
+        await index.close()
         await runner.stop()
         await tasks.stop()
         await browsers.close_all()
         await connectors.close()
         await http.aclose()
         await store.close()
+
+
+def _context_stores(
+    store: Store, config: BrainsConfig, cfg: Settings
+) -> tuple[OutputStore, SemanticIndex]:
+    """Long texts kept as files (ADR 0024) and the index that finds things by meaning (ADR 0030)."""
+    # Long tool results and pastes are kept whole in Enzo's private data folder.
+    ctx = config.context
+    outputs = OutputStore(
+        data_dir() / "context",
+        tool_inline_chars=ctx.tool_inline_chars,
+        paste_inline_chars=ctx.paste_inline_chars,
+        excerpt_chars=ctx.excerpt_chars,
+    )
+    # Search by meaning: a model on this computer, fetched once in the background.
+    embedder = LocalEmbedder(data_dir() / "models") if cfg.embeddings == "local" else Off()
+    return outputs, SemanticIndex(store.engine, embedder, stored=outputs.root)
 
 
 def _google_client(cfg: Settings) -> GoogleClient | None:
