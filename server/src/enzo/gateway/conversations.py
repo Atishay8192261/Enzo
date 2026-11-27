@@ -1,25 +1,28 @@
 """Conversation endpoints: create, read, choose a brain, run turns over SSE, decide approvals."""
 
+import re
 import uuid
 from collections.abc import AsyncIterator, Awaitable
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Self
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, params
 from fastapi.sse import EventSourceResponse, ServerSentEvent
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from enzo.agent.loop import ApprovalNeeded, ToolFinished, ToolStarted, TurnDone
 from enzo.agent.service import (
     ConversationNotFoundError,
     ConversationService,
+    ImageNotFoundError,
     ServiceEvent,
     TurnFailed,
     TurnInProgressError,
     TurnMeta,
 )
 from enzo.brain.config import TIERS
-from enzo.brain.models import Message, TextDelta, ToolCall
+from enzo.brain.models import IMAGE_ID_PATTERN, Message, TextDelta, ToolCall
+from enzo.brain.router import CantSeeImagesError
 from enzo.compaction import Compacted, Compaction
 from enzo.compaction.view import turn_positions
 from enzo.context import BrowserInUse
@@ -100,10 +103,27 @@ class BrainChoice(_In):
 MAX_MESSAGE_CHARS = 1_000_000
 
 
+#: The most images one message can carry.
+MAX_IMAGES = 10
+
+
 class TurnIn(_In):
-    message: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
+    #: May be empty when the message is only images.
+    message: str = Field(default="", max_length=MAX_MESSAGE_CHARS)
     timezone: str | None = Field(default=None, max_length=64)
     device: str | None = Field(default=None, max_length=64)
+    #: Images kept with ``POST /images`` first, in the order the user attached them.
+    images: list[str] = Field(default_factory=list, max_length=MAX_IMAGES)
+
+    @model_validator(mode="after")
+    def _says_something(self) -> Self:
+        if not self.message.strip() and not self.images:
+            msg = "a message needs words or an image"
+            raise ValueError(msg)
+        if any(not re.fullmatch(IMAGE_ID_PATTERN, i) for i in self.images):
+            msg = "images must be image ids from POST /images"
+            raise ValueError(msg)
+        return self
 
 
 class Decision(_In):
@@ -210,7 +230,7 @@ def conversation_routes(auth: params.Depends) -> APIRouter:
         conversation_id: uuid.UUID, body: TurnIn, s: ServiceDep
     ) -> AsyncIterator[ServiceEvent]:
         meta = TurnMeta(timezone=body.timezone, device=body.device)
-        return await _guard(s.send(conversation_id, body.message, meta))
+        return await _guard(s.send(conversation_id, body.message, meta, images=body.images))
 
     async def start_resume(
         conversation_id: uuid.UUID, s: ServiceDep
@@ -272,6 +292,9 @@ async def _guard(
         raise HTTPException(
             409, "Enzo is still finishing the last reply in this chat. Stop it, or wait."
         ) from exc
+    except (CantSeeImagesError, ImageNotFoundError) as exc:
+        # Said before sending, and nothing was saved: the message stays with the user (#53).
+        raise HTTPException(422, str(exc)) from exc
     return stream
 
 

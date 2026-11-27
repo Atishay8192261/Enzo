@@ -20,6 +20,8 @@ said_var: ContextVar[str | None] = ContextVar("enzo_said", default=None)
 #: The words of the message this run answers, when the user (or their schedule) wrote it: a
 #: helper's brief carries them, so the user's own limits reach it unchanged (ADR 0028).
 request_var: ContextVar[str | None] = ContextVar("enzo_request", default=None)
+#: The brain whose reply asked for the tool calls now running (an image's provenance, §11.2).
+brain_var: ContextVar[str | None] = ContextVar("enzo_brain", default=None)
 
 
 def new_turn_id() -> str:

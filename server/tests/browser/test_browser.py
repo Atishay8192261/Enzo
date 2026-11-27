@@ -5,6 +5,7 @@ steps wait for the exact action), §12.4 (page text is data), §12.5 (forms get 
 """
 
 import asyncio
+import io
 import json
 import uuid
 from collections.abc import Sequence
@@ -12,12 +13,14 @@ from pathlib import Path
 
 import psutil
 import pytest
+from PIL import Image
 
 from enzo.agent.loop import AgentEvent, ApprovalNeeded, ToolStarted, TurnOutcome
 from enzo.brain import Message
 from enzo.browser.session import Browsers, BrowserToolError, prepare_profile
 from enzo.browser.tools import ASKS_AGAIN, browser_tools
-from enzo.context import BrowserInUse, conversation_var, notice_var
+from enzo.context import BrowserInUse, brain_var, conversation_var, notice_var
+from enzo.images import ImageStore
 from enzo.tools import ToolRegistry, ToolStoppedError
 from tests.agent.test_loop import run
 from tests.browser.helpers import (
@@ -477,3 +480,35 @@ async def test_resuming_a_waiting_task_keeps_it_open(
         assert b.active(conversation)
     finally:
         await b.close_all()
+
+
+async def test_a_screenshot_is_kept_with_provenance_and_card_fields_blacked_out(
+    browsers: Browsers, shop: Running, tmp_path: Path
+) -> None:
+    """ADR 0033: the brain may see the page as an image; secrets never reach it that way."""
+    conversation = chat()
+    brain_var.set("main")
+    images = ImageStore(tmp_path)
+    registry = ToolRegistry(browser_tools(browsers, images))
+    session = await browsers.start(conversation, "pay", [shop.url], f"{shop.url}/checkout")
+    await session.page.fill("input[name=card]", "4242 4242 4242 4242")
+    box = await session.page.locator("input[name=card]").bounding_box()
+    assert box is not None
+    outcome = await registry.execute(call("browser_screenshot", "p1"))
+    assert outcome.status == "ok", outcome.result.content
+    (part,) = outcome.result.images
+    view = json.loads(unfence(outcome.result.content))
+    assert view["image"] == part.id
+    kept = images.get(part.id)
+    assert kept is not None
+    assert (kept.source, kept.tool, kept.brain, kept.chat) == (
+        "screenshot",
+        "browser_screenshot",
+        "main",
+        str(conversation),
+    )
+    with Image.open(io.BytesIO(images.read(kept))) as shot:
+        rgb = shot.convert("RGB")
+        middle = (int(box["x"] + box["width"] / 2), int(box["y"] + box["height"] / 2))
+        assert rgb.getpixel(middle) == (0, 0, 0)  # the card field is blacked out
+    assert registry.specs(vision=False)[-1].name != "browser_screenshot"
