@@ -120,6 +120,8 @@ async def test_the_app_registers_the_core_tools(
             "browser_back",
             "browser_read",
             "browser_close",
+            "delegate",
+            "stop_helper",
         ]
         # Long results are kept whole outside the context (ADR 0024).
         assert registry.retain is app.state.service.outputs is not None
@@ -131,8 +133,11 @@ async def test_the_app_registers_the_core_tools(
         assert app.state.service.goals is not None  # open goals come with each message
         assert app.state.background.runner is not None  # reminders are delivered
         # The browser lives as long as a turn: the service tells it when turns end (ADR 0027).
-        (browsers,) = app.state.service._hooks
+        (browsers, helpers) = app.state.service._hooks
         assert browsers.own_port == settings.port
+        # Helpers shape each chat's turns and close when their chat is stopped (ADR 0028).
+        assert app.state.service.planner is helpers is app.state.helpers
+        assert (helpers._max, helpers._steps) == (settings.helpers_max, settings.helper_steps)
     # A task acts on its own: approved first. A browser task is approved once, as a whole.
     assert gated == ["delete_file", "schedule_task", "browser_start"]
     assert fenced == [

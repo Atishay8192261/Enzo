@@ -15,6 +15,9 @@ turn_var: ContextVar[str | None] = ContextVar("enzo_turn", default=None)
 timezone_var: ContextVar[str | None] = ContextVar("enzo_timezone", default=None)
 #: The scheduled task this run is for, when a schedule started it (its tools need to know).
 job_var: ContextVar[int | None] = ContextVar("enzo_job", default=None)
+#: The words of the message this run answers, when the user (or their schedule) wrote it: a
+#: helper's brief carries them, so the user's own limits reach it unchanged (ADR 0028).
+request_var: ContextVar[str | None] = ContextVar("enzo_request", default=None)
 
 
 def new_turn_id() -> str:

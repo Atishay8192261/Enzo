@@ -143,13 +143,18 @@ class Store:
 
     async def scheduled(self, conversation_id: uuid.UUID) -> set[int]:
         """The positions of messages a scheduled task's run started (not typed by the user)."""
+        return {i for i, o in (await self.origins(conversation_id)).items() if o == "schedule"}
+
+    async def origins(self, conversation_id: uuid.UUID) -> dict[int, str]:
+        """Messages the user did not type, by position: who wrote each (a scheduled run, a
+        helper's brief, helpers' reports)."""
         async with self._sessions() as session:
             origins = await session.scalars(
                 select(MessageRow.origin)
                 .where(MessageRow.conversation_id == conversation_id)
                 .order_by(MessageRow.seq)
             )
-            return {i for i, origin in enumerate(origins) if origin == "schedule"}
+            return {i: origin for i, origin in enumerate(origins) if origin != "user"}
 
     async def history(self, conversation_id: uuid.UUID) -> list[Message]:
         async with self._sessions() as session:
@@ -169,10 +174,14 @@ class Store:
         tool_outcomes: Sequence[ToolOutcome] = (),
         pending: Sequence[ApprovalRequest] = (),
         turn_id: str | None = None,
-        scheduled: int | None = None,
+        marked: tuple[int, str] | None = None,
         compactions: Sequence[Compaction] = (),
     ) -> None:
-        """Persist one turn atomically: all of it or none of it (its summaries included)."""
+        """Persist one turn atomically: all of it or none of it (its summaries included).
+
+        ``marked``: the position (in ``messages``) of a message the user did not type, and who
+        wrote it ("schedule", "brief", "handoff"). A long turn may be saved in several parts.
+        """
         async with self._sessions.begin() as session:
             # Lock the conversation so two turns cannot interleave their message numbers.
             locked = await session.get(Conversation, conversation_id, with_for_update=True)
@@ -200,7 +209,7 @@ class Store:
                     seq=start + i,
                     role=m.role,
                     body=m.model_dump(mode="json"),
-                    origin="schedule" if i == scheduled else "user",
+                    origin=marked[1] if marked is not None and i == marked[0] else "user",
                 )
                 for i, m in enumerate(messages)
             )
