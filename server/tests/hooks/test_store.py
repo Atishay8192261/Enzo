@@ -2,6 +2,8 @@
 wake per change even across restarts, backing off and stopping on failures, a rate limit
 stopping its whole scope, and an end that is always there."""
 
+import json
+import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -18,6 +20,7 @@ from enzo.hooks.store import (
     backoff_s,
     every_words,
 )
+from enzo.logs import JsonLines
 from enzo.store.repository import Store
 
 NOW = datetime(2026, 11, 27, 9, 0, tzinfo=UTC)
@@ -213,3 +216,33 @@ async def test_its_last_day_ends_it_with_a_report_and_cancel_is_final(hooks: Hoo
     late = await hooks.record(claimed.id, reads("$1.00"), NOW + timedelta(minutes=10))
     assert late.wake is None  # cancelled while it was checking: nothing comes of it
     assert await hooks.claim_polls(NOW + timedelta(days=2)) == []
+
+
+async def test_its_log_lines_name_what_happened_with_numbers_only(hooks: Hooks) -> None:
+    """Seen live: an extra field named "event" replaced "hook.changed" in the JSON line."""
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[method-assign]
+    logger = logging.getLogger("enzo.hooks")
+    logger.addHandler(handler)
+    level = logger.level
+    logger.setLevel(logging.INFO)
+    try:
+        hid = await turned_on(hooks)
+        await check(hooks, hid, reads("$30.00"), NOW + timedelta(minutes=10))
+        (wake,) = await hooks.claim_wakes(NOW + timedelta(minutes=10))
+        await hooks.finish_wake(wake.event_id, "reported", "words", NOW + timedelta(minutes=11))
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(level)
+    lines = [json.loads(JsonLines().format(r)) for r in records]
+    assert [line["event"] for line in lines] == [
+        "hook.set",
+        "hook.dry_run",
+        "hook.enabled",
+        "hook.changed",
+        "hook.wake",
+    ]
+    assert lines[3] == {**lines[3], "hook": hid, "wake": wake.event_id, "wakes": 1}
+    assert "$30.00" not in json.dumps(lines)  # never what it read, never the instruction
+    assert "Tell me" not in json.dumps(lines)
