@@ -29,6 +29,7 @@ dependencies = [
     "mcp>=2.3.0",
     "openai>=3.52.0",
     "pgvector>=0.5.1",
+    "pillow>=13.0.0",
     "pixeltable-pgserver>=0.7.2",
     "playwright>=1.65.2",
     "psutil>=7.2.2",

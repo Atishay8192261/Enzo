@@ -29,6 +29,27 @@ class _Strict(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
+class VisionConfig(_Strict):
+    """How a brain sees images, as its provider publishes it (spec §1.3.2: never claimed unsourced).
+
+    Enzo downscales every image to fit before sending, so the provider never resizes it on its own
+    and its cost is known: an image costs one token per ``patch`` x ``patch`` pixel square, times
+    ``multiplier``, rounded up. A size fits when neither side is over ``max_edge`` pixels and it
+    needs at most ``max_patches`` squares.
+    """
+
+    max_edge: int = Field(gt=0)
+    patch: int = Field(gt=0)
+    max_patches: int = Field(gt=0)
+    multiplier: float = Field(default=1.0, gt=0)
+    #: The largest image the provider takes, base64-encoded, in bytes; None: none published.
+    max_bytes: int | None = Field(default=None, gt=0)
+    #: OpenAI's image ``detail`` setting, sent with each image; None: not sent.
+    detail: Literal["low", "high", "auto", "original"] | None = None
+    #: Where and when this was read, and what is an estimate.
+    source: str = Field(min_length=1)
+
+
 class BrainConfig(_Strict):
     api: Api
     model: str = Field(min_length=1)
@@ -54,6 +75,8 @@ class BrainConfig(_Strict):
     limits_source: str | None = None
     #: Characters per token for the local estimate; default: ``context.chars_per_token``.
     chars_per_token: float | None = Field(default=None, gt=0)
+    #: The ``[vision.<name>]`` profile saying how it sees images; None: it cannot see images.
+    vision: str | None = None
 
     @model_validator(mode="after")
     def _effort_is_valid(self) -> Self:
@@ -141,6 +164,28 @@ class BrainsConfig(_Strict):
     brains: dict[BrainName, BrainConfig] = Field(min_length=1)
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
+    #: How models see images, by profile name; each brain names its profile (or none).
+    vision: dict[str, VisionConfig] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _vision_profiles_exist(self) -> Self:
+        missing = sorted(
+            f"{name} ({b.vision})"
+            for name, b in self.brains.items()
+            if b.vision is not None and b.vision not in self.vision
+        )
+        if missing:
+            msg = f"brains name vision profiles that are not defined: {', '.join(missing)}"
+            raise ValueError(msg)
+        return self
+
+    def vision_of(self, brain: str) -> VisionConfig | None:
+        """How this brain sees images; None when it cannot (or it is not configured)."""
+        cfg = self.brains.get(brain)
+        return self.vision[cfg.vision] if cfg is not None and cfg.vision else None
+
+    def sees(self, brain: str) -> bool:
+        return self.vision_of(brain) is not None
 
     @model_validator(mode="after")
     def _names_are_unambiguous(self) -> Self:

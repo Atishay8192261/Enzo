@@ -9,6 +9,8 @@
 # - context_window / max_output_tokens: tokens, from the provider's model page on the date in
 #   `limits_source`. Left out when unconfirmed: the brain is then budgeted as the small
 #   `context.default_window` (see [context] at the end).
+# - vision: the [vision.<profile>] that says how the brain sees images (see the end). A brain
+#   without one cannot see images, and a message with an image is never routed to it.
 
 # ---------- Anthropic (Claude) ----------
 
@@ -16,6 +18,7 @@
 api = "anthropic"
 model = "claude-opus-5-5"
 api_key_env = "ANTHROPIC_API_KEY"
+vision = "claude"
 effort = "medium"  # the model's default, set explicitly
 tier = "powerful"
 recommended = true
@@ -31,6 +34,7 @@ rates = { input = 4.00, output = 20.00, cached_input = 0.20, cache_write = { "5m
 api = "anthropic"
 model = "claude-sonnet-5-5"
 api_key_env = "ANTHROPIC_API_KEY"
+vision = "claude"
 tier = "balanced"
 recommended = true
 note = "Default for everyday replies"
@@ -46,6 +50,7 @@ rates = { input = 2.00, output = 10.00, cached_input = 0.10, cache_write = { "5m
 api = "anthropic"
 model = "claude-haiku-5-5"
 api_key_env = "ANTHROPIC_API_KEY"
+vision = "claude"
 tier = "fast"
 recommended = true
 context_window = 1000000
@@ -64,6 +69,7 @@ long_context = { from_input_tokens = 100001, rates = { input = 0.50, output = 2.
 api = "openai-responses"
 model = "gpt-6.2-astra"
 api_key_env = "OPENAI_API_KEY"
+vision = "gpt"
 tier = "powerful"
 recommended = true
 context_window = 1050000
@@ -79,6 +85,7 @@ long_context = { from_input_tokens = 272001, rates = { input = 16.00, output = 6
 api = "openai-responses"
 model = "gpt-6.2-sol"
 api_key_env = "OPENAI_API_KEY"
+vision = "gpt"
 tier = "balanced"
 recommended = true
 note = "Default for everyday replies"
@@ -95,6 +102,7 @@ long_context = { from_input_tokens = 272001, rates = { input = 4.00, output = 15
 api = "openai-responses"
 model = "gpt-6-luna"
 api_key_env = "OPENAI_API_KEY"
+vision = "gpt"
 tier = "fast"
 recommended = true
 context_window = 1050000
@@ -114,6 +122,7 @@ provider = "xai"
 base_url = "https://api.x.ai/v1"
 model = "grok-4.7"
 api_key_env = "XAI_API_KEY"
+vision = "grok"
 tier = "powerful"
 recommended = true
 note = "xAI's frontier model and the only Grok on the public API (docs.x.ai, read 2026-11-17)"
@@ -132,6 +141,7 @@ provider = "moonshot"
 base_url = "https://api.moonshot.ai/v1"
 model = "kimi-k3.1-pro"
 api_key_env = "MOONSHOT_API_KEY"
+vision = "kimi"
 tier = "powerful"
 recommended = true
 note = "Moonshot's flagship (platform.kimi.ai, read 2026-11-17)"
@@ -147,6 +157,7 @@ provider = "moonshot"
 base_url = "https://api.moonshot.ai/v1"
 model = "kimi-k3"
 api_key_env = "MOONSHOT_API_KEY"
+vision = "kimi"
 tier = "powerful"
 note = "Superseded by Kimi K3.1 Pro, a post-trained upgrade that is faster and cheaper (read 2026-11-17)"
 
@@ -201,3 +212,46 @@ excerpt_chars = 4000       # how much of a stored text stays in the context
 anthropic = 2.0
 openai = 3.0
 default = 2.0
+
+# ---------- Vision: how each model sees images (spec §1.3.2; ADR 0033) ----------
+# Enzo downscales every image to fit a profile before sending it, strips its metadata, and counts
+# it as the provider bills it: one token per patch x patch pixel square, times multiplier.
+#   fits:  neither side over max_edge, and at most max_patches squares
+#   cost:  ceil(ceil(width / patch) x ceil(height / patch) x multiplier) tokens
+# Where a provider publishes no formula, the profile over-counts on purpose (like the text
+# estimate), and a reply's usage report scales the next estimate up (ADR 0024 #1).
+
+[vision.claude]
+# Claude 4.7 and later (all 5.5 models) are on the high-resolution tier.
+max_edge = 2576
+patch = 28
+max_patches = 4784
+max_bytes = 10000000
+source = "https://platform.claude.com/docs/en/build-with-claude/vision (supported models include claude-opus-5-5, claude-sonnet-5-5 and claude-haiku-5-5; high-resolution tier for Claude 4.7 and later: 2,576 px long edge and 4,784 visual tokens, one per 28x28 px patch; 10 MB per image base64-encoded; JPEG, PNG, GIF, WebP) and vision-coordinates (the resize rule), read 2026-11-26"
+
+[vision.gpt]
+# GPT-6.2 Astra / Sol and GPT-6 Luna take images (their model pages) but are not in the guide's
+# sizing table, so Enzo sends what fits the strictest documented "high" setting.
+max_edge = 2048
+patch = 32
+max_patches = 2500
+multiplier = 1.2
+detail = "high"
+source = "https://developers.openai.com/api/docs/models/gpt-6.2-sol (and gpt-6.2-astra, gpt-6-luna): input modalities text, image; https://developers.openai.com/api/docs/guides/images-vision: 32x32 px patches, 'high' up to 2,500 patches and 2,048 px, x1.2 for current models, 512 MB per request (no per-image size), read 2026-11-26"
+
+[vision.grok]
+# Resolution limits and image token cost are not published: a moderate size, counted high.
+max_edge = 1568
+patch = 28
+max_patches = 1568
+multiplier = 2.0
+max_bytes = 20971520
+source = "docs.x.ai release notes and image understanding guide, via search (docs.x.ai is not reachable from the build machine): grok-4.7 takes text and image input; JPEG or PNG, at most 20 MiB per image; token cost unpublished (estimate), read 2026-11-26"
+
+[vision.kimi]
+# Kimi's guide shows images on its Chat Completions API; Enzo uses its Responses API (ADR 0002 #11).
+max_edge = 1568
+patch = 28
+max_patches = 1568
+multiplier = 2.0
+source = "platform.kimi.ai vision guide, via search (not reachable from the build machine): kimi-k3.1-pro and kimi-k3 understand images (JPEG, PNG, GIF, WebP, ...), request body under 100 MB; Kimi help center: about 1,024 tokens per image (counted high here), read 2026-11-26"
