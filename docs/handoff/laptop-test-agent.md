@@ -63,6 +63,12 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
   the goal stays open and `/goals` shows ✓ for the photos. Then "my passport arrived": the goal is done, the
   weekly reminder is gone from `/scheduled`, and `/goals done` shows why. Saving over `~/Enzo/Goals.md` must
   warn it is read-only; if forced, Enzo keeps that copy and asks what he meant.
+- **Privacy (new, ADR 0029).** Ask Enzo to email a restaurant to book a table "for my anniversary, my wife is pregnant so no alcohol": the card must name the health detail, or the email must leave it out. Say "don't mention my health to anyone": `/privacy` lists it and a search about the pregnancy asks first. `/privacy lift` removes it.
+- **Search by meaning (new, ADR 0030).** Run `enzo` once, then `enzo doctor`: the search line says the model is on this computer. Teach "I'm allergic to shellfish", then in a new chat ask "Can I have shrimp scampi?": Enzo must warn. Ask "what was that restaurant you found?" about an earlier chat. From a clone, `scripts/dev.sh doctor` shows "ok pgvector".
+- **Helpers (new, ADR 0028).** Ask "research these 5 laptops and compare them", then ask something else while the helper works: the answer comes at once, and the review of the helper's report arrives unasked. `/helpers`, open one, Esc inside it stops it, `/helpers stop`. Approve a helper's gated step in its chat. Restart `enzo` mid-helper: it picks up again.
+- **Watches (new, ADR 0031).** "tell me when <a real product page>'s price drops below X": two cards (set up, then turn on after seeing what it reads now), then `/watches`; it stays silent while nothing changes, sends one report on a change, and does not fire again after `enzo stop` and a restart. With Google connected: "tell me when a new email from <sender> arrives", then send yourself one. With GitHub: watch a PR's checks.
+- **Images (new, ADR 0033).** In iTerm2 and Terminal.app, drag a screenshot in, and copy one then press Ctrl+V: the `[Image 1]` chip shows and the reply describes it, on a Claude key and on ChatGPT sign-in. `~/.local/share/enzo/images` holds no EXIF (`exiftool`). Try a Grok or Kimi model with an image. Web: paste or drop one.
+- **Always on (new, ADR 0034).** Follow `docs/ops/deploy.md` "Laptop test" steps 1–8 on a VM you own (then optionally a home Mac). File `user-testing` issues with `enzo deploy status` and `enzo deploy logs --json -n 100`.
 - **Evals and traces (new, ADR 0025, `docs/evals.md`).** After connecting accounts: `enzo eval`, then
   `enzo eval --brain claude-sonnet --brain gpt-sol`, then `enzo eval --compare previous last` (exit 0 when
   nothing changed); open the `.md` path it prints. File a `user-testing` issue per task that fails on a real
@@ -170,10 +176,10 @@ Enzo is a personal AI agent with a swappable model "brain". There are three runn
 
 - **Tools so far:** web search, reading pages, files in `~/Enzo`, GitHub (with a token), memory,
   reminders, scheduled tasks, Gmail and Google Calendar (with his own Google OAuth client).
-- **Memory:** no search by meaning (§6.3); goals have no people or relationships yet (rest of §6.4).
+- **Memory:** goals have no people or relationships yet (rest of §6.4); search by meaning is English only.
 - **Not yet verified against the real APIs:** Grok, Kimi, and switching models inside one
   conversation.
-- No event hooks (§9.4), no subagents (§9.5), no deployment.
+- No workflows (§9.6) yet, and no control of desktop apps (macOS screen recording + accessibility).
 
 ## Installing like a normal user (issue #23)
 
