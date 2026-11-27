@@ -104,6 +104,8 @@ class FakeGoogle:
     answers: list[dict[str, Any]] = field(default_factory=list)
     refreshes: int = 0
     revoke_answers: int = 200
+    #: What a Gmail search finds, when a test sets it (newest first).
+    threads: list[dict[str, Any]] | None = None
     _codes: dict[str, Code] = field(default_factory=dict)
     _grants: list[Grant] = field(default_factory=list)
     #: Access token -> grant.
@@ -343,6 +345,8 @@ class FakeGoogle:
     }
 
     def _search_threads(self, args: dict[str, Any]) -> dict[str, Any]:
+        if self.threads is not None:  # a watch test sets the inbox it searches
+            return {"threads": self.threads}
         return {"threads": [{"id": "t1", "messages": [self.INBOX["m1"]]}]}
 
     def _get_thread(self, args: dict[str, Any]) -> dict[str, Any]:

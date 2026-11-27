@@ -125,6 +125,10 @@ async def test_the_app_registers_the_core_tools(
             "remove_discretion_rule",
             "delegate",
             "stop_helper",
+            "watch",
+            "enable_watch",
+            "list_watches",
+            "cancel_watch",
         ]
         # Long results are kept whole outside the context (ADR 0024).
         assert registry.retain is app.state.service.outputs is not None
@@ -149,8 +153,13 @@ async def test_the_app_registers_the_core_tools(
         # Helpers shape each chat's turns and close when their chat is stopped (ADR 0028).
         assert app.state.service.planner is helpers is app.state.helpers
         assert (helpers._max, helpers._steps) == (settings.helpers_max, settings.helper_steps)
+        # Watches check on the runner's clock and never read Enzo's own port (ADR 0031).
+        watcher = app.state.background.watcher
+        assert watcher in app.state.background.runner._workers
+        assert watcher.sources.own_site(f"http://127.0.0.1:{settings.port}/healthz")
     # A task acts on its own: approved first. A browser task is approved once, as a whole.
-    assert gated == ["delete_file", "schedule_task", "browser_start"]
+    # Setting up a watch and turning it on are two separate yeses (spec §9.4, §12.4).
+    assert gated == ["delete_file", "schedule_task", "browser_start", "watch", "enable_watch"]
     # Everything that sends text to a third party is checked first (§12.5, ADR 0029).
     assert outward == ["web_search", "read_page", "browser_start", "browser_open", "browser_type"]
     assert fenced == [
@@ -160,4 +169,5 @@ async def test_the_app_registers_the_core_tools(
         "search_past_chats",
         "read_stored_output",
         *(n for n in names if n.startswith("browser_") and n != "browser_close"),
+        "list_watches",  # what a watch last read is outside content
     ]

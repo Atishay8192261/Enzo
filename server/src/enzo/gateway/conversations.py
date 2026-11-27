@@ -193,7 +193,7 @@ def conversation_routes(auth: params.Depends) -> APIRouter:
         history = await s.store.history(conversation_id)
         shown = [_shown(m, s.registry, took) for m in history]
         for i, origin in origins.items():
-            # A scheduled run, a helper's brief or helpers' reports: not the user typing.
+            # A scheduled run, a watch, a helper's brief or helpers' reports: not the user typing.
             shown[i]["origin"] = origin
         _mark_summaries(shown, history, await s.store.compactions(conversation_id))
         return shown
