@@ -4,7 +4,9 @@ import {
   type ChatClient,
   type ChatsClient,
   type ConversationMemory,
+  canSeeImages,
   type GoalsClient,
+  type ImagesClient,
   type MemoryClient,
   type ScheduleClient,
   type Start,
@@ -46,6 +48,12 @@ import {
   scheduledLine,
 } from "./commands.ts";
 import { suggest } from "./complete.ts";
+import {
+  type ClipboardImage,
+  type ImageAttacher,
+  readClipboardImage,
+  uploadFile,
+} from "./images.ts";
 import { KeyPrompt } from "./KeyPrompt.tsx";
 import { type Choice, Picker } from "./Picker.tsx";
 import { Prompt } from "./Prompt.tsx";
@@ -140,8 +148,15 @@ export function App({
   gatewayUrl = "http://127.0.0.1:8787",
   healthEveryMs,
   start = "fresh",
+  readClipboard = readClipboardImage,
 }: {
-  client: ChatClient & AccountsClient & ChatsClient & MemoryClient & ScheduleClient & GoalsClient;
+  client: ChatClient &
+    AccountsClient &
+    ChatsClient &
+    MemoryClient &
+    ScheduleClient &
+    GoalsClient &
+    ImagesClient;
   memory: ConversationMemory;
   onQuit: () => void;
   /** Opens sign-in pages; tests pass a fake. */
@@ -155,6 +170,8 @@ export function App({
   healthEveryMs?: number;
   /** A fresh chat (`enzo`), or the last one (`enzo --continue`) (#57). */
   start?: Start;
+  /** Reads an image from the system clipboard (Ctrl+V); tests pass a fake. */
+  readClipboard?: () => Promise<ClipboardImage | null>;
 }) {
   const chat = useChat(client, memory, "cli", {
     start,
@@ -447,14 +464,26 @@ export function App({
     })();
   };
 
-  const submit = (raw: string): boolean => {
+  // Dragged files and clipboard images are kept by the gateway first, then go by id (#53).
+  const images = useMemo<ImageAttacher>(
+    () => ({
+      file: (path) => uploadFile((data, options) => client.uploadImage(data, options), path),
+      clipboard: async () => {
+        const got = await readClipboard();
+        return got ? client.uploadImage(got.bytes, { source: "pasted", type: got.type }) : null;
+      },
+    }),
+    [client, readClipboard],
+  );
+
+  const submit = (raw: string, attached: string[] = []): boolean => {
     const line = raw.trim();
-    if (!line) return true;
+    if (!line && attached.length === 0) return true;
     if (QUIT_WORDS.has(line.toLowerCase())) {
       onQuit();
       return true;
     }
-    if (line.startsWith("/")) {
+    if (line.startsWith("/") && attached.length === 0) {
       void runLine(line);
       return true;
     }
@@ -474,7 +503,7 @@ export function App({
       return false;
     }
     scroll.current?.scrollTo(Number.POSITIVE_INFINITY);
-    void send(line);
+    void send(line, attached);
     return true;
   };
 
@@ -623,6 +652,9 @@ export function App({
       sources={{ connections, brains: state.brains }}
       meta={`${modelWords(state)} · ${accountWords(connections)}`}
       onSubmit={submit}
+      images={images}
+      canSee={canSeeImages(state)}
+      onNotice={(text) => say(text)}
     />
   );
 

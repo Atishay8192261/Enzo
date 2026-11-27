@@ -229,10 +229,11 @@ export function useChat(
     return () => clearInterval(timer);
   }, [client, memory, connected, healthEveryMs, start]);
 
+  /** Send a message; `images`: ids of images kept with `uploadImage`, in order. */
   const send = useCallback(
-    async (text: string) => {
-      if (!connected || !text.trim()) return;
-      dispatch({ type: "user_sent", text, at: Date.now() });
+    async (text: string, images: string[] = []) => {
+      if (!connected || (!text.trim() && images.length === 0)) return;
+      dispatch({ type: "user_sent", text, at: Date.now(), images });
       let id = state.conversationId;
       if (!id) {
         // A fresh chat becomes real with its first message, with any model chosen before it.
@@ -251,7 +252,8 @@ export function useChat(
       }
       const chat = id;
       const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      await pump(() => client.send(chat, text, { timezone, device }), dispatch, { sending: true });
+      const context = { timezone, device, ...(images.length ? { images } : {}) };
+      await pump(() => client.send(chat, text, context), dispatch, { sending: true });
     },
     [client, memory, connected, state.conversationId, state.brain, device],
   );
@@ -260,7 +262,7 @@ export function useChat(
   const resend = useCallback(async (): Promise<boolean> => {
     const last = state.items.findLast((i) => i.role === "user");
     if (!last?.unsent) return false;
-    await send(last.text);
+    await send(last.text, last.images ?? []);
     return true;
   }, [state.items, send]);
 
@@ -371,7 +373,7 @@ export function useChat(
     reminded: (event: GatewayEvent) => void;
     state: ChatState;
     openChat: (conversationId: string) => Promise<void>;
-    send: (text: string) => Promise<void>;
+    send: (text: string, images?: string[]) => Promise<void>;
     resend: () => Promise<boolean>;
     decide: (id: string, approved: boolean) => Promise<void>;
     chooseBrain: (brain: string | null) => Promise<void>;

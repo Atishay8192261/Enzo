@@ -39,6 +39,9 @@ export type ScheduleClient = Pick<GatewayClient, "scheduled" | "cancelScheduled"
 /** What Enzo remembers (spec §6.2): seeing it and forgetting a part of it. */
 export type MemoryClient = Pick<GatewayClient, "memories" | "forgetMemory">;
 
+/** Images attached to messages (ADR 0033): each is kept by the gateway first, then sent by id. */
+export type ImagesClient = Pick<GatewayClient, "uploadImage">;
+
 /** The user's goals (spec §6.4): the open ones and the closed ones, with their evidence. */
 export type GoalsClient = Pick<GatewayClient, "goals">;
 
@@ -70,6 +73,29 @@ export interface ChatItem {
   offer?: "stop" | "resend";
   /** A notice that is a reminder the user set, arriving (spec §9.3). */
   reminder?: true;
+  /** For a user message: the ids of the images that went with it (shown as "[image]"). */
+  images?: string[];
+}
+
+/** How a user message reads in the chat: its words, then "[image]" for each image the words do
+ * not already name with an "[Image N]" tag (the terminal puts tags in the text). */
+export function userText(item: Pick<ChatItem, "text" | "images">): string {
+  const count = item.images?.length ?? 0;
+  const tagged = item.text.match(/\[Image \d+\]/g)?.length ?? 0;
+  const extra = Array.from({ length: Math.max(0, count - tagged) }, () => "[image]");
+  return [item.text, ...extra].filter(Boolean).join(item.text ? "\n" : " ");
+}
+
+/**
+ * Whether the chat's model can see images: the pinned model, or (a tier, or automatic) any
+ * connected one that can. The gateway checks again before sending and says why it can't.
+ */
+export function canSeeImages(state: Pick<ChatState, "brains" | "brain">): boolean {
+  const pinned = state.brains.find((b) => b.name === state.brain);
+  if (pinned) return pinned.vision === true;
+  return state.brains.some(
+    (b) => b.available && b.vision === true && (!state.brain || b.tier === state.brain),
+  );
 }
 
 /** The facts behind one reply (#49). */
@@ -196,7 +222,7 @@ export type ChatAction =
   | { type: "unsent"; reason: "busy" | "failed" | "unreachable"; message?: string }
   | { type: "stream_lost" }
   /** `at`: when (ms since 1970), so the chat can say how long replies took. */
-  | { type: "user_sent"; text: string; at?: number }
+  | { type: "user_sent"; text: string; at?: number; images?: string[] }
   | { type: "resuming"; at?: number }
   | { type: "brain_chosen"; brain: string | null }
   | { type: "brains_loaded"; brains: Brain[] }
@@ -338,10 +364,12 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
         role: "notice",
         text: `Not approved: ${describeApproval(a)} (you sent a new message)`,
       }));
-      const sent: ChatItem =
-        action.at === undefined
-          ? { role: "user", text: action.text }
-          : { role: "user", text: action.text, at: new Date(action.at).toISOString() };
+      const sent: ChatItem = {
+        role: "user",
+        text: action.text,
+        ...(action.at === undefined ? {} : { at: new Date(action.at).toISOString() }),
+        ...(action.images?.length ? { images: action.images } : {}),
+      };
       return {
         ...state,
         status: "streaming",
@@ -589,11 +617,21 @@ export function toItems(
       return;
     }
     if (m.role === "user") {
-      // A user message's second text part is delivery context (time, device), not words.
-      const text = texts[0] ?? "";
+      // The user's words are the first part (possibly empty when only images were sent); the
+      // last text part is delivery context (time, device), not words.
+      const first = m.parts[0];
+      const text = first?.type === "text" ? (first.text ?? "") : "";
+      const images = m.parts.filter((p) => p.type === "image" && p.id).map((p) => p.id as string);
       const sent = usage?.turns[starts.length]?.started_at;
       starts.push(items.length);
-      if (text) items.push(sent ? { role: "user", text, at: sent } : { role: "user", text });
+      if (text || images.length) {
+        items.push({
+          role: "user",
+          text,
+          ...(sent ? { at: sent } : {}),
+          ...(images.length ? { images } : {}),
+        });
+      }
       return;
     }
     const text = texts.join("");
