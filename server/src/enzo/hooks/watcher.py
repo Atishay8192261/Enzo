@@ -62,6 +62,9 @@ class Watcher:
         self._running: set[asyncio.Task[None]] = set()
         self._checks = asyncio.Semaphore(MAX_CHECKS)
 
+    def now(self) -> datetime:
+        return self._clock()
+
     def connect(self, service: ConversationService, poke: Callable[[], None]) -> None:
         self._service, self._poke = service, poke
 

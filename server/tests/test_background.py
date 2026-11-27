@@ -46,6 +46,23 @@ def test_the_last_app_leaves_it_on_while_reminders_are_due(
     assert (state / launcher.BACKGROUND).exists()
 
 
+def test_a_watch_that_is_on_keeps_it_on_too(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    stopped: list[int] = []
+    said: list[str] = []
+    gateway_running(monkeypatch, stopped)
+    monkeypatch.setattr(launcher, "upcoming", lambda _port: None)
+    monkeypatch.setattr(launcher, "watching", lambda _port: 2)
+    launcher.release(state, 8787, say=said.append)
+    assert stopped == []
+    assert said == ["Enzo stays on in the background for your 2 watches. `enzo stop` turns it off."]
+    monkeypatch.setattr(launcher, "upcoming", lambda _port: (1, "Fri 21 Nov 09:00"))
+    monkeypatch.setattr(launcher, "watching", lambda _port: 1)
+    launcher.release(state, 8787, say=said.append)
+    assert said[-1].startswith(
+        "Enzo stays on in the background for your 1 scheduled item and 1 watch"
+    )
+
+
 def test_with_nothing_due_the_last_app_stops_it(
     state: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
