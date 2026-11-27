@@ -5,6 +5,7 @@ import {
   type ChatsClient,
   type ConversationMemory,
   type GoalsClient,
+  type HelpersClient,
   type MemoryClient,
   type PrivacyClient,
   type ScheduleClient,
@@ -16,6 +17,7 @@ import {
 import type {
   ChatSummary,
   GoogleAccess,
+  Helper,
   PrivacyRule,
   ProviderConnection,
   Remembered,
@@ -41,6 +43,7 @@ import { type Copy, lastCodeBlock } from "./clipboard.ts";
 import {
   type CommandContext,
   echoOf,
+  helperLine,
   memoryLine,
   type PickerKind,
   type Reply,
@@ -76,6 +79,8 @@ export const PALETTE: Choice[] = [
   { label: "Finished goals", description: "done or given up", value: "/goals done" },
   { label: "Scheduled", description: "reminders and tasks still to come", value: "/scheduled" },
   { label: "Cancel a reminder or task", description: "asks first", value: "/cancel" },
+  { label: "Helpers", description: "long work handed to helpers", value: "/helpers" },
+  { label: "Stop a helper", value: "/helpers stop" },
   { label: "Help", description: "commands and keys", value: "/help" },
   { label: "Quit", description: "or type exit, or ctrl+d", value: "/quit" },
 ];
@@ -93,6 +98,8 @@ const PICKER_TITLE: Record<PickerKind | "palette", string> = {
   cancel: "Cancel this?",
   rules: "Lift which privacy rule?",
   lift: "Lift this rule?",
+  helpers: "Your helpers: open one's chat",
+  stophelper: "Stop which helper?",
 };
 
 /** Waits before opening the live event stream again: from this, doubling, up to the max. */
@@ -154,7 +161,8 @@ export function App({
     MemoryClient &
     ScheduleClient &
     GoalsClient &
-    PrivacyClient;
+    PrivacyClient &
+    HelpersClient;
   memory: ConversationMemory;
   onQuit: () => void;
   /** Opens sign-in pages; tests pass a fake. */
@@ -202,6 +210,8 @@ export function App({
   // /privacy lift: the rules that hold here, and the one the user is being asked about.
   const [rules, setRules] = useState<PrivacyRule[]>([]);
   const [lifting, setLifting] = useState<PrivacyRule | null>(null);
+  // /helpers: the helpers to open or stop.
+  const [helpers, setHelpers] = useState<Helper[]>([]);
   const [flash, setFlash] = useState<string | null>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -427,6 +437,20 @@ export function App({
       return `Cancelled “${target.text}”.`;
     },
     keepReminder: () => setCancelling(null),
+    pickHelper: async (stopping) => {
+      const all = await client.helpers();
+      const shown = stopping
+        ? all.filter((h) => h.status === "working" || h.status === "waiting")
+        : all;
+      if (shown.length === 0) {
+        return stopping
+          ? "No helper is working now."
+          : "No helpers yet. Ask Enzo for long work, like “research these 5 laptops and compare them”: a helper does it while you keep talking.";
+      }
+      setHelpers(shown);
+      setPicker(stopping ? "stophelper" : "helpers");
+      return null;
+    },
     deleteChat: async () => {
       const id = state.conversationId;
       if (!id) return "Nothing to delete: this chat has no messages yet.";
@@ -591,6 +615,14 @@ export function App({
           value: "/privacy confirm",
         },
       ];
+    }
+    if (kind === "helpers" || kind === "stophelper") {
+      return helpers.map((h) => ({
+        label: `#${h.id} ${h.title}`,
+        description: helperLine(h),
+        value: kind === "stophelper" ? `/stophelper ${h.id}` : `/open ${h.chat_id ?? ""}`,
+        ...(h.status === "working" || h.status === "waiting" ? {} : { muted: true }),
+      }));
     }
     if (kind === "reminders") {
       return reminders.map((r) => ({ label: scheduledLine(r), value: `/cancel ${r.id}` }));

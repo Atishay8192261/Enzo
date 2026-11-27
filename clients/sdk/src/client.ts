@@ -182,6 +182,44 @@ export interface ScheduledNotice {
   chat_id: string | null;
 }
 
+/** How a helper is doing: at work, waiting for the user's approval, or how it ended. */
+export type HelperStatus = "working" | "waiting" | "done" | "failed" | "stopped" | "interrupted";
+
+/** A helper: long work Enzo handed to a child agent in its own chat (spec §9.5). */
+export interface Helper {
+  id: number;
+  /** A short name: "Compare 5 laptops". */
+  title: string;
+  status: HelperStatus;
+  /** 1: the user's chat handed it the work; 2: another helper did. */
+  depth: number;
+  /** Its own chat: open it to watch it, answer its approval, or stop it (Esc). */
+  chat_id: string | null;
+  /** The chat that handed it the work, and the user's own chat at the top. */
+  parent_id: string | null;
+  conversation_id: string | null;
+  coordinator_id: number | null;
+  created_at: string;
+  finished_at: string | null;
+  /** Steps it took, and what its model calls used (the user's own accounts pay). */
+  steps: number;
+  calls: number;
+  cost_usd: number | null;
+  plan: boolean;
+  /** While it waits: the action it asks the user to approve, in plain words. */
+  waiting: string | null;
+}
+
+/** A line about a helper in a chat's timeline: "Helper #3 “Compare 5 laptops” finished." */
+export interface HelperNotice {
+  helper: number;
+  kind: "started" | "waiting" | "done" | "failed" | "stopped" | "interrupted" | "resumed";
+  text: string;
+  after: number;
+  at: string;
+  chat_id: string | null;
+}
+
 /** Something that happened while no turn of this app was running. */
 export type GatewayEvent =
   | {
@@ -205,6 +243,17 @@ export type GatewayEvent =
       conversation_id: string | null;
       /** The task ended with this run. */
       stopped: boolean;
+    }
+  | {
+      kind: "helper";
+      /** Null for "reported": the chat that asked replied about its helpers' reports. */
+      helper: number | null;
+      status: HelperStatus | "reported" | "started" | "resumed";
+      /** The line to show, or null when there is nothing to say (a step, a reply). */
+      words: string | null;
+      /** The helper's own chat, and the user's chat its lines show in. */
+      chat_id?: string | null;
+      conversation_id: string | null;
     };
 
 export interface ApprovalCard {
@@ -239,8 +288,11 @@ export interface PrivacyRule {
 export interface StoredMessage {
   role: "system" | "user" | "assistant" | "tool";
   parts: StoredPart[];
-  /** "schedule": a scheduled task's run started this turn; the user did not type it. */
-  origin?: "schedule";
+  /**
+   * Who wrote it, when not the user: "schedule" (a scheduled task's run), "brief" (the work a
+   * helper was given, in its own chat), "handoff" (helpers' reports, for Enzo to review).
+   */
+  origin?: "schedule" | "brief" | "handoff";
   /** Older messages were summarized just before this one (how many turns the summary covers). */
   summarized?: number;
 }
@@ -433,13 +485,32 @@ export class GatewayClient {
     const res = await this.#request("GET", "/events", undefined, signal);
     if (!res.body) throw new GatewayError("event stream has no body", res.status);
     for await (const message of parseSse(res.body)) {
-      if (message.event !== "reminder" && message.event !== "task") continue; // not known here
+      if (!["reminder", "task", "helper"].includes(message.event)) continue; // not known here
       try {
         yield { kind: message.event, ...JSON.parse(message.data) } as GatewayEvent;
       } catch {
         // a malformed event is skipped, never fatal
       }
     }
+  }
+
+  /** Helpers at work first, then the latest that finished. */
+  async helpers(): Promise<Helper[]> {
+    const body = (await this.#json("GET", "/helpers")) as { helpers: Helper[] };
+    return body.helpers;
+  }
+
+  /** Stop a helper (and the helpers it handed parts to). False: it was not working any more. */
+  async stopHelper(id: number): Promise<{ stopped: boolean; helper: Helper }> {
+    return (await this.#json("POST", `/helpers/${id}/stop`)) as {
+      stopped: boolean;
+      helper: Helper;
+    };
+  }
+
+  /** The lines about helpers in a chat's timeline, in order. */
+  conversationHelpers(id: string): Promise<HelperNotice[]> {
+    return this.#json("GET", `/conversations/${enc(id)}/helpers`) as Promise<HelperNotice[]>;
   }
 
   /** Everything Enzo remembers, newest first. */
