@@ -1,5 +1,6 @@
 """Shared fixtures: one real, migrated Postgres database per test session."""
 
+import os
 from collections.abc import AsyncIterator, Iterator
 
 import pytest
@@ -7,6 +8,10 @@ from alembic import command
 
 from enzo.store.repository import Store
 from tests.pg import TABLES, alembic_config, create_database, drop_database
+
+# A gateway started by a test never downloads the embedding model (ADR 0030): tests that need
+# search by meaning give it a fake embedder, or the real model from ENZO_TEST_MODEL_DIR.
+os.environ.setdefault("ENZO_EMBEDDINGS", "off")
 
 
 @pytest.fixture(scope="session")

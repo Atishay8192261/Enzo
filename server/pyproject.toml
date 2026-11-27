@@ -27,6 +27,7 @@ dependencies = [
     "jsonschema>=4.26.0",
     "keyring>=25.7.0",
     "mcp>=2.3.0",
+    "onnxruntime>=1.23.2",
     "openai>=3.52.0",
     "pgvector>=0.5.1",
     "pixeltable-pgserver>=0.7.2",
@@ -36,6 +37,7 @@ dependencies = [
     "pydantic-settings>=2.16.3",
     "pyjwt[crypto]>=2.15.1",
     "sqlalchemy[asyncio]>=2.1.9",
+    "tokenizers>=0.23.3",
     "trafilatura>=2.3.1",
     "uvicorn[standard]>=0.54.0",
 ]
@@ -98,3 +100,8 @@ asyncio_default_fixture_loop_scope = "function"
 timeout = 30
 filterwarnings = ["error"]
 addopts = "-ra --strict-markers"
+
+[[tool.mypy.overrides]]
+# ONNX Runtime ships no type information; Enzo uses it in one place (enzo.semantic.embedder).
+module = ["onnxruntime", "onnxruntime.*"]
+ignore_missing_imports = true

@@ -112,6 +112,8 @@ class ContextConfig(_Strict):
     paste_inline_chars: int = Field(default=100_000, gt=0)
     #: How much of a stored text stays in the context.
     excerpt_chars: int = Field(default=4_000, gt=0)
+    #: The most that recalled memories and past-chat excerpts may add to a message, in tokens.
+    recall_tokens: int = Field(default=1_500, gt=0)
 
     @model_validator(mode="after")
     def _is_consistent(self) -> Self:

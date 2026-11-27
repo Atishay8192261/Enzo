@@ -4,9 +4,9 @@
   it replaces; the old one is kept as replaced and never recalled again (§6.2: never keep a
   superseded fact alongside the new one as if both were true).
 - **Forget:** deletes the memory and the versions it replaced. Forgetting means gone.
-- **Recall:** Postgres full-text search (English stemming) over the text and who it is about.
-  Any word of the query may match; better matches come first. No extension is needed, so the
-  bundled database has it too. Retrieval by meaning (§6.3, vectors) is a later step.
+- **Recall:** by meaning and by words (``enzo.semantic``, ADR 0030) once the embedding model is
+  ready; until then (or with it off) Postgres full-text search (English stemming) over the text
+  and who it is about, where any word of the query may match and better matches come first.
 - **Never secrets** (§6.2): ``guard.secret_reason`` refuses them before anything is written.
 - **One truth with Memory.md** (§11.2): the user may edit the file by hand. Before Enzo reads
   its memory or writes the file again, it reads their edits back (cheap: the file's size, time
@@ -22,6 +22,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -31,6 +32,9 @@ from enzo.memory.facts import HAND_EDIT, KINDS, Fact, Kind, SaidBy, provenance
 from enzo.memory.guard import secret_reason
 from enzo.memory.memory_md import MEMORY_FILE, Line, Parsed, parse, render
 from enzo.store.schema import Conversation, MemoryRow
+
+if TYPE_CHECKING:
+    from enzo.semantic import SemanticIndex
 
 log = logging.getLogger("enzo.memory")
 
@@ -89,9 +93,17 @@ class _Seen:
 
 
 class Memory:
-    def __init__(self, engine: AsyncEngine, workspace: Path | None = None) -> None:
+    def __init__(
+        self,
+        engine: AsyncEngine,
+        workspace: Path | None = None,
+        *,
+        index: "SemanticIndex | None" = None,
+    ) -> None:
         self._sessions = async_sessionmaker(engine, expire_on_commit=False)
         self._workspace = workspace
+        #: Search by meaning (spec §6.3); without it, or until its model is ready, by words.
+        self._index = index
         #: Reading edits back and writing the file never interleave (one gateway per database).
         self._lock = asyncio.Lock()
         self._seen: _Seen | None = None
@@ -147,6 +159,7 @@ class Memory:
                 "memory.saved",
                 extra={"memory": saved, "kind": kind, "said_by": said_by, "replaces": replaces},
             )
+            self._changed()
             await self._write_file()
         (fact,) = await self._facts(MemoryRow.id == saved)
         return fact
@@ -162,6 +175,7 @@ class Memory:
             async with self._sessions.begin() as session:
                 versions = await _forget(session, memory_id)
             log.info("memory.forgotten", extra={"memory": memory_id, "versions": versions})
+            self._changed()
             await self._write_file()
         return found[0]
 
@@ -170,9 +184,17 @@ class Memory:
         await self.read_edits()
         return await self._facts()
 
-    async def search(self, query: str, limit: int = RECALL) -> list[Fact]:
-        """Current memories matching any word of ``query``, best match first."""
+    async def search(
+        self, query: str, limit: int = RECALL, *, mode: Literal["recall", "search"] = "search"
+    ) -> list[Fact]:
+        """Current memories ``query`` is about, best match first: by meaning and words once the
+        model is ready (``recall``: only close matches), else matching any word of it."""
         await self.read_edits()
+        if self._index is not None and self._index.by_meaning:
+            hits = await self._index.find(query, sources={"memory"}, limit=limit, mode=mode)
+            ranked = [h.memory_id for h in hits if h.memory_id is not None]
+            found = {f.id: f for f in await self._facts(MemoryRow.id.in_(ranked))}
+            return [found[i] for i in ranked if i in found]
         async with self._sessions() as session:
             ids = (
                 await session.execute(
@@ -201,7 +223,7 @@ class Memory:
 
     async def recall(self, message: str) -> list[Fact]:
         """What rides with a new message: the few memories it is about (spec §3 step 2)."""
-        facts = await self.search(message, RECALL)
+        facts = await self.search(message, RECALL, mode="recall")
         if facts:
             log.info("memory.recalled", extra={"memories": [f.id for f in facts]})
         return facts
@@ -261,11 +283,17 @@ class Memory:
                 "memory.file_edits",
                 extra={"changed": edits.changed, "added": edits.added, "removed": edits.removed},
             )
+            self._changed()
         if edits.changed or edits.added or edits.removed or edits.notes:
             await self._write_file()
             return edits
         self._seen = stat  # only the layout changed: the user's file stays as they left it
         return None
+
+    def _changed(self) -> None:
+        """Memories changed: the search index picks them up (it also checks before searching)."""
+        if self._index is not None:
+            self._index.wake()
 
     async def _facts(self, *where: object) -> list[Fact]:
         async with self._sessions() as session:

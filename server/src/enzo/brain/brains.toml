@@ -191,6 +191,7 @@ default_window = 128000    # for a brain whose window is not confirmed
 tool_inline_chars = 20000  # a longer tool result is stored as a file: the context keeps its start
 paste_inline_chars = 100000  # a longer pasted message is stored the same way
 excerpt_chars = 4000       # how much of a stored text stays in the context
+recall_tokens = 1500       # most that recalled memories + past-chat excerpts add to a message (ADR 0030)
 
 # Local estimate: characters per token, kept below each provider's published average so it
 # over-counts. Anthropic: "1M tokens is roughly 2.5M Unicode characters on the current

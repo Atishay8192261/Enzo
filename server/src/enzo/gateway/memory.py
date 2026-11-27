@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from enzo.gateway.conversations import ServiceDep
 from enzo.memory import Fact, Memory, MemoryRefusedError, provenance
 from enzo.paths import shown
+from enzo.semantic import status_line
 
 
 class MemoryOut(BaseModel):
@@ -30,6 +31,8 @@ class MemoryListOut(BaseModel):
     memories: list[MemoryOut]
     #: Where the readable copy is, as the user types it: ~/Enzo/Memory.md.
     file: str | None
+    #: Whether Enzo also finds things by meaning, in plain words (ADR 0030); None without it.
+    search: str | None = None
 
 
 def memory_routes(auth: params.Depends) -> APIRouter:
@@ -41,6 +44,7 @@ def memory_routes(auth: params.Depends) -> APIRouter:
         return MemoryListOut(
             memories=[_out(f) for f in await memory.all()],
             file=shown(memory.file) if memory.file else None,
+            search=status_line(await s.index.status()) if s.index else None,
         )
 
     @router.delete("/{memory_id}", status_code=status.HTTP_204_NO_CONTENT)

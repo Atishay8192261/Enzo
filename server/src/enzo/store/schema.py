@@ -5,8 +5,10 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
+from pgvector.sqlalchemy import VECTOR
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Computed,
     Date,
@@ -392,3 +394,55 @@ class GoalEventRow(Base):
     )
     turn_id: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = _created_at()
+
+
+class ChunkRow(Base):
+    """A piece of what Enzo knows, kept for search by meaning (spec §6.3, ADR 0030).
+
+    Memories, goals, past chats (a turn at a time) and the long texts kept from them are cut into
+    chunks; each chunk keeps where it came from, so a hit is checked against its source before
+    the brain sees it. ``embedding`` is NULL until the indexer embeds it, and ``model`` says which
+    model made it: when the model changes, chunks are embedded again.
+    """
+
+    __tablename__ = "chunks"
+    __table_args__ = (
+        UniqueConstraint("key", "part"),
+        CheckConstraint("source IN ('memory', 'goal', 'turn', 'stored')", name="source"),
+        Index(None, "search", postgresql_using="gin"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    source: Mapped[str] = mapped_column(Text)
+    #: Which source: ``memory:12``, ``goal:3``, ``turn:<chat>:<seq>``, ``stored:<chat>:<id>``.
+    key: Mapped[str] = mapped_column(Text)
+    #: Its place within the source, from 0.
+    part: Mapped[int] = mapped_column(Integer)
+    memory_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memories.id", ondelete="CASCADE"), index=True
+    )
+    goal_id: Mapped[int | None] = mapped_column(
+        ForeignKey("goals.id", ondelete="CASCADE"), index=True
+    )
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    #: A turn: the messages it covers (their ``seq`` in the chat).
+    seq_from: Mapped[int | None] = mapped_column(Integer)
+    seq_to: Mapped[int | None] = mapped_column(Integer)
+    #: A stored text's id (``s_…``) and where in it this chunk starts, in characters.
+    stored_id: Mapped[str | None] = mapped_column(Text)
+    start: Mapped[int] = mapped_column(Integer, server_default="0")
+    text: Mapped[str] = mapped_column(Text)
+    #: The text's SHA-256: an unchanged chunk keeps its vector when its source is read again.
+    digest: Mapped[str] = mapped_column(Text)
+    #: Outside content (a page, a file): shown fenced, never recalled on its own.
+    untrusted: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    #: When what it says was said or written.
+    happened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    model: Mapped[str | None] = mapped_column(Text)
+    embedding: Mapped[Any] = mapped_column(VECTOR(), nullable=True)
+    created_at: Mapped[datetime] = _created_at()
+    search: Mapped[Any] = mapped_column(
+        TSVECTOR, Computed("to_tsvector('english', text)", persisted=True)
+    )

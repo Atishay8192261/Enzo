@@ -101,6 +101,7 @@ async def test_the_app_registers_the_core_tools(
             "remember",
             "forget",
             "search_memory",
+            "search_past_chats",
             "remind",
             "schedule_task",
             "finish_task",
@@ -129,6 +130,11 @@ async def test_the_app_registers_the_core_tools(
         assert "Enzo folder is" in app.state.service._developer
         assert app.state.service.memory is not None
         assert app.state.service.goals is not None  # open goals come with each message
+        # Search by meaning (ADR 0030): one index for memory, past chats and stored texts.
+        index = app.state.service.index
+        assert index is not None
+        assert app.state.service.memory._index is index
+        assert index.embedder.state == "off"  # tests never download the model
         assert app.state.background.runner is not None  # reminders are delivered
         # The browser lives as long as a turn: the service tells it when turns end (ADR 0027).
         (browsers,) = app.state.service._hooks
@@ -139,6 +145,7 @@ async def test_the_app_registers_the_core_tools(
         "web_search",
         "read_page",
         "read_file",
+        "search_past_chats",
         "read_stored_output",
         *(n for n in names if n.startswith("browser_") and n != "browser_close"),
     ]

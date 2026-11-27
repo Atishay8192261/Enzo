@@ -16,7 +16,7 @@ from typing import Literal, Protocol
 
 from enzo.agent.history import close_open_calls, open_calls, repair
 from enzo.agent.loop import AgentEvent, StopReason, TurnDone, TurnOutcome, run_turn
-from enzo.agent.prompt import MemorySnippet, compose_prompt
+from enzo.agent.prompt import MemorySnippet, PastExcerpt, compose_prompt, fit_recall, render_past
 from enzo.brain.models import Message, TextPart
 from enzo.brain.router import Router, classify
 from enzo.brain.tokens import TokenCounter
@@ -32,12 +32,17 @@ from enzo.context import (
 from enzo.goals import Goals, goals_note
 from enzo.goals.store import user_today
 from enzo.memory import Fact, FileEdits, Memory
+from enzo.semantic import SemanticIndex
+from enzo.semantic.tools import where
 from enzo.store.repository import ConversationInfo, Store
 from enzo.store.schema import ApprovalRow
 from enzo.tools.registry import ToolRegistry
 from enzo.tools.stored import OutputStore
 
 log = logging.getLogger("enzo.agent.service")
+
+#: Past chats' turns that may ride with one message (each at most ``EXCERPT_CHARS``).
+PAST_CHATS = 2
 
 DEFAULT_SYSTEM_PROMPT = (
     resources.files("enzo.agent").joinpath("system_prompt.md").read_text(encoding="utf-8")
@@ -98,6 +103,7 @@ class ConversationService:
         developer: str | None = None,
         memory: Memory | None = None,
         goals: Goals | None = None,
+        index: SemanticIndex | None = None,
         max_steps: int = 16,
         outputs: OutputStore | None = None,
         hooks: Sequence[TurnHooks] = (),
@@ -107,6 +113,8 @@ class ConversationService:
         self.registry = registry
         self.memory = memory
         self.goals = goals
+        #: Past chats by meaning (spec §6.3): a few that a new message is about ride with it.
+        self.index = index
         #: Long texts kept as files out of the context (pastes, older turns' long parts).
         self.outputs = outputs
         #: Learns each brain's real prompt sizes across chats (ADR 0024).
@@ -157,15 +165,22 @@ class ConversationService:
         # recalled (spec §11.2, §11.3), and the brain hears what was not saved, to tell them.
         edits = await self.memory.read_edits() if self.memory else None
         recalled = await self.memory.recall(text) if self.memory else []
+        past = await self._past_chats(text, conversation_id)
+        memory, past = fit_recall(
+            [_snippet(f) for f in recalled],
+            past,
+            self.router.config.context.recall_tokens,
+        )
         notes = [edits_note(edits)] if edits else []
         if self.goals:  # active goals come with every message (spec §3 step 2, §6.4)
             notes += [n for n in (await self.goals.check_file(),) if n]
             block = goals_note(await self.goals.open(), user_today())
             notes += [block] if block else []
+        notes += [render_past(past)] if past else []
         prompt = compose_prompt(
             system=self._system,
             developer=self._developer,
-            memory=[_snippet(f) for f in recalled],
+            memory=memory,
             history=repair(history),
             user_message=user,
             notes=notes,
@@ -175,6 +190,21 @@ class ConversationService:
         # the user typed. (The brain sees it as a user message, written by the schedule.)
         scheduled = saved_from + (1 if closing is not None else 0) if origin == "schedule" else None
         return self._start(info, prompt, first_new=saved_from, scheduled=scheduled)
+
+    async def _past_chats(self, text: str, conversation_id: uuid.UUID) -> list[PastExcerpt]:
+        """Turns of other chats this message is about, by meaning only (spec §6.3)."""
+        if self.index is None or not self.index.by_meaning:
+            return []
+        hits = await self.index.find(
+            text,
+            sources={"turn"},
+            limit=PAST_CHATS,
+            mode="recall",
+            chat=conversation_id,
+            other_chats_only=True,
+            by_meaning_only=True,
+        )
+        return [PastExcerpt(h.text, where(h)) for h in hits]
 
     async def resume(self, conversation_id: uuid.UUID) -> AsyncGenerator[ServiceEvent]:
         """Continue a paused turn (after an approval decision or an interruption)."""
@@ -335,6 +365,8 @@ class ConversationService:
             scheduled=None if scheduled is None else scheduled - first_new,
             compactions=compactions,
         )
+        if self.index is not None:  # the new turn becomes searchable in the background
+            self.index.wake()
 
 
 def _log_end(outcome: TurnOutcome, began: float) -> None:

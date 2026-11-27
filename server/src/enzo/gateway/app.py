@@ -47,6 +47,7 @@ from enzo.paths import data_dir
 from enzo.schedule import Background, Bus, FinishedTasks, Runner, Schedule
 from enzo.schedule.notify import desktop, silent
 from enzo.schedule.tasks import TaskRunner
+from enzo.semantic import LocalEmbedder, Off, SemanticIndex
 from enzo.store.repository import Store
 from enzo.tools.registry import ToolRegistry
 from enzo.tools.stored import OutputStore, stored_tools
@@ -179,13 +180,6 @@ async def _running(
     )
     acct.on_change(router.forget)
     app.state.accounts = acct
-    memory = Memory(store.engine, cfg.workspace_dir)
-    schedule = Schedule(store.engine)
-    goals = Goals(store.engine, cfg.workspace_dir, schedule)
-    notify = desktop if cfg.notify else silent
-    runner = Runner(schedule, Bus(), notify=notify, on_idle=on_idle)
-    app.state.background = Background(schedule, runner.bus, runner)
-    finished = FinishedTasks()
     # Long tool results and pastes are kept whole in Enzo's private data folder (ADR 0024).
     ctx = config.context
     outputs = OutputStore(
@@ -194,6 +188,16 @@ async def _running(
         paste_inline_chars=ctx.paste_inline_chars,
         excerpt_chars=ctx.excerpt_chars,
     )
+    # Search by meaning (ADR 0030): a model on this computer, fetched once in the background.
+    embedder = LocalEmbedder(data_dir() / "models") if cfg.embeddings == "local" else Off()
+    index = SemanticIndex(store.engine, embedder, stored=outputs.root)
+    memory = Memory(store.engine, cfg.workspace_dir, index=index)
+    schedule = Schedule(store.engine)
+    goals = Goals(store.engine, cfg.workspace_dir, schedule)
+    notify = desktop if cfg.notify else silent
+    runner = Runner(schedule, Bus(), notify=notify, on_idle=on_idle)
+    app.state.background = Background(schedule, runner.bus, runner)
+    finished = FinishedTasks()
     # Enzo's own browser profile, in its private data folder (ADR 0027).
     browsers = Browsers(
         data_dir() / "browser",
@@ -213,6 +217,7 @@ async def _running(
                 http=http,
                 tavily_key=lambda: acct.api_key("tavily"),
                 on_set=runner.poke,
+                index=index,
             ),
             *stored_tools(outputs),
             *browser_tools(browsers),
@@ -226,6 +231,7 @@ async def _running(
         developer=install_note(cfg.workspace_dir),
         memory=memory,
         goals=goals,
+        index=index,
         outputs=outputs,
         hooks=[browsers],
     )
@@ -238,9 +244,11 @@ async def _running(
     await connectors.refresh("google")
     acct.on_change(connectors.changed)
     runner.start()  # reminders due while Enzo was not running arrive now, marked late
+    index.start()  # fetch the model if needed, then index what is new (the first time: all)
     try:
         yield
     finally:
+        await index.close()
         await runner.stop()
         await tasks.stop()
         await browsers.close_all()

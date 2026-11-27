@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     #: Also use provider keys from environment variables (OPENAI_API_KEY, …). Off by default: a key
     #: in the shell must never be used, and billed, while the app says "not connected" (#24).
     use_env_keys: bool = False
+    #: Search by meaning (ADR 0030): "local" runs a small model on this computer (downloaded
+    #: once, nothing sent anywhere); "off" finds memories and past chats by their words only.
+    embeddings: Literal["local", "off"] = "local"
     #: Show reminders as desktop notifications too (ENZO_NOTIFY=0 turns them off).
     notify: bool = True
     #: A Google OAuth client (Desktop app type) for Gmail and Calendar, when it is not set up in
