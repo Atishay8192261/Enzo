@@ -182,11 +182,12 @@ def conversation_routes(auth: params.Depends) -> APIRouter:
     async def messages(conversation_id: uuid.UUID, s: ServiceDep) -> list[dict[str, Any]]:
         await _require(s, conversation_id)
         took = {t.call_id: t.latency_ms for t in await s.store.tool_calls(conversation_id)}
-        runs = await s.store.scheduled(conversation_id)
+        origins = await s.store.origins(conversation_id)
         history = await s.store.history(conversation_id)
         shown = [_shown(m, s.registry, took) for m in history]
-        for i in runs:
-            shown[i]["origin"] = "schedule"  # a scheduled task's run, not the user typing
+        for i, origin in origins.items():
+            # A scheduled run, a helper's brief or helpers' reports: not the user typing.
+            shown[i]["origin"] = origin
         _mark_summaries(shown, history, await s.store.compactions(conversation_id))
         return shown
 

@@ -11,7 +11,7 @@
 import asyncio
 import logging
 from collections import Counter
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Literal
@@ -86,6 +86,19 @@ class TurnDone:
     outcome: TurnOutcome
 
 
+@dataclass(frozen=True, slots=True)
+class Progress:
+    """A turn so far, after a step finished: what a checkpoint saves."""
+
+    messages: tuple[Message, ...]
+    brain_calls: tuple[CallRecord, ...]
+    tool_outcomes: tuple[ToolOutcome, ...]
+
+
+#: Called after each finished step (the brain's calls and their results are in the history).
+type Checkpoint = Callable[[Progress], Awaitable[None]]
+
+
 #: ``Compacted``: older turns were summarized before a brain call (spec §5.2).
 type AgentEvent = TextDelta | ToolStarted | ToolFinished | ApprovalNeeded | Compacted | TurnDone
 
@@ -97,6 +110,9 @@ class _Turn:
     steps: int = 0
     brain_calls: list[CallRecord] = field(default_factory=list)
     tool_outcomes: list[ToolOutcome] = field(default_factory=list)
+
+    def progress(self) -> Progress:
+        return Progress(tuple(self.messages), tuple(self.brain_calls), tuple(self.tool_outcomes))
 
     def done(
         self,
@@ -135,6 +151,7 @@ async def run_turn(  # noqa: PLR0913 - keyword-only turn settings
     override: str | None = None,
     affinity: str | None = None,
     window: ContextWindow | None = None,
+    checkpoint: Checkpoint | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """Run one user turn. ``history`` already ends with the user's message (or a paused turn).
 
@@ -142,6 +159,8 @@ async def run_turn(  # noqa: PLR0913 - keyword-only turn settings
     ``affinity`` (the conversation id) keeps the conversation with one provider (ADR 0010).
     ``window``: before every brain call the prompt is counted and, when over budget, older turns
     are summarized first (spec §1.3.5, §5.2). The returned history stays complete either way.
+    ``checkpoint``: awaited after each finished step, while the history is consistent (every call
+    answered), so a turn saved there can be resumed from that step.
     """
     turn = _Turn(messages=list(history))
     ask = _Ask(
@@ -176,6 +195,8 @@ async def run_turn(  # noqa: PLR0913 - keyword-only turn settings
                 return
             async for event in _execute(registry, unanswered, gates, decided, turn):
                 yield event
+            if checkpoint is not None:
+                await checkpoint(turn.progress())
             continue
         if (halt := _halt(turn, stop, max_steps, registry)) is not None:
             yield halt

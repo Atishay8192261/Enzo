@@ -66,7 +66,7 @@ class MessageRow(Base):
     __tablename__ = "messages"
     __table_args__ = (
         UniqueConstraint("conversation_id", "seq"),
-        CheckConstraint("origin IN ('user', 'schedule')", name="origin"),
+        CheckConstraint("origin IN ('user', 'schedule', 'brief', 'handoff')", name="origin"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -77,7 +77,8 @@ class MessageRow(Base):
     role: Mapped[str] = mapped_column(Text)
     body: Mapped[dict[str, Any]] = mapped_column(JSONB)
     created_at: Mapped[datetime] = _created_at()
-    #: "schedule": a scheduled task's run started this turn, not the user typing it.
+    #: Who wrote it, when not the user: "schedule" (a scheduled task's run), "brief" (the work
+    #: a helper was given, in its own chat), "handoff" (helpers' reports, ADR 0028).
     origin: Mapped[str] = mapped_column(Text, server_default="user")
 
 
@@ -391,4 +392,86 @@ class GoalEventRow(Base):
         ForeignKey("conversations.id", ondelete="SET NULL")
     )
     turn_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+
+
+class HelperRow(Base):
+    """A helper: a child agent doing work it was handed, in its own chat (spec §9.5, ADR 0028).
+
+    Its report goes to the chat that asked (``parent_id``); its notices show in the user's own
+    chat (``root_id``). A helper of a helper (depth 2) cannot hand work on.
+    """
+
+    __tablename__ = "helpers"
+    __table_args__ = (
+        CheckConstraint("depth IN (1, 2)", name="depth"),
+        CheckConstraint(
+            "status IN ('working', 'waiting', 'done', 'failed', 'stopped', 'interrupted')",
+            name="status",
+        ),
+        CheckConstraint("restarts >= 0", name="restarts"),
+        Index(None, "status"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    #: The chat that handed it the work: its report goes there.
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL"), index=True
+    )
+    #: The user's own chat at the top: where its notices show.
+    root_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL"), index=True
+    )
+    #: Its own chat, where it works.
+    chat_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL"), unique=True
+    )
+    #: The helper that handed it the work (depth 2), if any.
+    coordinator_id: Mapped[int | None] = mapped_column(
+        ForeignKey("helpers.id", ondelete="SET NULL"), index=True
+    )
+    depth: Mapped[int] = mapped_column(Integer)
+    #: A short name the user sees: "Compare 5 laptops".
+    title: Mapped[str] = mapped_column(Text)
+    #: The message it was given: the task, the user's limits and what it needs to know.
+    brief: Mapped[str] = mapped_column(Text)
+    #: The user's own words that started the work, passed down to every helper below.
+    request: Mapped[str | None] = mapped_column(Text)
+    #: working, waiting (for the user's approval), or how it ended.
+    status: Mapped[str] = mapped_column(Text, server_default="working")
+    #: Its final answer, or why it did not finish: what the chat that asked reviews.
+    report: Mapped[str | None] = mapped_column(Text)
+    #: When the chat that asked took its report in (its brain saw it in a turn that ended).
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Times it picked up again after Enzo stopped while it worked.
+    restarts: Mapped[int] = mapped_column(Integer, server_default="0")
+    #: Who stopped it: "user", "parent" (the chat that asked) or "coordinator" (with its own).
+    stopped_by: Mapped[str | None] = mapped_column(Text)
+    #: The run that handed it the work (the same id as its log lines).
+    turn_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class HelperNoticeRow(Base):
+    """A line about a helper in the user's chat: it waits for approval, finished, was stopped…"""
+
+    __tablename__ = "helper_notices"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('started', 'waiting', 'done', 'failed', 'stopped', 'interrupted', 'resumed')",
+            name="kind",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    helper_id: Mapped[int] = mapped_column(ForeignKey("helpers.id", ondelete="CASCADE"), index=True)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(Text)
+    #: In plain words, without tool names: "Helper #3 “Compare 5 laptops” finished."
+    text: Mapped[str] = mapped_column(Text)
+    #: Shown after this many of the chat's messages.
+    after: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = _created_at()
