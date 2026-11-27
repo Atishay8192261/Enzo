@@ -141,8 +141,15 @@ describe("chat reducer", () => {
       ...initialState,
       status: "ready",
       approvals: [
-        { id: "a1", tool: "delete_file", arguments: {}, summary: "Delete plan.md", detail: null },
-        { id: "a2", tool: "send_email", arguments: {}, summary: null, detail: null },
+        {
+          id: "a1",
+          tool: "delete_file",
+          arguments: {},
+          summary: "Delete plan.md",
+          detail: null,
+          privacy: [],
+        },
+        { id: "a2", tool: "send_email", arguments: {}, summary: null, detail: null, privacy: [] },
       ],
     };
     let s = reduce(asked, { type: "approval_decided", id: "a1", approved: true });
@@ -161,6 +168,7 @@ describe("chat reducer", () => {
       arguments: {},
       summary: "Delete plan.md",
       detail: null,
+      privacy: [],
     };
     const s = reduce(initialState, {
       type: "connected",
@@ -180,7 +188,14 @@ describe("chat reducer", () => {
       ...initialState,
       status: "ready",
       approvals: [
-        { id: "a1", tool: "delete_file", arguments: {}, summary: "Delete plan.md", detail: null },
+        {
+          id: "a1",
+          tool: "delete_file",
+          arguments: {},
+          summary: "Delete plan.md",
+          detail: null,
+          privacy: [],
+        },
       ],
     };
     const s = reduce(open, { type: "user_sent", text: "never mind" });
@@ -267,7 +282,7 @@ describe("chat reducer", () => {
       items: [{ role: "user", text: "old" }],
       draft: "half",
       working: 1,
-      approvals: [{ id: "a1", tool: "t", arguments: {}, summary: null, detail: null }],
+      approvals: [{ id: "a1", tool: "t", arguments: {}, summary: null, detail: null, privacy: [] }],
       lastCost: 0.5,
       lastPlan: true,
     };
@@ -378,6 +393,7 @@ describe("chat reducer", () => {
         summary: null,
         detail: null,
         arguments: { to: "bob" },
+        privacy: ["This includes a health detail: “I am pregnant”"],
       },
     });
     s = reduce(s, {
@@ -396,7 +412,15 @@ describe("chat reducer", () => {
       },
     });
     expect(s.approvals).toEqual([
-      { id: "appr_1", tool: "send_email", arguments: { to: "bob" }, summary: null, detail: null },
+      {
+        id: "appr_1",
+        tool: "send_email",
+        arguments: { to: "bob" },
+        summary: null,
+        detail: null,
+        // The card says what private detail it sends (ADR 0029).
+        privacy: ["This includes a health detail: “I am pregnant”"],
+      },
     ]);
     expect(plain(s.items).at(-1)).toEqual({ role: "notice", text: "Waiting for your approval." });
     s = reduce(s, { type: "approval_decided", id: "appr_1", approved: true });
@@ -659,7 +683,13 @@ describe("formatCost", () => {
 
 describe("describeApproval", () => {
   it("uses the tool's plain words, and never shows a bare tool name", () => {
-    const base = { id: "a", tool: "delete_file", arguments: { path: "x" }, detail: null };
+    const base = {
+      id: "a",
+      tool: "delete_file",
+      arguments: { path: "x" },
+      detail: null,
+      privacy: [],
+    };
     expect(describeApproval({ ...base, summary: "Delete x from your Enzo folder" })).toBe(
       "Delete x from your Enzo folder",
     );

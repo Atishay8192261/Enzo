@@ -211,6 +211,27 @@ export interface ApprovalCard {
   arguments: Record<string, unknown>;
   summary: string | null;
   detail: string | null;
+  /** Private details the action includes, one plain line each (ADR 0029). */
+  privacy?: string[];
+}
+
+/** A discretion rule the user stated (spec §12.5): what Enzo never shares with others. */
+export interface PrivacyRule {
+  id: number;
+  /** The rule in plain words: "Don't mention my health to anyone". */
+  text: string;
+  kinds: string[];
+  words: string[];
+  /** All it covers, in words: "health, and the words “work”". */
+  covers: string;
+  /** "all": every chat; "chat": only the chat it was set in. */
+  scope: "all" | "chat";
+  conversation_id: string | null;
+  /** That chat's title, when it has one. */
+  chat: string | null;
+  /** The user's own words that stated it. */
+  quote: string;
+  created_at: string;
 }
 
 export interface StoredMessage {
@@ -427,6 +448,18 @@ export class GatewayClient {
   /** Forgets a memory for good, with its earlier versions. */
   async forgetMemory(id: number): Promise<void> {
     await this.#json("DELETE", `/memory/${id}`);
+  }
+
+  /** The discretion rules that hold in a chat (its own and every chat's); with no chat,
+   * the ones for every chat. */
+  privacyRules(conversationId?: string | null): Promise<PrivacyRule[]> {
+    const query = conversationId ? `?conversation=${enc(conversationId)}` : "";
+    return this.#json("GET", `/privacy${query}`) as Promise<PrivacyRule[]>;
+  }
+
+  /** Lifts a discretion rule. */
+  async removePrivacyRule(id: number): Promise<void> {
+    await this.#json("DELETE", `/privacy/${id}`);
   }
 
   /** Open goals (due soonest first), or closed ones (done and given up, newest first). */

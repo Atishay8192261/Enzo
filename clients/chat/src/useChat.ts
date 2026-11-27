@@ -108,12 +108,13 @@ async function load(
     items,
     // An approval left open when the app closed is shown again, so it can be answered (#39).
     approvals: (conversation.pending_approvals ?? []).map(
-      ({ id, tool, summary, detail, ...rest }) => ({
+      ({ id, tool, summary, detail, privacy, ...rest }) => ({
         id,
         tool,
         arguments: rest.arguments,
         summary,
         detail,
+        privacy: privacy ?? [],
       }),
     ),
     running: conversation.running ?? false,

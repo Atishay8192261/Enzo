@@ -39,6 +39,9 @@ export type ScheduleClient = Pick<GatewayClient, "scheduled" | "cancelScheduled"
 /** What Enzo remembers (spec §6.2): seeing it and forgetting a part of it. */
 export type MemoryClient = Pick<GatewayClient, "memories" | "forgetMemory">;
 
+/** The user's discretion rules (spec §12.5): seeing them and lifting one. */
+export type PrivacyClient = Pick<GatewayClient, "privacyRules" | "removePrivacyRule">;
+
 /** The user's goals (spec §6.4): the open ones and the closed ones, with their evidence. */
 export type GoalsClient = Pick<GatewayClient, "goals">;
 
@@ -113,6 +116,8 @@ export interface PendingApproval {
   arguments: Record<string, unknown>;
   summary: string | null;
   detail: string | null;
+  /** Private details the action includes ("This includes a health detail: …", ADR 0029). */
+  privacy: string[];
 }
 
 /** What the approval card says: the tool's plain description, never a bare tool name (§10.3). */
@@ -449,10 +454,13 @@ function onEvent(state: ChatState, event: AgentEvent, at?: number): ChatState {
       return { ...state, items, working: Math.max(0, state.working - 1) };
     }
     case "approval_needed": {
-      const { id, tool, summary, detail } = event;
+      const { id, tool, summary, detail, privacy } = event;
       return {
         ...state,
-        approvals: [...state.approvals, { id, tool, arguments: event.arguments, summary, detail }],
+        approvals: [
+          ...state.approvals,
+          { id, tool, arguments: event.arguments, summary, detail, privacy },
+        ],
       };
     }
     case "done": {

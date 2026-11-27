@@ -8,10 +8,19 @@ import {
   GOOGLE_PERMISSIONS_URL,
   type GoalsClient,
   type MemoryClient,
+  type PrivacyClient,
   resolveChoice,
   type ScheduleClient,
 } from "@enzo/chat";
-import type { Goal, GoalList, GoogleAccess, MemoryList, Remembered, Scheduled } from "@enzo/sdk";
+import type {
+  Goal,
+  GoalList,
+  GoogleAccess,
+  MemoryList,
+  PrivacyRule,
+  Remembered,
+  Scheduled,
+} from "@enzo/sdk";
 
 /**
  * What a command shows, as a card under its own echo: plain text, text marked as an error, or
@@ -29,10 +38,12 @@ export type PickerKind =
   | "memory"
   | "forget"
   | "reminders"
-  | "cancel";
+  | "cancel"
+  | "rules"
+  | "lift";
 
 export interface CommandContext {
-  client: ChatClient & AccountsClient & MemoryClient & ScheduleClient & GoalsClient;
+  client: ChatClient & AccountsClient & MemoryClient & ScheduleClient & GoalsClient & PrivacyClient;
   /** The conversation's current choice: a model, a tier, or null for smart routing. */
   current: string | null;
   /** This chat's id; null while it is fresh (created by its first message). */
@@ -80,6 +91,14 @@ export interface CommandContext {
   cancelReminder(): Promise<Reply>;
   /** The user kept the reminder. */
   keepReminder(): void;
+  /** The privacy rules to lift one from, or why there is none. */
+  pickRule(): Promise<Reply>;
+  /** Ask before lifting this rule. */
+  askLift(id: number): Promise<Reply>;
+  /** Lift the rule the user just confirmed; null: none was being asked about. */
+  liftRule(): Promise<Reply>;
+  /** The user kept the rule. */
+  keepRule(): void;
   quit(): void;
 }
 
@@ -334,6 +353,25 @@ const COMMANDS: Record<string, Command> = {
       return ctx.askForget(id);
     },
   },
+  "/privacy": {
+    usage: "/privacy [lift]",
+    summary: "what Enzo never shares with others (lift: remove a rule, asks first)",
+    args: 1,
+    optional: true,
+    also: ["lift", "keep", "confirm"],
+    async run(ctx, arg) {
+      if (arg === "keep") {
+        ctx.keepRule();
+        return null;
+      }
+      if (arg === "confirm") return ctx.liftRule();
+      if (arg === "lift") return ctx.pickRule();
+      if (!arg) return privacyReply(await ctx.client.privacyRules(ctx.chatId));
+      const id = Number(arg);
+      if (!Number.isInteger(id) || id < 1) return error("Usage: /privacy [lift]");
+      return ctx.askLift(id);
+    },
+  },
   "/goals": {
     usage: "/goals [done]",
     summary: "what you are working toward (done: the finished ones)",
@@ -474,6 +512,27 @@ export function memoryReply({ memories, file }: MemoryList): Reply {
     for (const m of group) lines.push(`• ${memoryLine(m)}`, `  ${m.source} · #${m.id}`);
   }
   lines.push("", "To change one, just tell Enzo. /forget removes one.", ...copy);
+  return lines.join("\n");
+}
+
+/** A privacy rule as one line: "Don't mention my health to anyone (every chat)". */
+export const ruleLine = (r: PrivacyRule) =>
+  `${r.text} (${r.scope === "all" ? "every chat" : "this chat"})`;
+
+/** What /privacy shows: the rules that hold in this chat, what each covers, in whose words. */
+export function privacyReply(rules: PrivacyRule[]): Reply {
+  if (rules.length === 0) {
+    return [
+      "No privacy rules yet. Enzo still shares only what others need to act.",
+      "Tell Enzo a rule, like “don't mention my health to anyone” or",
+      "“in this chat never bring up work”.",
+    ].join("\n");
+  }
+  const lines = ["Enzo never shares these with anyone outside this chat:"];
+  for (const r of rules) {
+    lines.push(`• ${ruleLine(r)} · #${r.id}`, `  covers ${r.covers} · you said “${r.quote}”`);
+  }
+  lines.push("", "To change one, just tell Enzo. /privacy lift removes one.");
   return lines.join("\n");
 }
 

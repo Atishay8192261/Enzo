@@ -223,6 +223,13 @@ export function App({ client }: { client: ChatClient & AccountsClient }) {
           <section key={a.id} className="approval" aria-label="Approval needed">
             <h2>Approve this action?</h2>
             <p className="summary">{describeApproval(a)}</p>
+            {a.privacy.length > 0 && (
+              <ul className="privacy" aria-label="Private details">
+                {a.privacy.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            )}
             <p className="label">Exact details</p>
             <pre>{JSON.stringify(a.arguments, null, 2)}</pre>
             {a.detail && (

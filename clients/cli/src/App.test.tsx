@@ -187,6 +187,7 @@ describe("a chat in the terminal", () => {
             summary: "Email bob@example.com",
             detail: Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join("\n"),
             arguments: { to: "bob@example.com" },
+            privacy: ["This includes a health detail: “my wife is pregnant”"],
           },
           done({ stop: "approval_pending", text: "Waiting" }),
         ),
@@ -198,6 +199,8 @@ describe("a chat in the terminal", () => {
     expect(card).toContain("Email bob@example.com"); // plain words, not the tool name (§10.3)
     expect(card).not.toContain("send_email");
     expect(card).toContain("line 12"); // the detail, clipped so the card stays readable
+    // What private detail it sends, said plainly before the details (ADR 0029).
+    expect(card).toContain("! This includes a health detail: “my wife is pregnant”");
     expect(card).not.toContain("line 13");
     expect(card).toContain("28 more lines");
     expect(card).toContain('"to": "bob@example.com"'); // and the exact action (§12.3)
@@ -218,6 +221,7 @@ describe("a chat in the terminal", () => {
           arguments: { path: "t39.txt" },
           summary: "Delete t39.txt",
           detail: null,
+          privacy: [],
         },
         done({ stop: "approval_pending", text: "Waiting" }),
       ),
@@ -248,6 +252,7 @@ describe("a chat in the terminal", () => {
           arguments: { path: "a.md" },
           summary: "Delete a.md",
           detail: null,
+          privacy: [],
         },
         done({ stop: "approval_pending", text: "Waiting" }),
       );
