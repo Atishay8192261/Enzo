@@ -7,7 +7,7 @@ import {
   GatewayError,
   type StoredMessage,
 } from "@enzo/sdk";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App.tsx";
@@ -151,6 +151,7 @@ describe("App", () => {
             summary: "Email bob@example.com",
             detail: "To: bob@example.com\nhi",
             arguments: { to: "bob@example.com", body: "hi" },
+            privacy: ["This includes a health detail: “my wife is pregnant”"],
           },
           {
             type: "done",
@@ -188,6 +189,9 @@ describe("App", () => {
     expect(card.textContent).toContain("What it changes"); // the detail, e.g. a merge's diff
     expect(card.textContent).toContain("To: bob@example.com");
     expect(card.textContent).toContain('"to": "bob@example.com"'); // the exact action (§12.3)
+    // What private detail it sends, said plainly (ADR 0029).
+    const details = within(card).getByRole("list", { name: "Private details" });
+    expect(details.textContent).toBe("This includes a health detail: “my wife is pregnant”");
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
     expect(await screen.findByText("Sent.")).toBeDefined();
     expect(decide).toHaveBeenCalledWith("c1", "appr_1", true);

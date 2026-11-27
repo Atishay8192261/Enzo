@@ -58,6 +58,7 @@ describe("Enzo using the browser, in the terminal", () => {
           arguments: { ref: "e8", element: "Place order" },
           summary: "Click “Place order” on shop.example: it buys or pays for something",
           detail: "This sends to shop.example/order:\n  Card number: card number ending 4242",
+          privacy: [],
         },
         done({ stop: "approval_pending", text: "Waiting" }),
       ),

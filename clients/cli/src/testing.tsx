@@ -7,6 +7,7 @@ import type {
   ConversationMemory,
   GoalsClient,
   MemoryClient,
+  PrivacyClient,
   ScheduleClient,
   Start,
 } from "@enzo/chat";
@@ -142,6 +143,7 @@ export type Client = ChatClient &
   AccountsClient &
   ChatsClient &
   MemoryClient &
+  PrivacyClient &
   ScheduleClient &
   GoalsClient;
 
@@ -197,6 +199,8 @@ export function fakeClient(overrides: Partial<Client> = {}): Client {
     conversationScheduled: async () => [],
     events: quiet,
     forgetMemory: mock(async () => {}),
+    privacyRules: async () => [],
+    removePrivacyRule: mock(async () => {}),
     chooseBrain: mock(async () => {}),
     send: () => events(),
     resume: () => events(),

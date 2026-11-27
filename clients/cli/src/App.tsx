@@ -6,6 +6,7 @@ import {
   type ConversationMemory,
   type GoalsClient,
   type MemoryClient,
+  type PrivacyClient,
   type ScheduleClient,
   type Start,
   signInWithChatGPT,
@@ -15,6 +16,7 @@ import {
 import type {
   ChatSummary,
   GoogleAccess,
+  PrivacyRule,
   ProviderConnection,
   Remembered,
   Scheduled,
@@ -42,6 +44,7 @@ import {
   memoryLine,
   type PickerKind,
   type Reply,
+  ruleLine,
   runCommand,
   scheduledLine,
 } from "./commands.ts";
@@ -67,6 +70,8 @@ export const PALETTE: Choice[] = [
   { label: "Message details", description: "show or hide times, tokens, cost", value: "/details" },
   { label: "Memory", description: "what Enzo remembers about you", value: "/memory" },
   { label: "Forget a memory", description: "remove something Enzo remembers", value: "/forget" },
+  { label: "Privacy rules", description: "what Enzo never shares", value: "/privacy" },
+  { label: "Lift a privacy rule", description: "asks first", value: "/privacy lift" },
   { label: "Goals", description: "what you are working toward", value: "/goals" },
   { label: "Finished goals", description: "done or given up", value: "/goals done" },
   { label: "Scheduled", description: "reminders and tasks still to come", value: "/scheduled" },
@@ -86,6 +91,8 @@ const PICKER_TITLE: Record<PickerKind | "palette", string> = {
   forget: "Forget this?",
   reminders: "Cancel which one?",
   cancel: "Cancel this?",
+  rules: "Lift which privacy rule?",
+  lift: "Lift this rule?",
 };
 
 /** Waits before opening the live event stream again: from this, doubling, up to the max. */
@@ -141,7 +148,13 @@ export function App({
   healthEveryMs,
   start = "fresh",
 }: {
-  client: ChatClient & AccountsClient & ChatsClient & MemoryClient & ScheduleClient & GoalsClient;
+  client: ChatClient &
+    AccountsClient &
+    ChatsClient &
+    MemoryClient &
+    ScheduleClient &
+    GoalsClient &
+    PrivacyClient;
   memory: ConversationMemory;
   onQuit: () => void;
   /** Opens sign-in pages; tests pass a fake. */
@@ -186,6 +199,9 @@ export function App({
   // /cancel: the reminders to come, and the one the user is being asked about.
   const [reminders, setReminders] = useState<Scheduled[]>([]);
   const [cancelling, setCancelling] = useState<Scheduled | null>(null);
+  // /privacy lift: the rules that hold here, and the one the user is being asked about.
+  const [rules, setRules] = useState<PrivacyRule[]>([]);
+  const [lifting, setLifting] = useState<PrivacyRule | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -360,6 +376,30 @@ export function App({
       return `Forgot “${memoryLine(target)}”.`;
     },
     keepMemory: () => setForgetting(null),
+    pickRule: async () => {
+      const all = await client.privacyRules(state.conversationId);
+      if (all.length === 0) return "No privacy rules to lift.";
+      setRules(all);
+      setPicker("rules");
+      return null;
+    },
+    askLift: async (id) => {
+      const found =
+        rules.find((r) => r.id === id) ??
+        (await client.privacyRules(state.conversationId)).find((r) => r.id === id);
+      if (!found) return { text: `There is no rule #${id}. /privacy lists them.`, error: true };
+      setLifting(found);
+      setPicker("lift");
+      return null;
+    },
+    liftRule: async () => {
+      const target = lifting;
+      if (!target) return null;
+      setLifting(null);
+      await client.removePrivacyRule(target.id);
+      return `Lifted the rule “${target.text}”.`;
+    },
+    keepRule: () => setLifting(null),
     pickReminder: async () => {
       const all = await client.scheduled();
       if (all.length === 0) return "Nothing scheduled to cancel.";
@@ -537,6 +577,20 @@ export function App({
     if (kind === "memory") {
       // The memory itself gets the whole width; /memory shows where each came from.
       return memories.map((m) => ({ label: memoryLine(m), value: `/forget ${m.id}` }));
+    }
+    if (kind === "rules") {
+      return rules.map((r) => ({ label: ruleLine(r), value: `/privacy ${r.id}` }));
+    }
+    if (kind === "lift") {
+      // Keeping it is first: a stray Enter never lifts a rule.
+      const what = lifting ? lifting.text : "";
+      return [
+        { label: "No, keep it", value: "/privacy keep" },
+        {
+          label: `Yes, lift “${what.length > 40 ? `${what.slice(0, 39)}…` : what}”`,
+          value: "/privacy confirm",
+        },
+      ];
     }
     if (kind === "reminders") {
       return reminders.map((r) => ({ label: scheduledLine(r), value: `/cancel ${r.id}` }));

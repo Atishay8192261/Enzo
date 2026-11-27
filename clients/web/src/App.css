@@ -336,6 +336,11 @@ button.link {
   font-weight: 600;
   font-size: 16px;
 }
+.approval .privacy {
+  margin: -4px 0 12px;
+  padding-left: 18px;
+  color: var(--warn);
+}
 .approval .label {
   margin: 0 0 4px;
   color: var(--muted);
