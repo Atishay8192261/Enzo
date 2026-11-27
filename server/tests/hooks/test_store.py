@@ -125,6 +125,21 @@ async def test_unchanged_checks_are_silent_and_a_change_wakes_once(
     assert (hook.wakes, hook.polls) == (1, 6)  # type: ignore[union-attr]
 
 
+async def test_a_change_is_remembered_so_it_wakes_once_and_a_check_is_claimed_once(
+    hooks: Hooks, store: Store
+) -> None:
+    hid = await turned_on(hooks, rule="changes", threshold=None)
+    at = NOW + timedelta(minutes=10)
+    (claimed,) = await hooks.claim_polls(at)
+    assert await hooks.claim_polls(at) == []  # still checking: never claimed twice
+    assert (await hooks.record(claimed.id, reads("$50.00"), at)).wake is not None
+    for minutes in (20, 30):  # the same new reading again, after a restart too
+        again = Hooks(store.engine)
+        checked = await check(again, hid, reads("$50.00"), NOW + timedelta(minutes=minutes))
+        assert checked.wake is None  # type: ignore[attr-defined]
+    assert (await hooks.get(hid)).wakes == 1  # type: ignore[union-attr]
+
+
 async def test_a_wake_cut_short_by_a_restart_is_failed_not_run_again(
     hooks: Hooks, store: Store
 ) -> None:
@@ -222,7 +237,7 @@ async def test_its_log_lines_name_what_happened_with_numbers_only(hooks: Hooks) 
     """Seen live: an extra field named "event" replaced "hook.changed" in the JSON line."""
     records: list[logging.LogRecord] = []
     handler = logging.Handler()
-    handler.emit = records.append  # type: ignore[method-assign]
+    handler.emit = records.append  # type: ignore[method-assign, assignment]
     logger = logging.getLogger("enzo.hooks")
     logger.addHandler(handler)
     level = logger.level
