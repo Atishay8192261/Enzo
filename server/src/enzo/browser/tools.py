@@ -6,6 +6,7 @@ that buy, send, delete, enter a password, card or one-time code, or leave the si
 own yes with the exact action (§12.3). Everything read from a page is fenced as untrusted (§12.4).
 """
 
+import dataclasses
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -30,9 +31,10 @@ from enzo.browser.session import (
     site_or_error,
 )
 from enzo.browser.sites import allowed, split_site
-from enzo.context import current_conversation
+from enzo.context import brain_var, conversation_var, current_conversation
+from enzo.images.store import ImageStore
 from enzo.memory.guard import secret_reason
-from enzo.tools.registry import Outgoing, Prepared, Tool, plain_words, tool
+from enzo.tools.registry import ImageResult, Outgoing, Prepared, Tool, plain_words, tool
 from enzo.tools.web import address_words, page_name, private_addresses
 
 #: What every task's approval card says Enzo will still ask about.
@@ -132,8 +134,22 @@ class Closed(BaseModel):
     closed: bool
 
 
-def browser_tools(browsers: Browsers) -> list[Tool[Any, Any]]:  # noqa: PLR0915 - one closure per tool
-    """The browser steps, bound to this gateway's browser."""
+class Screenshot(ImageResult):
+    """What the page looks like: the image comes with the result (ADR 0033)."""
+
+    site: str
+    url: str
+    title: str
+    image: str
+    width: int
+    height: int
+
+
+def browser_tools(  # noqa: PLR0915 - one closure per tool
+    browsers: Browsers, images: ImageStore | None = None
+) -> list[Tool[Any, Any]]:
+    """The browser steps, bound to this gateway's browser. With ``images``, also a screenshot
+    step, offered only to brains that can see (ADR 0027 left it out until images existed)."""
 
     def session() -> Session:
         return browsers.get(current_conversation())
@@ -442,7 +458,7 @@ def browser_tools(browsers: Browsers) -> list[Tool[Any, Any]]:  # noqa: PLR0915 
         closed = conversation is not None and await browsers.close(conversation)
         return Closed(closed=closed)
 
-    return [
+    steps: list[Tool[Any, Any]] = [
         browser_start,
         browser_open,
         browser_click,
@@ -453,6 +469,43 @@ def browser_tools(browsers: Browsers) -> list[Tool[Any, Any]]:  # noqa: PLR0915 
         browser_read,
         browser_close,
     ]
+    if images is None:
+        return steps
+
+    @tool(
+        name="browser_screenshot",
+        description=(
+            "See the browser task's current page as an image (what is on screen), when the "
+            "layout, a picture or a chart matters. Password, card and code fields are blacked "
+            "out. Use browser_read for the page's text and element refs."
+        ),
+        timeout_s=30,
+        untrusted_output=True,
+        activity=lambda _a: "Looking at the page",
+    )
+    async def browser_screenshot(_args: NoParams) -> Screenshot:
+        s = session()
+        async with s.lock:
+            png = await s.screenshot()
+            url, title = s.page.url, await s.page.title()
+        kept = await images.keep_async(
+            png,
+            source="screenshot",
+            tool="browser_screenshot",
+            brain=brain_var.get(),
+            chat=conversation_var.get(),
+        )
+        return Screenshot(
+            site=s.site,
+            url=url,
+            title=title,
+            image=kept.id,
+            width=kept.width,
+            height=kept.height,
+            images=(kept.part(),),
+        )
+
+    return [*steps, dataclasses.replace(browser_screenshot, needs_vision=True)]
 
 
 def _scrolling(args: ScrollParams) -> str:

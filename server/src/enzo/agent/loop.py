@@ -30,6 +30,7 @@ from enzo.brain.router import (
 )
 from enzo.brain.toolcall import ValidatedCall
 from enzo.compaction import Compacted, ContextOverflowError, ContextWindow, Fit
+from enzo.context import brain_var
 from enzo.privacy.check import Verdict
 from enzo.tools.registry import Outgoing, ToolOutcome, ToolRegistry, plain_words
 
@@ -180,9 +181,13 @@ async def run_turn(  # noqa: PLR0913 - keyword-only turn settings
     answered), so a turn saved there can be resumed from that step.
     """
     turn = _Turn(messages=list(history))
+    # Tools that show the brain an image are offered only to a brain that can see (ADR 0033).
+    sees = router.can_see(
+        task, override=override, affinity=affinity, vision=any(m.images for m in history)
+    )
     ask = _Ask(
         router,
-        registry.specs(tools),
+        registry.specs(tools, vision=sees),
         task,
         max_output_tokens,
         budget_tokens,
@@ -317,6 +322,7 @@ async def _ask_brain(
     turn.steps += 1
     turn.brain_calls.extend(routed.attempts)
     turn.messages.append(routed.response.message)
+    brain_var.set(routed.brain)  # the steps it asks for are its (an image's provenance)
     turn.last = routed.response
     if ask.window is not None:  # the exact size of what was sent: sharper estimates next time
         ask.window.learn(routed.brain, sent, ask.specs, routed.response.usage.input_tokens)

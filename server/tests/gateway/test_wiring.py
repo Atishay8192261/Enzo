@@ -112,6 +112,7 @@ async def test_the_app_registers_the_core_tools(
             "close_goal",
             "list_goals",
             "read_stored_output",
+            "view_image",
             "browser_start",
             "browser_open",
             "browser_click",
@@ -121,6 +122,7 @@ async def test_the_app_registers_the_core_tools(
             "browser_back",
             "browser_read",
             "browser_close",
+            "browser_screenshot",
             "add_discretion_rule",
             "remove_discretion_rule",
             "delegate",
@@ -130,6 +132,11 @@ async def test_the_app_registers_the_core_tools(
             "list_watches",
             "cancel_watch",
         ]
+        # Tools that show the brain an image are left out for a brain that cannot see.
+        blind = [s.name for s in registry.specs(vision=False)]
+        assert set(names) - set(blind) == {"view_image", "browser_screenshot"}
+        # Images are kept in Enzo's private data folder, and the router sends them (ADR 0033).
+        assert app.state.service.images is app.state.service.router.images is not None
         # Long results are kept whole outside the context (ADR 0024).
         assert registry.retain is app.state.service.outputs is not None
         gated = [n for n in names if registry.get(n).requires_approval]

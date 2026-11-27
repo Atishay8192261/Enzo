@@ -19,8 +19,8 @@ from enzo.agent.approvals import ApprovalRequest
 from enzo.agent.history import close_open_calls, open_calls, repair
 from enzo.agent.loop import AgentEvent, Progress, StopReason, TurnDone, TurnOutcome, run_turn
 from enzo.agent.prompt import MemorySnippet, PastExcerpt, compose_prompt, fit_recall, render_past
-from enzo.brain.models import Message, TextPart
-from enzo.brain.router import CallRecord, Router, classify
+from enzo.brain.models import ImagePart, Message, TextPart
+from enzo.brain.router import CallRecord, NoBrainAvailableError, Router, classify
 from enzo.brain.tokens import TokenCounter
 from enzo.compaction import Compaction, ContextWindow
 from enzo.context import (
@@ -35,6 +35,7 @@ from enzo.context import (
 )
 from enzo.goals import Goals, goals_note
 from enzo.goals.store import user_today
+from enzo.images.store import ImageStore
 from enzo.memory import Fact, FileEdits, Memory
 from enzo.privacy import Discretion, rules_note
 from enzo.privacy.check import user_words
@@ -61,6 +62,10 @@ class ConversationNotFoundError(Exception):
 
 class TurnInProgressError(Exception):
     """One turn at a time per conversation, so the transcript stays in order."""
+
+
+class ImageNotFoundError(Exception):
+    """A message names an image Enzo does not have (it was never kept, or its file is gone)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +163,7 @@ class ConversationService:
         outputs: OutputStore | None = None,
         hooks: Sequence[TurnHooks] = (),
         discretion: Discretion | None = None,
+        images: ImageStore | None = None,
     ) -> None:
         self.store = store
         self.router = router
@@ -170,6 +176,8 @@ class ConversationService:
         self.index = index
         #: Long texts kept as files out of the context (pastes, older turns' long parts).
         self.outputs = outputs
+        #: Images the user attaches and tools take, kept with provenance (ADR 0033).
+        self.images = images
         #: Learns each brain's real prompt sizes across chats (ADR 0024).
         self.counter = TokenCounter(router.config)
         #: Shapes turns and hears how they ended (helpers, ADR 0028); set once both exist.
@@ -205,6 +213,7 @@ class ConversationService:
         *,
         origin: Origin = "user",
         background: bool = False,
+        images: Sequence[str] = (),
     ) -> AsyncGenerator[ServiceEvent]:
         """Start a turn for a new user message; returns its event stream.
 
@@ -214,10 +223,17 @@ class ConversationService:
         ``background``: Enzo starts this turn on its own (a helper's work, a report arriving).
         The user's own message is never refused because of one: it waits for it to end, then
         goes (the chat stays free to talk, ADR 0028).
+        ``images``: ids of kept images the user attached. If no brain this chat may use can see
+        them, the router's ``CantSeeImagesError`` says so before anything is saved or sent.
         """
         info = await self._claim(conversation_id, wait=origin == "user")
         try:
-            return await self._send(info, text, meta, origin, background=background)
+            attached = self._attached(images)
+            if attached:
+                self._check_sees(info, text)
+            return await self._send(
+                info, text, meta, origin, background=background, attached=attached
+            )
         finally:
             self._claimed.discard(conversation_id)
 
@@ -229,6 +245,7 @@ class ConversationService:
         origin: Origin,
         *,
         background: bool,
+        attached: Sequence[ImagePart] = (),
     ) -> AsyncGenerator[ServiceEvent]:
         conversation_id = info.id
         for hook in self._hooks:
@@ -239,7 +256,7 @@ class ConversationService:
             history.append(closing)
             dropped = await self.store.drop_pending(conversation_id)
             log.info("moved on", extra={"conversation": str(conversation_id), "dropped": dropped})
-        user = _user_message(text, meta or TurnMeta())
+        user = _user_message(text, meta or TurnMeta(), attached)
         # Spec §3 step 2: what Enzo remembers that this message is about. (The chat is set for
         # this request too, so the recall's log line names it.)
         conversation_var.set(str(conversation_id))
@@ -284,6 +301,26 @@ class ConversationService:
         return self._start(
             info, prompt, first_new=saved_from, plan=plan, marked=marked, background=background
         )
+
+    def _attached(self, ids: Sequence[str]) -> list[ImagePart]:
+        parts: list[ImagePart] = []
+        for found in dict.fromkeys(ids):
+            stored = self.images.get(found) if self.images else None
+            if stored is None:
+                msg = "That image is no longer available. Attach it again."
+                raise ImageNotFoundError(msg)
+            parts.append(stored.part())
+        return parts
+
+    def _check_sees(self, info: ConversationInfo, text: str) -> None:
+        """Say before sending when no brain this chat may use can see images (issue #53)."""
+        task, _ = classify(self.router.config, [Message.user(text or " ")])
+        try:
+            self.router.plan(
+                task, override=info.brain, affinity=str(info.id), quiet=True, vision=True
+            )
+        except NoBrainAvailableError:
+            return  # nothing connected at all: the turn says so in its usual words
 
     async def _past_chats(self, text: str, conversation_id: uuid.UUID) -> list[PastExcerpt]:
         """Turns of other chats this message is about, by meaning only (spec §6.3)."""
@@ -604,12 +641,13 @@ def _snippet(fact: Fact) -> MemorySnippet:
     return MemorySnippet(text, f"{who}{where}", fact.learned_at.date(), fact.id)
 
 
-def _user_message(text: str, meta: TurnMeta) -> Message:
-    """The message plus its context, kept in the user's turn so the cached prefix stays stable."""
+def _user_message(text: str, meta: TurnMeta, images: Sequence[ImagePart] = ()) -> Message:
+    """The message plus its context, kept in the user's turn so the cached prefix stays stable.
+    The user's words come first, then their images, then the context."""
     when = meta.received_at.isoformat(timespec="seconds")
     context = (
         f"[sent {when}; timezone: {meta.timezone or 'unknown'}; device: {meta.device or 'unknown'}]"
     )
     if meta.note:
         context += f" {meta.note}"
-    return Message(role="user", parts=(TextPart(text=text), TextPart(text=context)))
+    return Message(role="user", parts=(TextPart(text=text), *images, TextPart(text=context)))
