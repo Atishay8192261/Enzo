@@ -419,6 +419,54 @@ button.link {
   background: var(--fg);
   opacity: 0.85;
 }
+/* Images waiting to be sent: small previews above the composer. */
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 46rem;
+  margin: 0 auto 8px;
+  padding: 0;
+  list-style: none;
+}
+.attachments li {
+  position: relative;
+}
+.attachments img {
+  display: block;
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+}
+.attachments .uploading img {
+  opacity: 0.5;
+}
+.attachments .remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 13px;
+  line-height: 1;
+}
+.image-warning {
+  max-width: 46rem;
+  margin: 0 auto 8px;
+}
+.add-image {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 20px;
+  flex: none;
+  align-self: flex-end;
+}
 .meta {
   display: block;
   max-width: 46rem;
