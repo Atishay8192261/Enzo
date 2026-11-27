@@ -88,6 +88,29 @@ describe("helpers in the terminal (spec §9.5)", () => {
     await until(s, "waits for your approval: Post a note.");
   });
 
+  it("catches up on what arrived while Enzo restarted, with no event to say so", async () => {
+    // Regression (live check): a helper picked up again and finished while the app's live
+    // stream was reconnecting; those lines only showed once the chat was reopened by hand.
+    let shown: StoredMessage[] = [brief];
+    let opens = 0;
+    const client = fakeClient({
+      conversation: async () => ({ ...CONVERSATION, id: "h3" }),
+      messages: async () => shown,
+      events: async function* (signal?: AbortSignal, opened?: () => void) {
+        opens += 1;
+        if (opens === 1) {
+          await new Promise((r) => setTimeout(r, 200));
+          shown = [brief, { role: "assistant", parts: [{ type: "text", text: "Report: back." }] }];
+          throw new Error("connection refused"); // Enzo restarts
+        }
+        opened?.();
+        yield* quiet(signal);
+      },
+    });
+    await using s = await screen(client, { start: "last", ready: "Helper's brief" });
+    await until(s, "Report: back.", 5000);
+  });
+
   it("a chat a helper changed is reopened in place", async () => {
     let shown: StoredMessage[] = [brief];
     const client = fakeClient({

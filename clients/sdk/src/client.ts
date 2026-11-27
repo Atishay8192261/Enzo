@@ -457,10 +457,14 @@ export class GatewayClient {
     return this.#json("GET", `/conversations/${enc(id)}/scheduled`) as Promise<ScheduledNotice[]>;
   }
 
-  /** Live events while the app is open. Ends if the gateway goes away. */
-  async *events(signal?: AbortSignal): AsyncGenerator<GatewayEvent> {
+  /**
+   * Live events while the app is open. Ends if the gateway goes away. `opened` is called once
+   * the stream is open: what happened while it was not (a restart) can be caught up then.
+   */
+  async *events(signal?: AbortSignal, opened?: () => void): AsyncGenerator<GatewayEvent> {
     const res = await this.#request("GET", "/events", undefined, signal);
     if (!res.body) throw new GatewayError("event stream has no body", res.status);
+    opened?.();
     for await (const message of parseSse(res.body)) {
       if (!["reminder", "task", "helper"].includes(message.event)) continue; // not known here
       try {
