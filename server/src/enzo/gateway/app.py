@@ -39,6 +39,7 @@ from enzo.gateway.connections import build_accounts, connection_routes
 from enzo.gateway.conversations import ServiceDep, conversation_routes
 from enzo.gateway.goals import goal_routes
 from enzo.gateway.google import google_routes
+from enzo.gateway.helpers import helper_routes
 from enzo.gateway.memory import memory_routes
 from enzo.gateway.privacy import privacy_routes
 from enzo.gateway.scheduled import scheduled_routes
@@ -47,10 +48,11 @@ from enzo.memory import Memory
 from enzo.paths import data_dir
 from enzo.privacy import Discretion, Rules, privacy_tools
 from enzo.schedule import Background, Bus, FinishedTasks, Runner, Schedule
-from enzo.schedule.notify import desktop, silent
+from enzo.schedule.notify import Notify, desktop, silent
 from enzo.schedule.tasks import TaskRunner
 from enzo.semantic import LocalEmbedder, Off, SemanticIndex
 from enzo.store.repository import Store
+from enzo.subagents import HelperStore, Subagents, subagent_tools
 from enzo.tools.registry import ToolRegistry
 from enzo.tools.stored import OutputStore, stored_tools
 
@@ -83,6 +85,7 @@ def create_app(
     service: ConversationService | None = None,
     accounts: AccountsService | None = None,
     background: Background | None = None,
+    helpers: Subagents | None = None,
     on_idle: Callable[[], None] | None = None,
 ) -> FastAPI:
     """Build the gateway. Tests inject a service; otherwise the real one is built at startup.
@@ -98,6 +101,8 @@ def create_app(
             app.state.service = service
             if background is not None:
                 app.state.background = background
+            if helpers is not None:
+                app.state.helpers = helpers
             yield
             return
         async with _running(app, cfg, accounts, on_idle):
@@ -110,6 +115,8 @@ def create_app(
         app.state.service = service  # available even when the ASGI server skips lifespan
     if background is not None:
         app.state.background = background
+    if helpers is not None:
+        app.state.helpers = helpers
     if accounts is not None:
         app.state.accounts = accounts
     app.exception_handler(RequestValidationError)(_invalid_request)
@@ -149,6 +156,7 @@ def create_app(
     app.include_router(privacy_routes(auth))
     app.include_router(goal_routes(auth))
     app.include_router(scheduled_routes(auth))
+    app.include_router(helper_routes(auth))
     app.include_router(connection_routes(auth))
     app.include_router(chatgpt_routes(auth, cfg.port))
     app.include_router(google_routes(auth, cfg.port))
@@ -194,13 +202,7 @@ async def _running(
     app.state.background = Background(schedule, runner.bus, runner)
     finished = FinishedTasks()
     # Enzo's own browser profile, in its private data folder (ADR 0027).
-    browsers = Browsers(
-        data_dir() / "browser",
-        executable=cfg.browser_path,
-        headless=cfg.browser_headless,
-        own_port=cfg.port,
-    )
-    browsers.recover()  # a browser left behind by a gateway that crashed
+    browsers = _browsers(cfg)
     tools = ToolRegistry(
         [
             *core_tools(
@@ -233,18 +235,21 @@ async def _running(
         discretion=discretion,
     )
     app.state.service = service
+    app.state.helpers = helpers = _helpers(cfg, service, runner.bus, notify)
     # Scheduled tasks run as agent turns: the runner hands each due one to the task runner.
     tasks = TaskRunner(schedule, service, runner.bus, finished, notify=notify)
-    runner.connect(tasks.start, lambda: tasks.running > 0)
+    runner.connect(tasks.start, lambda: tasks.running > 0 or helpers.busy)
     connectors = Connectors(tools, acct, http, google)
     await connectors.refresh("github")
     await connectors.refresh("google")
     acct.on_change(connectors.changed)
     runner.start()  # reminders due while Enzo was not running arrive now, marked late
     index.start()  # fetch the model if needed, then index what is new (the first time: all)
+    await helpers.recover()  # helpers that were working pick up where they stopped
     try:
         yield
     finally:
+        await helpers.close()
         await index.close()
         await runner.stop()
         await tasks.stop()
@@ -269,6 +274,33 @@ def _context_stores(
     # Search by meaning: a model on this computer, fetched once in the background.
     embedder = LocalEmbedder(data_dir() / "models") if cfg.embeddings == "local" else Off()
     return outputs, SemanticIndex(store.engine, embedder, stored=outputs.root)
+
+
+def _helpers(cfg: Settings, service: ConversationService, bus: Bus, notify: Notify) -> Subagents:
+    """Long work handed to helpers, each in its own chat, and the brain's tools for it."""
+    helpers = Subagents(
+        service,
+        HelperStore(service.store.engine),
+        bus,
+        max_working=cfg.helpers_max,
+        steps=cfg.helper_steps,
+        notify=notify,
+    )
+    for t in subagent_tools(helpers):
+        service.registry.register(t)
+    return helpers
+
+
+def _browsers(cfg: Settings) -> Browsers:
+    """Enzo's own browser profile, in its private data folder (ADR 0027)."""
+    browsers = Browsers(
+        data_dir() / "browser",
+        executable=cfg.browser_path,
+        headless=cfg.browser_headless,
+        own_port=cfg.port,
+    )
+    browsers.recover()  # a browser left behind by a gateway that crashed
+    return browsers
 
 
 def _google_client(cfg: Settings) -> GoogleClient | None:

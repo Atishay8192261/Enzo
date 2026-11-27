@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import SecretStr, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     #: Show the browser window (False) or keep it hidden (True). None: shown where there is a
     #: screen (a Mac, a Linux desktop), hidden on a server.
     browser_headless: bool | None = None
+    #: Helpers working at once, at most (ADR 0028): each spends the user's model quota.
+    helpers_max: int = Field(default=4, ge=1, le=16)
+    #: Steps one helper's turn may take before it stops and reports what it has.
+    helper_steps: int = Field(default=30, ge=1, le=200)
     #: Host names the gateway answers to (DNS-rebinding defence). Local only unless changed.
     allowed_hosts: tuple[str, ...] = ("127.0.0.1", "localhost", "[::1]", "::1")
 
