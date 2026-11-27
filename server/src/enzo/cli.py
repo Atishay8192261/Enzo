@@ -586,7 +586,7 @@ def _through_ssh(state: Path, dep: record.Deployment) -> Iterator[launcher.Gatew
             msg = f"Enzo on {dep.name} runs {theirs} and this computer {__version__}. Run: {fix}"
             raise launcher.LauncherError(msg)
         with tunnel.Keeper(state, dep):
-            yield launcher.Gateway(launcher.url_for(dep.port), started=False)
+            yield launcher.Gateway(launcher.url_for(tunnel.local_port(dep)), started=False)
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)

@@ -35,6 +35,12 @@ CONNECT_S = 25.0
 _children: dict[int, subprocess.Popen[bytes]] = {}
 
 
+def local_port(dep: Deployment) -> int:
+    """The forward's port here: the gateway's own number there (sign-in pages come back to it).
+    ``ENZO_TUNNEL_PORT`` moves it, only for trying both ends on one machine."""
+    return int(os.environ.get("ENZO_TUNNEL_PORT") or dep.port)
+
+
 class TunnelError(Exception):
     """Why the forward can't be used. The message is shown to the user as is."""
 
@@ -81,7 +87,7 @@ def keep(state: Path, dep: Deployment, *, ssh: str = "ssh") -> bool:
     with _locked(here):
         if _pid(here) is not None:
             return True
-        if launcher.port_taken(dep.port):
+        if launcher.port_taken(local_port(dep)):
             return False
         _spawn(here, dep, ssh)
         return True
@@ -115,9 +121,9 @@ class Keeper:
 
 def _ensure(here: Path, dep: Deployment, ssh: str, *, wait_s: float) -> dict[str, str]:
     if _pid(here) is None:
-        if launcher.port_taken(dep.port):
+        if launcher.port_taken(local_port(dep)):
             msg = (
-                f"Port {dep.port} on this computer is used by another program, so Enzo can't "
+                f"Port {local_port(dep)} on this computer is used by another program, so Enzo can't "
                 f"reach {dep.name} through it. Close that program, or move Enzo there to another "
                 f"port: enzo deploy {dep.destination} --port 8790"
             )
@@ -125,7 +131,7 @@ def _ensure(here: Path, dep: Deployment, ssh: str, *, wait_s: float) -> dict[str
         _spawn(here, dep, ssh)
     deadline = time.monotonic() + wait_s
     while time.monotonic() < deadline:
-        answered = launcher.health(dep.port)
+        answered = launcher.health(local_port(dep))
         if answered is not None:
             return answered
         if _pid(here) is None:  # ssh gave up: say why
@@ -140,7 +146,7 @@ def _ensure(here: Path, dep: Deployment, ssh: str, *, wait_s: float) -> dict[str
 
 
 def _spawn(here: Path, dep: Deployment, ssh: str) -> None:
-    forward = f"127.0.0.1:{dep.port}:127.0.0.1:{dep.port}"
+    forward = f"127.0.0.1:{local_port(dep)}:127.0.0.1:{dep.port}"
     argv = Remote(dep.destination, ssh=ssh).argv(
         "-N",
         "-o",
