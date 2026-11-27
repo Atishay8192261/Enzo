@@ -457,7 +457,7 @@ class Hooks:
             hook = _hook(row)
             wake = Wake(event.id, hook, event.before, outcome.shown, now, late=False)
         log.info(
-            "hook.changed", extra={"hook": hook_id, "event": wake.event_id, "wakes": hook.wakes}
+            "hook.changed", extra={"hook": hook_id, "wake": wake.event_id, "wakes": hook.wakes}
         )
         return Checked(hook, wake=wake)
 
@@ -520,7 +520,7 @@ class Hooks:
             row = await session.get(HookRow, event.hook_id)
             assert row is not None  # noqa: S101 - the event's foreign key keeps it
             hook, position = _hook(row), event.position
-        log.info("hook.wake", extra={"hook": hook.id, "event": event_id, "outcome": outcome})
+        log.info("hook.wake", extra={"hook": hook.id, "wake": event_id, "outcome": outcome})
         return hook, position
 
     async def recover(self, now: datetime | None = None) -> list[int]:
