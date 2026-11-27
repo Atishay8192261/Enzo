@@ -120,6 +120,8 @@ async def test_the_app_registers_the_core_tools(
             "browser_back",
             "browser_read",
             "browser_close",
+            "add_discretion_rule",
+            "remove_discretion_rule",
         ]
         # Long results are kept whole outside the context (ADR 0024).
         assert registry.retain is app.state.service.outputs is not None
@@ -133,8 +135,13 @@ async def test_the_app_registers_the_core_tools(
         # The browser lives as long as a turn: the service tells it when turns end (ADR 0027).
         (browsers,) = app.state.service._hooks
         assert browsers.own_port == settings.port
+        # What goes out is checked for private details, with the user's rules (ADR 0029).
+        assert app.state.service.discretion is not None
+        outward = [n for n in names if registry.get(n).outbound is not None]
     # A task acts on its own: approved first. A browser task is approved once, as a whole.
     assert gated == ["delete_file", "schedule_task", "browser_start"]
+    # Everything that sends text to a third party is checked first (§12.5, ADR 0029).
+    assert outward == ["web_search", "read_page", "browser_start", "browser_open", "browser_type"]
     assert fenced == [
         "web_search",
         "read_page",

@@ -15,6 +15,8 @@ turn_var: ContextVar[str | None] = ContextVar("enzo_turn", default=None)
 timezone_var: ContextVar[str | None] = ContextVar("enzo_timezone", default=None)
 #: The scheduled task this run is for, when a schedule started it (its tools need to know).
 job_var: ContextVar[int | None] = ContextVar("enzo_job", default=None)
+#: The user's own words in the message this run answers: a discretion rule must quote them.
+said_var: ContextVar[str | None] = ContextVar("enzo_said", default=None)
 
 
 def new_turn_id() -> str:

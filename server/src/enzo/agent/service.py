@@ -26,12 +26,15 @@ from enzo.context import (
     conversation_var,
     new_turn_id,
     notice_var,
+    said_var,
     timezone_var,
     turn_var,
 )
 from enzo.goals import Goals, goals_note
 from enzo.goals.store import user_today
 from enzo.memory import Fact, FileEdits, Memory
+from enzo.privacy import Discretion, rules_note
+from enzo.privacy.check import user_words
 from enzo.store.repository import ConversationInfo, Store
 from enzo.store.schema import ApprovalRow
 from enzo.tools.registry import ToolRegistry
@@ -101,12 +104,15 @@ class ConversationService:
         max_steps: int = 16,
         outputs: OutputStore | None = None,
         hooks: Sequence[TurnHooks] = (),
+        discretion: Discretion | None = None,
     ) -> None:
         self.store = store
         self.router = router
         self.registry = registry
         self.memory = memory
         self.goals = goals
+        #: What is sent out is checked for private details; the user's rules (ADR 0029).
+        self.discretion = discretion
         #: Long texts kept as files out of the context (pastes, older turns' long parts).
         self.outputs = outputs
         #: Learns each brain's real prompt sizes across chats (ADR 0024).
@@ -162,6 +168,9 @@ class ConversationService:
             notes += [n for n in (await self.goals.check_file(),) if n]
             block = goals_note(await self.goals.open(), user_today())
             notes += [block] if block else []
+        if self.discretion:  # the user's discretion rules come with every message (§12.5)
+            rules = rules_note(await self.discretion.rules.applying(conversation_id))
+            notes += [rules] if rules else []
         prompt = compose_prompt(
             system=self._system,
             developer=self._developer,
@@ -254,12 +263,16 @@ class ConversationService:
         turn_id = new_turn_id()
         conversation_var.set(str(info.id))
         turn_var.set(turn_id)
+        # A discretion rule is saved only from the user's own words in this message (ADR 0029).
+        said = list(user_words(prompt))
+        said_var.set(said[-1] if said else None)
         # Tools tell the chat what they are doing outside it (the browser sign, ADR 0027).
         notice_var.set(queue.put_nowait)
         began = time.perf_counter()
         ended: StopReason | None = None
         try:
             decisions = await self.store.decisions(info.id)
+            declined = await self.store.declined_calls(info.id)
             summaries = await self.store.compactions(info.id)
             window = ContextWindow(
                 self.router,
@@ -289,6 +302,8 @@ class ConversationService:
                 max_output_tokens=self.router.config.context.reply_tokens,
                 stop=stop,
                 window=window,
+                privacy=self.discretion,
+                declined=declined,
             ):
                 if isinstance(event, TurnDone):
                     # Persist, and end what the turn had running, before telling the client.

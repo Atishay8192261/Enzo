@@ -248,6 +248,7 @@ class Store:
                                 "call_id": p.call.id,
                                 "summary": p.summary,
                                 "detail": p.detail,
+                                "privacy": list(p.privacy) or None,
                             }
                             for p in pending
                         ]
@@ -280,6 +281,18 @@ class Store:
                 )
             )
             return {row.id: bool(row.approved) for row in rows}
+
+    async def declined_calls(self, conversation_id: uuid.UUID) -> set[str]:
+        """Tool calls the user said no to: they never run, even if they would not ask now."""
+        async with self._sessions() as session:
+            rows = await session.scalars(
+                select(ApprovalRow.call_id).where(
+                    ApprovalRow.conversation_id == conversation_id,
+                    ApprovalRow.approved.is_(False),
+                    ApprovalRow.call_id.is_not(None),
+                )
+            )
+            return {c for c in rows if c}
 
     async def pending_approvals(self, conversation_id: uuid.UUID) -> list[ApprovalRow]:
         """Approvals still waiting for the user, oldest first."""

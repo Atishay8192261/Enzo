@@ -31,7 +31,7 @@ from mcp.client.streamable_http import streamable_http_client
 from pydantic import BaseModel
 
 from enzo.brain.models import TOOL_NAME_PATTERN
-from enzo.tools.registry import JsonArgs, Prepared, Tool
+from enzo.tools.registry import JsonArgs, Outgoing, Prepared, Tool
 
 log = logging.getLogger("enzo.connectors.mcp")
 
@@ -54,9 +54,27 @@ class McpResult(BaseModel):
         return json.loads(self.text)
 
 
+@dataclass(frozen=True, slots=True)
+class Ready:
+    """A prepared call: its exact arguments, the card's detail, and text it sends besides them."""
+
+    args: dict[str, Any]
+    detail: str | None
+    #: Text the call also sends that its arguments do not hold: a forwarded email's own words.
+    sends: tuple[str, ...] = ()
+
+
 #: Calls another tool of the same server, by its server-side name, for a ``prepare`` step.
 type CallFn = Callable[[str, dict[str, Any]], Awaitable[McpResult]]
-type PrepareFn = Callable[[dict[str, Any], CallFn], Awaitable[tuple[dict[str, Any], str | None]]]
+type PrepareFn = Callable[
+    [dict[str, Any], CallFn], Awaitable[tuple[dict[str, Any], str | None] | Ready]
+]
+
+#: Arguments that name what a write acts on (a repository, a message id), not text it sends.
+_STRUCTURAL = re.compile(
+    r"(?:^|_)(?:ids?|sha|ref|owner|repo|branch|base|head|method|state|labels?|"
+    r"format|level|visibility)$|(?:Id|Ids|Sha|Number|Format|Level|Method)$"
+)
 
 
 class ConnectorError(Exception):
@@ -92,6 +110,10 @@ class McpServer:
     login: str | None = None
     #: Phrases in this server's errors that mean "rate limited", besides the usual ones.
     rate_limit_phrases: tuple[str, ...] = ()
+    #: Per server-side tool: the arguments that carry text to the receiver, each with what it
+    #: fills (None: free text, like an email's body; "Location": a field asking for a place).
+    #: A write without an entry has all its text checked for private details (ADR 0029).
+    outbound: Mapping[str, Mapping[str, str | None]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,8 +303,11 @@ class McpConnector:
         if prepare_fn is not None:
 
             async def prepare(args: JsonArgs, _fn: PrepareFn = prepare_fn) -> Prepared[JsonArgs]:
-                exact, detail = await _fn(args.as_dict(), self.call)
-                return Prepared(JsonArgs(**exact), detail)
+                ready = await _fn(args.as_dict(), self.call)
+                if not isinstance(ready, Ready):
+                    ready = Ready(*ready)
+                sends = tuple(Outgoing(t, "message") for t in ready.sends)
+                return Prepared(JsonArgs(**ready.args), ready.detail, sends=sends)
 
         summarize = self.server.summaries.get(remote.name)
 
@@ -299,6 +324,18 @@ class McpConnector:
             def activity(args: JsonArgs, _fn: Callable[[dict[str, Any]], str] = describe) -> str:
                 return _fn(args.as_dict())
 
+        fields = self.server.outbound.get(remote.name)
+
+        def outbound(args: JsonArgs) -> list[Outgoing]:
+            data = args.as_dict()
+            if fields is None:  # every bit of text it sends, but not what it acts on
+                return [Outgoing(t, "message") for t in _texts(data)]
+            return [
+                Outgoing(t, "field" if fill else "message", field=fill)
+                for key, fill in fields.items()
+                for t in _texts(data.get(key))
+            ]
+
         return Tool(
             name=name,
             description=description,
@@ -312,6 +349,8 @@ class McpConnector:
             activity=activity,
             prepare=prepare,
             schema=self._schema(remote),
+            # A write sends text to others: it is checked for private details (§12.5).
+            outbound=None if read_only else outbound,
         )
 
     def _schema(self, remote: types.Tool) -> dict[str, Any]:
@@ -325,6 +364,19 @@ class McpConnector:
             schema["required"] = [r for r in schema["required"] if r not in dropped]
         schema["additionalProperties"] = False  # a dropped field must not come back unseen
         return schema
+
+
+def _texts(value: object, key: str = "") -> list[str]:
+    """The text in an argument, however nested; never what a write acts on (ids, repos)."""
+    if key and _STRUCTURAL.search(key):
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [t for k, v in value.items() for t in _texts(v, str(k))]
+    if isinstance(value, list):
+        return [t for v in value for t in _texts(v)]
+    return []
 
 
 def _target(args: dict[str, Any]) -> str:

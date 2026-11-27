@@ -8,6 +8,7 @@ recorded decision for this id counts.
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,10 +28,18 @@ class ApprovalRequest:
     summary: str | None = None
     #: What the action will change, shown with it (e.g. the diff a merge would land).
     detail: str | None = None
+    #: Private details the action includes, in plain lines for the card ("This includes a
+    #: health detail: …", ADR 0029). Not part of the id: they describe the exact arguments.
+    privacy: tuple[str, ...] = ()
 
 
 def approval_request(
-    call: ToolCall, args: BaseModel, summary: str | None = None, detail: str | None = None
+    call: ToolCall,
+    args: BaseModel,
+    summary: str | None = None,
+    detail: str | None = None,
+    *,
+    privacy: Sequence[str] = (),
 ) -> ApprovalRequest:
     arguments = args.model_dump(mode="json")
     canonical = json.dumps(
@@ -44,4 +53,5 @@ def approval_request(
         arguments=arguments,
         summary=summary,
         detail=detail,
+        privacy=tuple(privacy),
     )
