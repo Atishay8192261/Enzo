@@ -1,0 +1,239 @@
+{
+  "about": "Questions and notes the local model's thresholds were read from (ADR 0030, 2026-11-26). 'want' is the note a question is about; 'not' a similar but different one that must rank below it; no 'want': unrelated, nothing should be recalled.",
+  "notes": [
+    "Allergic to shellfish.",
+    "Ana: My sister, allergic to peanuts.",
+    "Prefers aisle seats on flights.",
+    "Likes sitting in the front row at the theatre.",
+    "The dog's vet is Dr. Lee on Pine Street.",
+    "Dentist is Dr. Patel; next cleaning is in March.",
+    "Decided to go to Lisbon in June for the wedding anniversary.",
+    "Manager is called Priya; team standup is at 9:30 every weekday.",
+    "Has been vegetarian since 2020.",
+    "Wants replies short, in bullet points.",
+    "Drives a blue 2019 Honda Civic.",
+    "Runs 5 km every Saturday morning in Riverside Park.",
+    "Works as a data engineer at a logistics company.",
+    "Lives in Austin, Texas.",
+    "Leo: Starts kindergarten in September.",
+    "Prefers dark roast coffee, no sugar.",
+    "Is learning Spanish on weekday evenings.",
+    "Mother's birthday is on 14 February.",
+    "Saving for a house deposit by the end of next year.",
+    "Hates horror movies; enjoys documentaries.",
+    "Uses a MacBook Pro for work and a Linux desktop at home.",
+    "Plays guitar in a band on Thursday nights.",
+    "Is afraid of heights.",
+    "Prefers trains over planes for trips under 500 km.",
+    "Gym membership renews in January."
+  ],
+  "queries": [
+    {
+      "q": "Can I have shrimp scampi tonight?",
+      "want": 0,
+      "not": 1
+    },
+    {
+      "q": "What can't my sister eat?",
+      "want": 1,
+      "not": 0
+    },
+    {
+      "q": "Book me a plane ticket, any seating preference?",
+      "want": 2,
+      "not": 3
+    },
+    {
+      "q": "We're going to see a play, where should I book us?",
+      "want": 3,
+      "not": 2
+    },
+    {
+      "q": "My puppy is limping, who should I call?",
+      "want": 4,
+      "not": 5
+    },
+    {
+      "q": "When is my next teeth cleaning?",
+      "want": 5,
+      "not": 4
+    },
+    {
+      "q": "Where are we headed for our anniversary?",
+      "want": 6
+    },
+    {
+      "q": "Who is my boss?",
+      "want": 7
+    },
+    {
+      "q": "What time is my daily team meeting?",
+      "want": 7
+    },
+    {
+      "q": "Plan a dinner menu for me",
+      "want": 8
+    },
+    {
+      "q": "How should you format answers for me?",
+      "want": 9
+    },
+    {
+      "q": "What car do I have?",
+      "want": 10
+    },
+    {
+      "q": "When do I usually go jogging?",
+      "want": 11,
+      "not": 24
+    },
+    {
+      "q": "What do I do for a living?",
+      "want": 12
+    },
+    {
+      "q": "What city do I live in?",
+      "want": 13
+    },
+    {
+      "q": "When does my kid start school?",
+      "want": 14
+    },
+    {
+      "q": "How do I take my coffee?",
+      "want": 15
+    },
+    {
+      "q": "Which language am I studying?",
+      "want": 16
+    },
+    {
+      "q": "When should I buy my mom a present?",
+      "want": 17
+    },
+    {
+      "q": "What am I putting money aside for?",
+      "want": 18
+    },
+    {
+      "q": "Recommend a film for tonight",
+      "want": 19
+    },
+    {
+      "q": "Which laptop do I use at the office?",
+      "want": 20
+    },
+    {
+      "q": "What instrument do I play?",
+      "want": 21
+    },
+    {
+      "q": "Should I book the glass-floor skywalk tour?",
+      "want": 22
+    },
+    {
+      "q": "How should I get from Paris to Brussels?",
+      "want": 23,
+      "not": 2
+    },
+    {
+      "q": "When does my fitness club subscription come up for renewal?",
+      "want": 24,
+      "not": 11
+    },
+    {
+      "q": "What is the capital of Peru?"
+    },
+    {
+      "q": "How do I reverse a linked list in Python?"
+    },
+    {
+      "q": "What's the weather like on Mars?"
+    },
+    {
+      "q": "Explain how photosynthesis works."
+    },
+    {
+      "q": "Translate 'good morning' into Japanese."
+    },
+    {
+      "q": "What's 17 times 23?"
+    },
+    {
+      "q": "Who won the 1998 World Cup?"
+    },
+    {
+      "q": "Write a haiku about autumn leaves."
+    },
+    {
+      "q": "How many moons does Jupiter have?"
+    },
+    {
+      "q": "What does HTTP status 404 mean?"
+    }
+  ],
+  "turns": [
+    [
+      "Can you find me a good ramen place near the office?",
+      "Three close by: Ippudo on 4th (rich tonkotsu, 8 min walk), Menya Rui (lighter shoyu), and Ramen Tatsu-ya (busy at lunch). Ippudo takes reservations."
+    ],
+    [
+      "What should I pack for Lisbon in June?",
+      "Light layers, a light jacket for the evening wind, comfortable shoes for the hills and cobblestones, sunscreen, and a plug adapter (type F)."
+    ],
+    [
+      "Help me write a message to my landlord about the broken heater.",
+      "Here is a draft: Hi Mark, the heater in the living room stopped working on Monday. Could someone come to fix it this week? Thanks."
+    ],
+    [
+      "Compare the Kindle Paperwhite and the Kobo Clara.",
+      "The Paperwhite has a bigger 7-inch screen and Audible; the Kobo Clara reads EPUB natively and borrows library books through OverDrive. Both are waterproof."
+    ],
+    [
+      "How do I fix the error when my shell script will not start?",
+      "Make it executable with chmod +x script.sh, or run it with bash script.sh. Check the folder is not mounted noexec."
+    ],
+    [
+      "Give me a 3-day beginner workout plan.",
+      "Day 1: squats, push-ups, rows. Day 2: rest or a 30-minute walk. Day 3: lunges, overhead press, plank. Start with 2 sets of 10."
+    ]
+  ],
+  "turn_queries": [
+    {
+      "q": "Where was that noodle soup spot you suggested?",
+      "want": 0
+    },
+    {
+      "q": "What clothes did you say to bring to Portugal?",
+      "want": 1
+    },
+    {
+      "q": "Remind me what we wrote to the apartment owner",
+      "want": 2
+    },
+    {
+      "q": "Which e-reader works with library loans?",
+      "want": 3
+    },
+    {
+      "q": "How did we solve the script that would not run?",
+      "want": 4
+    },
+    {
+      "q": "What exercises were in my gym routine?",
+      "want": 5
+    },
+    {
+      "q": "What is the capital of Peru?"
+    },
+    {
+      "q": "Write a haiku about autumn leaves."
+    },
+    {
+      "q": "How many moons does Jupiter have?"
+    },
+    {
+      "q": "What's the best way to learn piano?"
+    }
+  ]
+}

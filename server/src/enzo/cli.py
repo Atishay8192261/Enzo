@@ -307,6 +307,7 @@ def doctor() -> int:
         _check_web_app(),
         _check_folders(),
         _check_vault(),
+        _check_search(),
         _check_gateway(),
         _check_log(),
     ]
@@ -439,6 +440,33 @@ def _check_vault() -> tuple[str, str]:
         return BAD, f"Credential vault: {exc}"
     kind = "encrypted file" if isinstance(vault, EncryptedFileVault) else "system keychain"
     return OK, f"Credential vault: {kind}"
+
+
+def _check_search() -> tuple[str, str]:
+    """Search by meaning (ADR 0030): the local model, and whether it can run here."""
+    from enzo.semantic.model import MINILM, installed  # noqa: PLC0415
+
+    if Settings().embeddings == "off":
+        return (
+            NOTE,
+            "Search by meaning: off (ENZO_EMBEDDINGS=off): Enzo finds things by their words",
+        )
+    try:
+        import onnxruntime  # noqa: F401, PLC0415 - is there a build for this computer?
+    except ImportError:
+        return NOTE, (
+            "Search by meaning: does not run on this computer (no ONNX Runtime build): Enzo "
+            "finds memories and past chats by their words"
+        )
+    if installed(data_dir() / "models", MINILM):
+        return OK, (
+            f"Search by meaning: {MINILM.name}, on this computer (nothing is sent anywhere), "
+            f"in {data_dir() / 'models'}"
+        )
+    return NOTE, (
+        f"Search by meaning: the model ({MINILM.size // 1_000_000} MB) downloads once when "
+        "Enzo starts; until then Enzo finds things by their words"
+    )
 
 
 def _check_gateway() -> tuple[str, str]:

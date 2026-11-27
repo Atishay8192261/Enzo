@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx2
 import pytest
 
+from enzo import cli
 from enzo.semantic import MINILM, LocalEmbedder, ModelError
 from enzo.semantic.model import ModelFile, ModelSpec, fetch, installed, verify
 
@@ -156,3 +157,26 @@ def test_the_pinned_model_is_the_one_measured() -> None:
     assert MINILM.sha256 == "913d7300ceae3b2dbc2c50d1de4baacab4be7b9380491c27fab7418616a16ec3"
     assert MINILM.dims == 384
     assert (MINILM.tuning.memory_floor, MINILM.tuning.chat_floor) == (0.30, 0.35)
+
+
+def test_doctor_says_whether_search_by_meaning_is_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ENZO_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("ENZO_EMBEDDINGS", "local")
+    mark, line = cli._check_search()
+    assert (mark, line) == (
+        "·",
+        "Search by meaning: the model (83 MB) downloads once when Enzo starts; until then Enzo "
+        "finds things by their words",
+    )
+    folder = tmp_path / "models" / MINILM.name
+    folder.mkdir(parents=True)
+    for f in MINILM.files:
+        with (folder / f.name).open("wb") as out:
+            out.truncate(f.size)
+    mark, line = cli._check_search()
+    assert mark == "✓"
+    assert line.startswith("Search by meaning: all-MiniLM-L6-v2, on this computer")
+    monkeypatch.setenv("ENZO_EMBEDDINGS", "off")
+    assert cli._check_search()[1].startswith("Search by meaning: off (ENZO_EMBEDDINGS=off)")
