@@ -16,6 +16,9 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 SERVICE = "enzo"
 KEY_BYTES = 32
+#: The vault key of an always-on Enzo (``enzo deploy``, ADR 0034): a machine that starts Enzo at
+#: boot has no unlocked keychain, so the key lives in this owner-only file beside the vault.
+KEY_FILE = "vault.key"
 
 
 class VaultUnavailableError(RuntimeError):
@@ -117,7 +120,9 @@ def generate_key() -> str:
 
 
 def open_vault(config_dir: Path, vault_key: str | None) -> Vault:
-    """ENZO_VAULT_KEY → encrypted file; else a real OS keychain; else refuse (no plaintext)."""
+    """ENZO_VAULT_KEY → encrypted file; else the key file of an always-on Enzo → encrypted file;
+    else a real OS keychain; else refuse (no plaintext)."""
+    vault_key = vault_key or read_key_file(config_dir)
     if vault_key:
         return EncryptedFileVault(config_dir / "vault.json", _b64d(vault_key))
     backend = keyring.get_keyring()
@@ -128,6 +133,30 @@ def open_vault(config_dir: Path, vault_key: str | None) -> Vault:
         "Set ENZO_VAULT_KEY (generate one with: enzo-server --new-vault-key), keep it secret."
     )
     raise VaultUnavailableError(msg)
+
+
+def read_key_file(config_dir: Path) -> str | None:
+    """The key in ``vault.key``, or None when there is none. A key other users of the computer
+    could read is refused, as ssh refuses such a private key."""
+    path = config_dir / KEY_FILE
+    try:
+        mode = path.stat().st_mode
+    except FileNotFoundError:
+        return None
+    if mode & 0o077:
+        msg = f"{path} can be read by other users of this computer. Fix it with: chmod 600 {path}"
+        raise VaultUnavailableError(msg)
+    return path.read_text(encoding="utf-8").strip() or None
+
+
+def create_key_file(config_dir: Path) -> Path:
+    """A new key in ``vault.key`` (owner-only from the first byte). Never replaces one."""
+    path = config_dir / KEY_FILE
+    if path.exists():
+        msg = f"{path} exists already"
+        raise FileExistsError(msg)
+    write_private(path, generate_key() + "\n")
+    return path
 
 
 def _is_secure(backend: keyring.backend.KeyringBackend) -> bool:

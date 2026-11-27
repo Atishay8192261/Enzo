@@ -17,7 +17,8 @@ def started(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[list[str]]:
     app = tmp_path / "enzo-tui"
 
     @contextlib.contextmanager
-    def gateway() -> Iterator[SimpleNamespace]:
+    def gateway(dep: object = None) -> Iterator[SimpleNamespace]:
+        runs.append(["gateway", getattr(dep, "destination", "local")])
         yield SimpleNamespace(url="http://127.0.0.1:8787")
 
     def call(argv: list[str], **_kwargs: object) -> int:
@@ -45,9 +46,36 @@ def test_a_new_chat_unless_asked_to_continue(
     started: list[list[str]], argv: list[str], flags: list[str]
 ) -> None:
     assert cli.main(argv) == 0
-    (run,) = started
+    where, run = started
+    assert where == ["gateway", "local"]
     assert run[1:] == flags
     assert run[0].endswith("enzo-tui")
+
+
+def test_once_deployed_enzo_opens_the_always_on_one_and_local_opens_this_computers(
+    started: list[list[str]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from enzo.deploy import record  # noqa: PLC0415
+
+    monkeypatch.setenv("ENZO_CONFIG_DIR", str(tmp_path / "config"))
+    dep = record.Deployment(
+        "me@box",
+        8789,
+        "/home/me/.local/bin/enzo",
+        "Linux",
+        "x86_64",
+        __version__,
+        "2026-11-27T00:00:00+00:00",
+    )
+    record.save(tmp_path / "config", dep)
+    assert (tmp_path / "config" / "deploy.json").stat().st_mode & 0o777 == 0o600
+    assert cli.main([]) == 0
+    assert cli.main(["--local"]) == 0
+    assert cli.main(["connect", "box", "-c"]) == 0
+    gateways = [r for r in started if r[0] == "gateway"]
+    assert gateways == [["gateway", "me@box"], ["gateway", "local"], ["gateway", "me@box"]]
+    assert started[-1][1:] == ["--continue"]
+    assert cli.main(["--remote", "elsewhere"]) == 1  # not where Enzo is deployed: said, not guessed
 
 
 @pytest.fixture
