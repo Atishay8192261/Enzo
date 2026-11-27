@@ -4,6 +4,7 @@ import type {
   ConversationUsage,
   GatewayClient,
   GatewayEvent,
+  HelperNotice,
   ScheduledNotice,
   StoredMessage,
   StoredPart,
@@ -35,6 +36,9 @@ export type ChatsClient = Pick<
 
 /** Reminders and scheduled tasks (spec §9.3): the ones to come, cancelling, live arrivals. */
 export type ScheduleClient = Pick<GatewayClient, "scheduled" | "cancelScheduled" | "events">;
+
+/** Helpers (spec §9.5): long work handed to child agents, each in its own chat. */
+export type HelpersClient = Pick<GatewayClient, "helpers" | "stopHelper" | "conversationHelpers">;
 
 /** What Enzo remembers (spec §6.2): seeing it and forgetting a part of it. */
 export type MemoryClient = Pick<GatewayClient, "memories" | "forgetMemory">;
@@ -201,8 +205,11 @@ export type ChatAction =
   | { type: "brain_chosen"; brain: string | null }
   | { type: "brains_loaded"; brains: Brain[] }
   | { type: "approval_decided"; id: string; approved: boolean }
-  | { type: "event"; event: AgentEvent; at?: number }
-  | { type: "scheduled"; text: string };
+  /** `chat`: the chat the stream belongs to; ignored once another chat is on screen. */
+  | { type: "event"; event: AgentEvent; at?: number; chat?: string | null }
+  | { type: "scheduled"; text: string }
+  /** A line about a helper (it finished, waits for approval, was stopped). */
+  | { type: "notice"; text: string };
 
 /** Said when a message is refused because a reply is still being written (HTTP 409). */
 export const BUSY = "Not sent: Enzo is still finishing the last reply.";
@@ -413,7 +420,11 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
     case "scheduled":
       // Shown where the user is now: it is about them, whichever chat it was set in.
       return { ...state, items: [...state.items, scheduledItem(action.text)] };
+    case "notice":
+      return { ...state, items: [...state.items, { role: "notice", text: action.text }] };
     case "event":
+      // A stream for a chat that is no longer on screen (the user opened another) says nothing.
+      if (action.chat && action.chat !== state.conversationId) return state;
       return onEvent(state, action.event, action.at);
   }
 }
@@ -529,6 +540,7 @@ export const scheduledItem = (text: string): ChatItem => ({
 
 /** What a live event says in the chat on screen; null when it should not interrupt. */
 export function eventText(event: GatewayEvent): string | null {
+  if (event.kind === "helper") return event.words;
   if (event.kind === "reminder") return `Reminder: ${event.words}`;
   return event.outcome === "quiet" ? null : event.words;
 }
@@ -557,6 +569,7 @@ export function toItems(
   messages: StoredMessage[],
   usage?: ConversationUsage | null,
   notices: ScheduledNotice[] = [],
+  helpers: HelperNotice[] = [],
 ): ChatItem[] {
   const results = new Map<string, StepStatus>();
   for (const m of messages) {
@@ -572,16 +585,31 @@ export function toItems(
     const text = noticeText(n);
     if (text) items.push(scheduledItem(text));
   };
+  // Lines about helpers sit where they arrived, the same way.
+  const helped = (n: HelperNotice) => items.push({ role: "notice", text: n.text });
   messages.forEach((m, index) => {
     for (const n of notices) if (n.after === index) arrive(n);
+    for (const n of helpers) if (n.after === index) helped(n);
     // Where older messages were summarized for the model: the chat still shows them all.
     if (m.summarized) items.push({ role: "notice", text: SUMMARIZED });
     addMessage(m);
   });
   for (const n of notices) if (n.after >= messages.length) arrive(n);
+  for (const n of helpers) if (n.after >= messages.length) helped(n);
   function addMessage(m: StoredMessage): void {
     if (m.role !== "user" && m.role !== "assistant") return;
     const texts = m.parts.filter((p) => p.type === "text" && p.text).map((p) => p.text as string);
+    if (m.role === "user" && m.origin === "handoff") {
+      // Enzo handing helpers' reports to itself: the line about the helper says it.
+      starts.push(items.length);
+      return;
+    }
+    if (m.role === "user" && m.origin === "brief") {
+      // A helper's chat starts with the work it was given, not with something the user typed.
+      starts.push(items.length);
+      items.push({ role: "notice", text: `Helper's brief: ${texts[0] ?? ""}` });
+      return;
+    }
     if (m.role === "user" && m.origin === "schedule") {
       // A scheduled task's run started this turn: show it as a run, not as the user typing.
       starts.push(items.length);

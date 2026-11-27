@@ -242,6 +242,28 @@ describe("goals (spec §6.4)", () => {
   });
 });
 
+describe("helpers (spec §9.5)", () => {
+  it("lists them, stops one, and reads a chat's lines about them", async () => {
+    const seen: Seen[] = [];
+    const client = new GatewayClient({
+      baseUrl: "http://enzo",
+      fetch: fakeFetch((url) => {
+        if (url.endsWith("/stop")) return Response.json({ stopped: true, helper: { id: 3 } });
+        if (url.includes("/conversations/")) return Response.json([{ helper: 3, text: "Done." }]);
+        return Response.json({ helpers: [{ id: 3, title: "Compare laptops" }] });
+      }, seen),
+    });
+    expect((await client.helpers()).map((h) => h.title)).toEqual(["Compare laptops"]);
+    expect((await client.stopHelper(3)).stopped).toBe(true);
+    expect((await client.conversationHelpers("c 1")).map((n) => n.text)).toEqual(["Done."]);
+    expect(seen.map((s) => `${s.init.method} ${s.url}`)).toEqual([
+      "GET http://enzo/helpers",
+      "POST http://enzo/helpers/3/stop",
+      "GET http://enzo/conversations/c%201/helpers",
+    ]);
+  });
+});
+
 describe("reminders (spec §9.3)", () => {
   it("lists and cancels them, and reads a chat's delivered ones", async () => {
     const seen: Seen[] = [];
@@ -273,7 +295,8 @@ describe("reminders (spec §9.3)", () => {
           'event: something_new\ndata: {"x":1}\n\n' +
             "event: reminder\ndata: {not json\n\n" +
             'event: reminder\ndata: {"reminder":3,"text":"Call mom","words":"Call mom","late":false,"conversation_id":"c1","next":null}\n\n' +
-            'event: task\ndata: {"task":5,"outcome":"reported","words":"Weather: sunny","chat_id":"t1","conversation_id":"c1","stopped":false}\n\n',
+            'event: task\ndata: {"task":5,"outcome":"reported","words":"Weather: sunny","chat_id":"t1","conversation_id":"c1","stopped":false}\n\n' +
+            'event: helper\ndata: {"helper":2,"status":"done","words":"Helper #2 finished.","chat_id":"h2","conversation_id":"c1"}\n\n',
         ),
       ),
     });
@@ -297,6 +320,14 @@ describe("reminders (spec §9.3)", () => {
         chat_id: "t1",
         conversation_id: "c1",
         stopped: false,
+      },
+      {
+        kind: "helper",
+        helper: 2,
+        status: "done",
+        words: "Helper #2 finished.",
+        chat_id: "h2",
+        conversation_id: "c1",
       },
     ]);
   });

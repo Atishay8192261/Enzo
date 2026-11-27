@@ -7,11 +7,20 @@ import {
   describeConnection,
   GOOGLE_PERMISSIONS_URL,
   type GoalsClient,
+  type HelpersClient,
   type MemoryClient,
   resolveChoice,
   type ScheduleClient,
 } from "@enzo/chat";
-import type { Goal, GoalList, GoogleAccess, MemoryList, Remembered, Scheduled } from "@enzo/sdk";
+import type {
+  Goal,
+  GoalList,
+  GoogleAccess,
+  Helper,
+  MemoryList,
+  Remembered,
+  Scheduled,
+} from "@enzo/sdk";
 
 /**
  * What a command shows, as a card under its own echo: plain text, text marked as an error, or
@@ -29,10 +38,12 @@ export type PickerKind =
   | "memory"
   | "forget"
   | "reminders"
-  | "cancel";
+  | "cancel"
+  | "helpers"
+  | "stophelper";
 
 export interface CommandContext {
-  client: ChatClient & AccountsClient & MemoryClient & ScheduleClient & GoalsClient;
+  client: ChatClient & AccountsClient & MemoryClient & ScheduleClient & GoalsClient & HelpersClient;
   /** The conversation's current choice: a model, a tier, or null for smart routing. */
   current: string | null;
   /** This chat's id; null while it is fresh (created by its first message). */
@@ -80,6 +91,8 @@ export interface CommandContext {
   cancelReminder(): Promise<Reply>;
   /** The user kept the reminder. */
   keepReminder(): void;
+  /** The helpers to open (all) or stop (those at work), or why there is none. */
+  pickHelper(stop: boolean): Promise<Reply>;
   quit(): void;
 }
 
@@ -365,6 +378,27 @@ const COMMANDS: Record<string, Command> = {
       return ctx.askCancel(id);
     },
   },
+  "/helpers": {
+    usage: "/helpers [stop]",
+    summary: "long work Enzo handed to helpers: open one's chat, or stop one",
+    args: 0,
+    also: ["stop"],
+    run: (ctx, arg) => ctx.pickHelper(arg === "stop"),
+  },
+  "/stophelper": {
+    usage: "/stophelper <number>",
+    summary: "stop a helper (the /helpers stop list uses it)",
+    args: 1,
+    hidden: true,
+    async run(ctx, arg) {
+      const id = Number(arg);
+      if (!Number.isInteger(id) || id < 1) return error("Usage: /helpers stop");
+      const { stopped, helper } = await ctx.client.stopHelper(id);
+      return stopped
+        ? `Stopped helper #${id} “${helper.title}”. Its work stopped.`
+        : `Helper #${id} was not working any more (${HELPER_STATUS[helper.status]}).`;
+    },
+  },
   "/help": {
     usage: "/help",
     summary: "commands and keys",
@@ -390,7 +424,7 @@ export const KEYS: [string, string][] = [
   ["ctrl+r", "your past chats"],
   ["/", "commands (tab or enter completes)"],
   ["ctrl+p", "all commands"],
-  ["esc", "stop the reply · close a list"],
+  ["esc", "stop the reply (in a helper's chat: the helper) · close a list"],
   ["pgup / pgdn", "scroll the chat"],
   ["select with the mouse", "copies the text"],
   ["ctrl+c", "clear the message · quit when empty"],
@@ -523,6 +557,25 @@ export function goalsReply({ goals, file }: GoalList, done = false): Reply {
     ...copy,
   );
   return lines.join("\n");
+}
+
+/** How a helper is doing, in words. */
+export const HELPER_STATUS: Record<Helper["status"], string> = {
+  working: "working",
+  waiting: "waits for your approval",
+  done: "finished",
+  failed: "could not finish",
+  stopped: "stopped",
+  interrupted: "interrupted",
+};
+
+/** A helper's line in the lists: "working · 4 steps · $0.02". */
+export function helperLine(h: Helper): string {
+  const steps = `${h.steps} step${h.steps === 1 ? "" : "s"}`;
+  const cost = h.plan ? "ChatGPT plan" : h.cost_usd === null ? "cost unknown" : null;
+  const spent = cost ?? (h.cost_usd ? `$${h.cost_usd.toFixed(2)}` : null);
+  const asks = h.status === "waiting" && h.waiting ? `: ${h.waiting}` : "";
+  return [`${HELPER_STATUS[h.status]}${asks}`, steps, ...(spent ? [spent] : [])].join(" · ");
 }
 
 /** A reminder or task as one line: "Fri 21 Nov 09:00 · Call mom". */

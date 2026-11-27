@@ -6,6 +6,7 @@ import type {
   ChatsClient,
   ConversationMemory,
   GoalsClient,
+  HelpersClient,
   MemoryClient,
   ScheduleClient,
   Start,
@@ -16,6 +17,7 @@ import type {
   Conversation,
   ConversationUsage,
   GatewayEvent,
+  Helper,
   ProviderConnection,
   Usage,
 } from "@enzo/sdk";
@@ -143,7 +145,8 @@ export type Client = ChatClient &
   ChatsClient &
   MemoryClient &
   ScheduleClient &
-  GoalsClient;
+  GoalsClient &
+  HelpersClient;
 
 /** An event stream with nothing to say: it stays open until the app closes it. */
 export async function* quiet(signal?: AbortSignal): AsyncGenerator<GatewayEvent> {
@@ -151,6 +154,28 @@ export async function* quiet(signal?: AbortSignal): AsyncGenerator<GatewayEvent>
     if (signal?.aborted) return resolve();
     signal?.addEventListener("abort", () => resolve(), { once: true });
   });
+}
+
+/** A helper as the gateway lists it. */
+export function helperOf(id: number, more: Partial<Helper> = {}): Helper {
+  return {
+    id,
+    title: "Compare 5 laptops",
+    status: "working",
+    depth: 1,
+    chat_id: `h${id}`,
+    parent_id: "c1",
+    conversation_id: "c1",
+    coordinator_id: null,
+    created_at: "2026-11-27T10:00:00Z",
+    finished_at: null,
+    steps: 4,
+    calls: 5,
+    cost_usd: 0.02,
+    plan: false,
+    waiting: null,
+    ...more,
+  };
 }
 
 export function fakeClient(overrides: Partial<Client> = {}): Client {
@@ -195,6 +220,9 @@ export function fakeClient(overrides: Partial<Client> = {}): Client {
     scheduled: async () => [],
     cancelScheduled: mock(async () => {}),
     conversationScheduled: async () => [],
+    helpers: async () => [],
+    stopHelper: mock(async (id: number) => ({ stopped: true, helper: helperOf(id) })),
+    conversationHelpers: async () => [],
     events: quiet,
     forgetMemory: mock(async () => {}),
     chooseBrain: mock(async () => {}),
