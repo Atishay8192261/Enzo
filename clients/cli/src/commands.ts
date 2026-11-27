@@ -11,7 +11,16 @@ import {
   resolveChoice,
   type ScheduleClient,
 } from "@enzo/chat";
-import type { Goal, GoalList, GoogleAccess, MemoryList, Remembered, Scheduled } from "@enzo/sdk";
+import type {
+  Goal,
+  GoalList,
+  GoogleAccess,
+  MemoryList,
+  Remembered,
+  Scheduled,
+  Watch,
+  WatchCheck,
+} from "@enzo/sdk";
 
 /**
  * What a command shows, as a card under its own echo: plain text, text marked as an error, or
@@ -29,7 +38,9 @@ export type PickerKind =
   | "memory"
   | "forget"
   | "reminders"
-  | "cancel";
+  | "cancel"
+  | "watches"
+  | "enable";
 
 export interface CommandContext {
   client: ChatClient & AccountsClient & MemoryClient & ScheduleClient & GoalsClient;
@@ -80,6 +91,16 @@ export interface CommandContext {
   cancelReminder(): Promise<Reply>;
   /** The user kept the reminder. */
   keepReminder(): void;
+  /** Ask before cancelling this watch. */
+  askCancelWatch(id: number): Promise<Reply>;
+  /** The watches that are off or stopped, to turn one on, or why there is none. */
+  pickWatch(): Promise<Reply>;
+  /** Read this watch now and ask before turning it on (spec §9.4: a dry run first). */
+  askEnable(id: number): Promise<Reply>;
+  /** Turn on the watch the user just confirmed, from the check they saw; null: none asked. */
+  enableWatch(): Promise<Reply>;
+  /** The user kept the watch off. */
+  keepWatchOff(): void;
   quit(): void;
 }
 
@@ -115,10 +136,20 @@ const quit: Command = {
 
 const scheduledCommand: Command = {
   usage: "/scheduled",
-  summary: "your reminders and scheduled tasks still to come (also /reminders, /tasks)",
+  summary: "your reminders, scheduled tasks and watches (also /reminders, /tasks)",
   args: 0,
   async run(ctx) {
-    return scheduledReply(await ctx.client.scheduled());
+    const [all, watches] = await Promise.all([ctx.client.scheduled(), ctx.client.watches()]);
+    return scheduledReply(all, watches);
+  },
+};
+
+const watchesCommand: Command = {
+  usage: "/watches",
+  summary: "what Enzo watches for a change, and what each last read (also /hooks)",
+  args: 0,
+  async run(ctx) {
+    return watchesReply(await ctx.client.watches());
   },
 };
 
@@ -347,9 +378,29 @@ const COMMANDS: Record<string, Command> = {
   "/scheduled": scheduledCommand,
   "/reminders": { ...scheduledCommand, usage: "/reminders", hidden: true },
   "/tasks": { ...scheduledCommand, usage: "/tasks", hidden: true },
+  "/watches": watchesCommand,
+  "/hooks": { ...watchesCommand, usage: "/hooks", hidden: true },
+  "/enable": {
+    usage: "/enable [watch]",
+    summary: "turn a watch on, after seeing what it reads now (asks first)",
+    args: 1,
+    optional: true,
+    also: ["keep", "confirm"],
+    async run(ctx, arg) {
+      if (arg === "keep") {
+        ctx.keepWatchOff();
+        return "Left off.";
+      }
+      if (arg === "confirm") return ctx.enableWatch();
+      if (!arg) return ctx.pickWatch();
+      const id = Number(arg);
+      if (!Number.isInteger(id) || id < 1) return error("Usage: /enable [watch]");
+      return ctx.askEnable(id);
+    },
+  },
   "/cancel": {
     usage: "/cancel",
-    summary: "cancel a reminder or scheduled task (asks first)",
+    summary: "cancel a reminder, scheduled task or watch (asks first)",
     args: 1,
     optional: true,
     also: ["keep", "confirm"],
@@ -360,6 +411,7 @@ const COMMANDS: Record<string, Command> = {
       }
       if (arg === "confirm") return ctx.cancelReminder();
       if (!arg) return ctx.pickReminder();
+      if (/^w[1-9]\d*$/.test(arg)) return ctx.askCancelWatch(Number(arg.slice(1)));
       const id = Number(arg);
       if (!Number.isInteger(id) || id < 1) return error("Usage: /cancel");
       return ctx.askCancel(id);
@@ -528,9 +580,53 @@ export function goalsReply({ goals, file }: GoalList, done = false): Reply {
 /** A reminder or task as one line: "Fri 21 Nov 09:00 · Call mom". */
 export const scheduledLine = (r: Scheduled) => `${r.next ?? "soon"} · ${r.text}`;
 
-/** What /scheduled shows: reminders, then tasks, each soonest first, with its schedule. */
-export function scheduledReply(all: Scheduled[]): Reply {
-  if (all.length === 0) {
+/** A watch as one line: "on · the kettle's price · #3". */
+export const watchLine = (w: Watch) => `${w.status} · ${w.what} · #${w.id}`;
+
+const STOPPED_WHY: Record<string, string> = {
+  rate_limited: "the site or service said too many requests",
+  auth: "its sign-in was refused or is missing",
+  failing: "its checks kept failing",
+};
+
+function watchLines(w: Watch): string[] {
+  const lines = [`• ${watchLine(w)}`, `  ${w.checks}; wakes Enzo when ${w.change}`];
+  if (w.reads) lines.push(`  Last read: ${w.reads}${w.read_at ? ` (${w.read_at})` : ""}`);
+  if (w.status === "stopped") {
+    const why = STOPPED_WHY[w.stop_reason ?? ""] ?? "it stopped";
+    lines.push(`  Stopped: ${why}${w.last_error ? ` (${w.last_error})` : ""}`);
+  }
+  if (w.status === "on" && w.next_check) lines.push(`  Next check: ${w.next_check}`);
+  return lines;
+}
+
+/** What /watches shows: each watch, what it last read, and how to turn one on or stop it. */
+export function watchesReply(watches: Watch[]): Reply {
+  if (watches.length === 0) {
+    return [
+      "Enzo is not watching anything. Ask, like “tell me when the kettle on shop.example is",
+      "under $40” or “tell me when a new email from the airline arrives”.",
+    ].join("\n");
+  }
+  const lines = ["Watches", ...watches.flatMap(watchLines)];
+  lines.push("", "/enable turns one on (after showing what it reads now). /cancel stops one.");
+  return lines.join("\n");
+}
+
+/** What /enable shows before asking: what the watch reads right now and what counts. */
+export function checkReply(c: WatchCheck): Reply {
+  return [
+    `Watch #${c.watch.id}: ${c.watch.what}`,
+    `Right now it reads: ${c.reads}${c.checked_at ? ` (checked ${c.checked_at})` : ""}`,
+    `It wakes Enzo when ${c.change}; unchanged checks stay silent.`,
+    `${c.watch.checks}${c.watch.ends ? `, ${c.watch.ends}` : ""}. Then: ${c.watch.on_change}`,
+  ].join("\n");
+}
+
+/** What /scheduled shows: reminders, then tasks, each soonest first, with its schedule; then
+ * the watches. */
+export function scheduledReply(all: Scheduled[], watches: Watch[] = []): Reply {
+  if (all.length === 0 && watches.length === 0) {
     return [
       "Nothing scheduled yet. Ask Enzo, like “remind me Friday at 9 to call mom” or",
       "“every weekday at 8, check the weather and tell me”.",
@@ -549,6 +645,10 @@ export function scheduledReply(all: Scheduled[]): Reply {
       const stop = r.stop_when ? `, until ${r.stop_when}` : "";
       lines.push(`• ${scheduledLine(r)}`, `  ${r.schedule}${stop} · #${r.id}`);
     }
+  }
+  if (watches.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("Watches", ...watches.flatMap(watchLines));
   }
   lines.push("", "To change one, just tell Enzo. /cancel removes one.");
   return lines.join("\n");

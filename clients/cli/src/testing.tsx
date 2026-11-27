@@ -195,6 +195,14 @@ export function fakeClient(overrides: Partial<Client> = {}): Client {
     scheduled: async () => [],
     cancelScheduled: mock(async () => {}),
     conversationScheduled: async () => [],
+    watches: async () => [],
+    checkWatch: mock(async () => {
+      throw new Error("no watch");
+    }),
+    enableWatch: mock(async () => {
+      throw new Error("no watch");
+    }),
+    cancelWatch: mock(async () => {}),
     events: quiet,
     forgetMemory: mock(async () => {}),
     chooseBrain: mock(async () => {}),

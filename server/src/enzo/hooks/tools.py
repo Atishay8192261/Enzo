@@ -195,7 +195,7 @@ class WatchOut(BaseModel):
     checks: str
     change: str
     ends: str
-    then: str
+    on_change: str
     #: What it read last (outside content), and when, in the user's zone.
     reads: str | None
     read_at: str | None
@@ -237,7 +237,7 @@ def watch_out(h: Hook) -> WatchOut:
         checks=f"{h.where}, {h.every}",
         change=h.change_words,
         ends=h.ends,
-        then=h.instruction,
+        on_change=h.instruction,
         reads=h.shown,
         read_at=h.local(h.value_at),
         next_check=h.local(h.next_poll_at) if h.status == "on" else None,
