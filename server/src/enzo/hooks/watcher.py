@@ -103,7 +103,7 @@ class Watcher:
 
     async def recover(self, now: datetime) -> None:
         for event in await self.hooks.recover(now):
-            log.warning("hook.interrupted", extra={"event": event})
+            log.warning("hook.interrupted", extra={"wake": event})
 
     async def tick(self, now: datetime) -> None:
         for stop in await self.hooks.end_due(now):
