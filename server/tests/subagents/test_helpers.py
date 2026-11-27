@@ -306,8 +306,15 @@ async def test_a_coordinator_fans_out_once_and_reports_when_its_helpers_are_done
             ],
         },
     )
+    hotels = r.brain.hold("Find hotels", 1)
     chat = await store.create_conversation()
     await drain(await r.service.send(chat, "Plan my trip to Lisbon and compare them"))
+    # One part is done, the other still at work: the coordinator waits for both.
+    await r.until(lambda: len(r.brain.answered("Find flights")) == 2)
+    await r.until(lambda: r.brain.asked["Plan the trip:"] == 2)
+    await asyncio.sleep(0.3)
+    assert r.brain.asked["Plan the trip:"] == 2
+    hotels.set()
     await r.until(lambda: len(r.brain.answered(MAIN)) == 3, limit_s=10)
     await r.idle()
     helpers = {h.title: h for h in await r.helpers.store.recent()}
@@ -333,6 +340,38 @@ async def test_a_coordinator_fans_out_once_and_reports_when_its_helpers_are_done
     assert "Limits from the user: $400" in flights
     assert "“Plan my trip to Lisbon and compare them”" in flights
     assert "You cannot hand work to other helpers" in flights
+
+
+async def test_a_report_never_lands_on_top_of_an_open_approval(store: Store) -> None:
+    """A review turn would close the user's open card as "moved on": the report waits for the
+    user's next message instead."""
+    r = rig(
+        store,
+        {
+            "Tidy the notes": [Message.assistant("Tidied 3 notes.")],
+            MAIN: [
+                delegate("d1", "Tidy notes", "Tidy the notes in the folder."),
+                Message.assistant("On it."),
+                calls(call("post_note", "n1", text="Hello")),
+                Message.assistant("Skipped the note. The helper tidied 3 notes."),
+            ],
+        },
+    )
+    tidy = r.brain.hold("Tidy the notes", 1)
+    chat = await store.create_conversation()
+    await drain(await r.service.send(chat, "Tidy my notes and compare them"))
+    await drain(await r.service.send(chat, "Post hello"))  # a card waits for the user
+    (helper,) = await r.helpers.store.open()
+    tidy.set()
+    await r.settled(helper.id, "done")
+    await r.idle()
+    assert r.brain.asked[MAIN] == 3  # no review turn: the card is still open
+    assert len(await r.service.pending_approvals(chat)) == 1
+    await drain(await r.service.send(chat, "Skip that"))
+    await r.idle()
+    assert "Tidied 3 notes." in last_user_text(r.brain.answered(MAIN)[-1])
+    assert (await r.helpers.store.get(helper.id)).delivered_at is not None  # type: ignore[union-attr]
+    assert posted == []
 
 
 async def test_helpers_at_work_are_capped(store: Store) -> None:
