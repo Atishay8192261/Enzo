@@ -442,7 +442,9 @@ describe("images in the web app (#53, ADR 0033)", () => {
     expect(screen.queryByText(/can't see images/)).toBeNull();
     fireEvent.change(screen.getByLabelText("Message"), { target: { value: "what is it?" } });
     await waitFor(() =>
-      expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false),
+      expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
     );
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(send).toHaveBeenCalled());
