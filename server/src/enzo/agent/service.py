@@ -97,7 +97,7 @@ class TurnHooks(Protocol):
 type ServiceEvent = AgentEvent | TurnFailed | BrowserInUse
 #: Who wrote a turn's new message: the user, a scheduled task's run (ADR 0022), a helper's brief
 #: (the first message of a helper's own chat) or a handoff (helpers' reports, ADR 0028).
-type Origin = Literal["user", "schedule", "brief", "handoff"]
+type Origin = Literal["user", "schedule", "brief", "handoff", "watch"]
 _END = object()
 
 

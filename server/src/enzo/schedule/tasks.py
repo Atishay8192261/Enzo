@@ -33,7 +33,7 @@ _LEAD = re.compile(r"^\s*(?:[-*•>]+|#+|\d+[.)])\s+")
 _MARKS = re.compile(r"\*\*|__|`")
 
 #: Stops that mean the run did not do its work.
-_FAILED_STOPS = {"brain_failure", "refusal", "over_budget", "truncated", "max_steps", "cancelled"}
+FAILED_STOPS = {"brain_failure", "refusal", "over_budget", "truncated", "max_steps", "cancelled"}
 
 
 class TaskRunner:
@@ -143,7 +143,7 @@ def judge(job: Job, done: TurnOutcome | None, finished: str | None) -> tuple[Out
     summary = first_line(done.text)
     if done.stop == "approval_pending":
         return "needs_approval", "It waits for your approval to go on."
-    if done.stop in _FAILED_STOPS:
+    if done.stop in FAILED_STOPS:
         return "failed", summary or f"The run stopped ({done.stop})."
     if finished is not None:
         return "finished", summary or finished

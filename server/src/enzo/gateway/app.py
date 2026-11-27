@@ -43,7 +43,12 @@ from enzo.gateway.helpers import helper_routes
 from enzo.gateway.memory import memory_routes
 from enzo.gateway.privacy import privacy_routes
 from enzo.gateway.scheduled import scheduled_routes
+from enzo.gateway.watches import watch_routes
 from enzo.goals import Goals
+from enzo.hooks.sources import Sources
+from enzo.hooks.store import Hooks
+from enzo.hooks.tools import watch_tools
+from enzo.hooks.watcher import Watcher
 from enzo.memory import Memory
 from enzo.paths import data_dir
 from enzo.privacy import Discretion, Rules, privacy_tools
@@ -157,6 +162,7 @@ def create_app(
     app.include_router(goal_routes(auth))
     app.include_router(scheduled_routes(auth))
     app.include_router(helper_routes(auth))
+    app.include_router(watch_routes(auth))
     app.include_router(connection_routes(auth))
     app.include_router(chatgpt_routes(auth, cfg.port))
     app.include_router(google_routes(auth, cfg.port))
@@ -174,22 +180,9 @@ async def _running(
     """Everything a real gateway runs: the store, brains, tools, connectors and reminders."""
     store = Store.from_url(cfg.database_url)
     config = load_config(cfg.brains_config)
-    acct = accounts or build_accounts(cfg, config)
     # One client for tools and sign-in: no automatic redirects (read_page checks every hop).
     http = httpx2.AsyncClient(timeout=httpx2.Timeout(20.0), follow_redirects=False)
-    if acct.chatgpt is None:
-        acct.enable_chatgpt(host_id(cfg.config_dir), http)
-    if acct.google is None:
-        acct.enable_google(http, configured=_google_client(cfg))
-    google = GoogleConnectors(lambda: acct.google)
-    acct.set_google_check(google.check)
-    env = os.environ if cfg.use_env_keys else None  # opt-in only (#24)
-    router = Router(
-        config,
-        build=lambda c: build_brain(c, env, keys=acct.auth),
-        available=lambda c: acct.usable(c) or has_key(c, env),
-    )
-    acct.on_change(router.forget)
+    acct, google, router = _accounts_and_brains(cfg, config, accounts, http)
     app.state.accounts = acct
     outputs, index = _context_stores(store, config, cfg)
     memory = Memory(store.engine, cfg.workspace_dir, index=index)
@@ -199,7 +192,6 @@ async def _running(
     goals = Goals(store.engine, cfg.workspace_dir, schedule)
     notify = desktop if cfg.notify else silent
     runner = Runner(schedule, Bus(), notify=notify, on_idle=on_idle)
-    app.state.background = Background(schedule, runner.bus, runner)
     finished = FinishedTasks()
     # Enzo's own browser profile, in its private data folder (ADR 0027).
     browsers = _browsers(cfg)
@@ -222,6 +214,8 @@ async def _running(
         ],
         retain=outputs,
     )
+    watcher = _watcher(store, http, tools, runner, cfg, notify)
+    app.state.background = Background(schedule, runner.bus, runner, watcher)
     service = ConversationService(
         store,
         router,
@@ -239,6 +233,7 @@ async def _running(
     # Scheduled tasks run as agent turns: the runner hands each due one to the task runner.
     tasks = TaskRunner(schedule, service, runner.bus, finished, notify=notify)
     runner.connect(tasks.start, lambda: tasks.running > 0 or helpers.busy)
+    watcher.connect(service, runner.poke)
     connectors = Connectors(tools, acct, http, google)
     await connectors.refresh("github")
     await connectors.refresh("google")
@@ -253,10 +248,35 @@ async def _running(
         await index.close()
         await runner.stop()
         await tasks.stop()
+        await watcher.stop()
         await browsers.close_all()
         await connectors.close()
         await http.aclose()
         await store.close()
+
+
+def _accounts_and_brains(
+    cfg: Settings,
+    config: BrainsConfig,
+    accounts: AccountsService | None,
+    http: httpx2.AsyncClient,
+) -> tuple[AccountsService, GoogleConnectors, Router]:
+    """The user's own accounts (sign-ins and keys) and the router over the brains they open."""
+    acct = accounts or build_accounts(cfg, config)
+    if acct.chatgpt is None:
+        acct.enable_chatgpt(host_id(cfg.config_dir), http)
+    if acct.google is None:
+        acct.enable_google(http, configured=_google_client(cfg))
+    google = GoogleConnectors(lambda: acct.google)
+    acct.set_google_check(google.check)
+    env = os.environ if cfg.use_env_keys else None  # opt-in only (#24)
+    router = Router(
+        config,
+        build=lambda c: build_brain(c, env, keys=acct.auth),
+        available=lambda c: acct.usable(c) or has_key(c, env),
+    )
+    acct.on_change(router.forget)
+    return acct, google, router
 
 
 def _context_stores(
@@ -301,6 +321,24 @@ def _browsers(cfg: Settings) -> Browsers:
     )
     browsers.recover()  # a browser left behind by a gateway that crashed
     return browsers
+
+
+def _watcher(
+    store: Store,
+    http: httpx2.AsyncClient,
+    tools: ToolRegistry,
+    runner: Runner,
+    cfg: Settings,
+    notify: Notify,
+) -> Watcher:
+    """Watches check on the runner's clock with no model call; a change wakes a turn (ADR 0031).
+    Their checks read through the connected accounts' tools, found by name when they run."""
+    sources = Sources(http=http, tools=tools.get, own_port=cfg.port)
+    watcher = Watcher(Hooks(store.engine), sources, runner.bus, notify=notify)
+    for t in watch_tools(watcher, on_set=runner.poke):
+        tools.register(t)
+    runner.add(watcher)
+    return watcher
 
 
 def _google_client(cfg: Settings) -> GoogleClient | None:

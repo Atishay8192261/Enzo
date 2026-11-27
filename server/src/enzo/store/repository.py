@@ -147,7 +147,7 @@ class Store:
 
     async def origins(self, conversation_id: uuid.UUID) -> dict[int, str]:
         """Messages the user did not type, by position: who wrote each (a scheduled run, a
-        helper's brief, helpers' reports)."""
+        watch, a helper's brief, helpers' reports)."""
         async with self._sessions() as session:
             origins = await session.scalars(
                 select(MessageRow.origin)
@@ -176,11 +176,13 @@ class Store:
         turn_id: str | None = None,
         marked: tuple[int, str] | None = None,
         compactions: Sequence[Compaction] = (),
+        origin: str = "schedule",
     ) -> None:
         """Persist one turn atomically: all of it or none of it (its summaries included).
 
         ``marked``: the position (in ``messages``) of a message the user did not type, and who
-        wrote it ("schedule", "brief", "handoff"). A long turn may be saved in several parts.
+        wrote it ("schedule", "watch", "brief", "handoff"). A long turn may be saved in several
+        parts.
         """
         async with self._sessions.begin() as session:
             # Lock the conversation so two turns cannot interleave their message numbers.

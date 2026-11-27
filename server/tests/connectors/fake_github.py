@@ -18,6 +18,11 @@ class State:
     calls: list[str] = field(default_factory=list)
     rate_limited: bool = False
     bad_token: bool = False
+    #: A pull request's check runs and comments, as GitHub's server sends them (minimal types).
+    checks: list[dict[str, object]] = field(default_factory=list)
+    status: str = "pending"
+    statuses: int = 0
+    comments: list[dict[str, object]] = field(default_factory=list)
 
 
 def fake_github() -> tuple[MCPServer, State]:
@@ -39,8 +44,23 @@ def fake_github() -> tuple[MCPServer, State]:
         return json.dumps({"login": "octo"})
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True, title="Read a pull request"))
-    def pull_request_read(method: str, owner: str, repo: str, pullNumber: int) -> str:  # noqa: N803 - GitHub's names
+    def pull_request_read(
+        method: str,
+        owner: str,
+        repo: str,
+        pullNumber: int,  # noqa: N803 - GitHub's names
+        perPage: int = 30,  # noqa: N803
+        page: int = 1,
+    ) -> str:
         seen(f"pull_request_read:{method}")
+        if method == "get_check_runs":
+            return json.dumps({"total_count": len(state.checks), "check_runs": state.checks})
+        if method == "get_status":
+            return json.dumps(
+                {"state": state.status, "sha": state.head, "total_count": state.statuses}
+            )
+        if method == "get_comments":  # oldest first, a page at a time
+            return json.dumps(state.comments[(page - 1) * perPage : page * perPage])
         if method == "get":
             return json.dumps(
                 {"number": pullNumber, "title": "Add greeting", "head": {"sha": state.head}}

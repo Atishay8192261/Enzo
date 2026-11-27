@@ -10,6 +10,7 @@ import contextlib
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Protocol
 
 from enzo.schedule.bus import Bus, Event
 from enzo.schedule.notify import Notify, silent
@@ -19,6 +20,22 @@ from enzo.schedule.store import Delivery, Schedule, TaskStart
 log = logging.getLogger("enzo.schedule")
 
 TICK_S = 30.0
+
+
+class Worker(Protocol):
+    """Other background work the runner drives on the same clock (watches, ADR 0031)."""
+
+    async def recover(self, now: datetime) -> None:
+        """After a restart: settle what was going when Enzo stopped."""
+
+    async def tick(self, now: datetime) -> None:
+        """Start whatever is due now (it runs on its own; this never waits for it)."""
+
+    async def next_due(self) -> datetime | None:
+        """When there is something to do next; None: nothing left."""
+
+    def busy(self) -> bool:
+        """Something is running: the gateway is not idle."""
 
 
 class Runner:
@@ -43,6 +60,7 @@ class Runner:
         self._on_task: Callable[[TaskStart], None] | None = None
         #: A task run is going: not idle, even with nothing left to schedule.
         self._busy: Callable[[], bool] = lambda: False
+        self._workers: list[Worker] = []
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
 
@@ -52,6 +70,10 @@ class Runner:
     def connect(self, on_task: Callable[[TaskStart], None], busy: Callable[[], bool]) -> None:
         """Tasks run through the agent, which is built after the runner: hand it over here."""
         self._on_task, self._busy = on_task, busy
+
+    def add(self, worker: Worker) -> None:
+        """Drive more background work on this clock (added before ``start``)."""
+        self._workers.append(worker)
 
     def poke(self) -> None:
         """Something changed (a reminder was set): look again now."""
@@ -80,6 +102,8 @@ class Runner:
                     extra={"task": start.job.id, "run": start.run, "late": start.late},
                 )
                 self._on_task(start)
+        for worker in self._workers:
+            await worker.tick(self._clock())
         return deliveries
 
     async def _loop(self) -> None:
@@ -90,11 +114,17 @@ class Runner:
                 )
         except Exception:
             log.exception("task.recover_failed")
+        for worker in self._workers:
+            try:
+                await worker.recover(self._clock())
+            except Exception:
+                log.exception("worker.recover_failed")
         while True:
             try:
                 await self.tick()
-                upcoming = await self._schedule.next_due()
-                if upcoming is None and not self._busy() and self._on_idle is not None:
+                upcoming = await self.next_due()
+                busy = self._busy() or any(w.busy() for w in self._workers)
+                if upcoming is None and not busy and self._on_idle is not None:
                     self._on_idle()
             except Exception:  # keep delivering: one bad tick must not end reminders
                 log.exception("reminder.tick_failed")
@@ -105,6 +135,13 @@ class Runner:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._wake.wait(), wait)
             self._wake.clear()
+
+    async def next_due(self) -> datetime | None:
+        """The soonest reminder, task or other work still to come."""
+        times = [await self._schedule.next_due()]
+        times += [await w.next_due() for w in self._workers]
+        found = [t for t in times if t is not None]
+        return min(found) if found else None
 
 
 def _words(d: Delivery) -> str:
