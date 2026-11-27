@@ -189,7 +189,9 @@ async def _running(
     config = load_config(cfg.brains_config)
     # One client for tools and sign-in: no automatic redirects (read_page checks every hop).
     http = httpx2.AsyncClient(timeout=httpx2.Timeout(20.0), follow_redirects=False)
-    acct, google, router = _accounts_and_brains(cfg, config, accounts, http)
+    # Images the user attaches, and screenshots, kept private with where each came from (ADR 0033).
+    images = ImageStore(data_dir() / "images")
+    acct, google, router = _accounts_and_brains(cfg, config, accounts, http, images)
     app.state.accounts = acct
     outputs, index = _context_stores(store, config, cfg)
     memory = Memory(store.engine, cfg.workspace_dir, index=index)
@@ -200,8 +202,6 @@ async def _running(
     notify = desktop if cfg.notify else silent
     runner = Runner(schedule, Bus(), notify=notify, on_idle=on_idle)
     finished = FinishedTasks()
-    # Images the user attaches, and screenshots, kept private with where each came from (ADR 0033).
-    images = ImageStore(data_dir() / "images")
     # Enzo's own browser profile, in its private data folder (ADR 0027).
     browsers = _browsers(cfg)
     tools = ToolRegistry(
@@ -271,6 +271,7 @@ def _accounts_and_brains(
     config: BrainsConfig,
     accounts: AccountsService | None,
     http: httpx2.AsyncClient,
+    images: ImageStore,
 ) -> tuple[AccountsService, GoogleConnectors, Router]:
     """The user's own accounts (sign-ins and keys) and the router over the brains they open."""
     acct = accounts or build_accounts(cfg, config)
@@ -281,8 +282,6 @@ def _accounts_and_brains(
     google = GoogleConnectors(lambda: acct.google)
     acct.set_google_check(google.check)
     env = os.environ if cfg.use_env_keys else None  # opt-in only (#24)
-    # Images the user attaches and screenshots, kept privately with provenance (ADR 0033).
-    images = ImageStore(data_dir() / "images")
     router = Router(
         config,
         build=lambda c: build_brain(c, env, keys=acct.auth),

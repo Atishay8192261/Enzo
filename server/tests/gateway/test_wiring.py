@@ -125,12 +125,12 @@ async def test_the_app_registers_the_core_tools(
             "browser_screenshot",
             "add_discretion_rule",
             "remove_discretion_rule",
-            "delegate",
-            "stop_helper",
             "watch",
             "enable_watch",
             "list_watches",
             "cancel_watch",
+            "delegate",
+            "stop_helper",
         ]
         # Tools that show the brain an image are left out for a brain that cannot see.
         blind = [s.name for s in registry.specs(vision=False)]
