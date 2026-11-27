@@ -18,7 +18,7 @@ from enzo.memory import Memory
 from enzo.memory.memory_md import MEMORY_FILE
 from enzo.schedule import Schedule
 from enzo.semantic import SemanticIndex
-from enzo.semantic.index import fuse
+from enzo.semantic.index import SOURCES, fuse
 from enzo.store.repository import Store
 from enzo.store.schema import ChunkRow
 from enzo.tools.stored import OutputStore
@@ -479,3 +479,63 @@ async def test_a_model_that_could_not_be_fetched_is_tried_again_later_not_at_onc
     monkeypatch.setattr("enzo.semantic.index.time.monotonic", lambda: 10.0**9)
     await index._prepare()
     assert embedder.prepared == 2
+
+
+# ---- filters in the query itself, not only in the check after it ---------------------------
+# Each candidate the query lets through costs a slot and a check: what no longer holds must not
+# be a candidate at all (mutation testing found these held only by the check after the query).
+
+
+async def test_corrected_memories_and_trashed_chats_are_not_even_candidates(
+    store: Store, memory: Memory, index: SemanticIndex
+) -> None:
+    old = await memory.remember("Prefers window seats on flights.", kind="preference")
+    await index.sync()
+    await memory.remember("Prefers aisle seats on flights.", kind="preference", replaces=old.id)
+    trashed = await chat(store, "Old", ("Find me ramen", "Ippudo on 4th."))
+    await index.sync(embed=0)  # the corrected memory's chunk is still there until the next pass
+    async with store.engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO chunks (source, key, part, memory_id, text, digest, happened_at, "
+                "model, embedding) SELECT 'memory', 'memory:old', 0, :i, 'Prefers window seats "
+                "on flights.', 'x', now(), model, embedding FROM chunks WHERE memory_id = :n"
+            ),
+            {"i": old.id, "n": old.id + 1},
+        )
+    await store.move_to_trash(trashed)
+    vector = (await index.embedder.embed(["plane seat ramen noodles"], use="query"))[0]
+    candidates = {c for c, _s in await index._nearest(vector, set(SOURCES), None, untrusted=True)}
+    words = set(await index._words("plane seat ramen noodles", set(SOURCES), None, untrusted=True))
+    rows = {c.id: c for c in await chunks(store)}
+    assert not any(rows[c].memory_id == old.id for c in candidates | words)
+    assert not any(rows[c].conversation_id == trashed for c in candidates | words)
+    assert candidates  # the current memory is still a candidate
+
+
+async def test_past_chats_recalled_with_a_message_are_found_by_meaning_not_by_a_shared_name(
+    store: Store, index: SemanticIndex
+) -> None:
+    talk = (
+        "Priya sent the quarterly budget spreadsheet with revenue forecasts, hiring plans and "
+        "office lease numbers for next year"
+    )
+    await chat(store, "Budget", (talk, "Got it."))
+    await index.sync()
+    by_words = await index.find("Who is Priya?", sources={"turn"}, limit=2, mode="recall")
+    assert by_words  # the name is there: a search by words finds it
+    meaning = await index.find(
+        "Who is Priya?", sources={"turn"}, limit=2, mode="recall", by_meaning_only=True
+    )
+    assert meaning == []  # but it is not about who Priya is: it does not ride with the message
+
+
+async def test_a_turn_chunk_that_no_longer_matches_its_chat_is_dropped(
+    store: Store, index: SemanticIndex
+) -> None:
+    await chat(store, "Lunch", ("Find me ramen", "Ippudo on 4th."))
+    await index.sync()
+    assert await index.find("ramen noodles", sources={"turn"}, limit=3, mode="search")
+    async with store.engine.begin() as conn:  # the index says something the chat never did
+        await conn.execute(text("UPDATE chunks SET text = 'User: Find me ramen\nEnzo: Nothing.'"))
+    assert await index.find("ramen noodles", sources={"turn"}, limit=3, mode="search") == []
