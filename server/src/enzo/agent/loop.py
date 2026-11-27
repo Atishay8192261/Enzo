@@ -175,10 +175,7 @@ async def run_turn(  # noqa: PLR0913 - keyword-only turn settings
     while True:
         unanswered = open_calls(turn.messages)
         if unanswered:
-            checks = (
-                _gate(registry, c, privacy, turn.messages) if c.id not in declined else _refused(c)
-                for c in unanswered
-            )
+            checks = (_gate(registry, c, privacy, turn.messages, declined) for c in unanswered)
             gates = dict(
                 zip((c.id for c in unanswered), await asyncio.gather(*checks), strict=True)
             )
@@ -402,11 +399,22 @@ class _Gate:
     refused: bool = False
 
 
-async def _refused(call: ToolCall) -> _Gate:
-    return _Gate(None, call, refused=True)
-
-
 async def _gate(
+    registry: ToolRegistry,
+    call: ToolCall,
+    privacy: OutboundCheck | None = None,
+    history: Sequence[Message] = (),
+    declined: Collection[str] = (),
+) -> _Gate:
+    """What a call needs before it runs. A call the user said no to never runs, whatever its
+    check says now; the brain still hears why its card asked (the private details it named)."""
+    gate = await _ask_for(registry, call, privacy, history)
+    if call.id not in declined:
+        return gate
+    return _Gate(None, gate.run, declined=gate.declined if gate.request else DECLINED, refused=True)
+
+
+async def _ask_for(
     registry: ToolRegistry,
     call: ToolCall,
     privacy: OutboundCheck | None = None,
@@ -479,7 +487,7 @@ async def _execute(
     for call in calls:
         gate = gates[call.id]
         if gate.refused:
-            declined[call.id] = registry.not_executed(call, "declined", DECLINED)
+            declined[call.id] = registry.not_executed(call, "declined", gate.declined)
             continue
         if gate.error is not None:
             declined[call.id] = registry.not_executed(

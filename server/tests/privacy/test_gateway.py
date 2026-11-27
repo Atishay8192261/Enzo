@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx2
 
 from enzo.agent.service import ConversationService
-from enzo.brain import Message, TextPart, ToolCall
+from enzo.brain import Message, TextPart, ToolCall, ToolResult
 from enzo.brain.config import BrainConfig
 from enzo.brain.fake import ScriptedBrain
 from enzo.brain.provider import BrainProvider
@@ -117,6 +117,33 @@ async def test_a_card_names_the_private_detail_live_and_when_the_chat_is_reopene
         (pending,) = (await c.get(f"/conversations/{cid}")).json()["pending_approvals"]
         assert pending["privacy"] == [line]
     assert tavily.queries == []
+
+
+async def test_after_a_no_the_brain_hears_to_search_without_the_detail(
+    store: Store, rules: Rules
+) -> None:
+    """Regression (found in the live check): after a no through the gateway, the brain heard
+    only "the user declined, do not retry", so it never searched again without the detail."""
+    tavily = Tavily()
+    brain = ScriptedBrain(
+        [
+            reply(search("restaurants for my pregnant wife")),
+            reply(search("alcohol-free menus Austin", cid="s2")),
+            Message.assistant("Here are some places."),
+        ]
+    )
+    async with client(service(store, brain, rules, tavily)) as c:
+        cid = await new_conversation(c)
+        streamed = await turn(c, cid, "find somewhere nice for dinner")
+        (card,) = [d for e, d in streamed if e == "approval_needed"]
+        no = {"approved": False}
+        assert (await c.post(f"/conversations/{cid}/approvals/{card['id']}", json=no)).is_success
+        resumed = events((await c.post(f"/conversations/{cid}/resume")).text)
+        told = brain.calls[1].messages[-1].parts[0]
+        assert isinstance(told, ToolResult)
+        assert "did not want this sent with a health detail" in told.content
+        assert [d["status"] for e, d in resumed if e == "tool_finished"] == ["declined", "ok"]
+    assert tavily.queries == ["alcohol-free menus Austin"]
 
 
 async def test_a_no_stays_a_no_after_the_detail_is_forgotten(
