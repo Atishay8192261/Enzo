@@ -90,12 +90,12 @@ pnpm install && pnpm check && pnpm typecheck && pnpm test && pnpm --filter @enzo
 One command runs everything from a clone (checks tools, installs, creates the DB, migrates, starts the
 gateway, opens the app): `scripts/dev.sh` (`web`, `doctor`, `setup`; also `pnpm dev`). Keep it working.
 
-Postgres 16 is required (tests use a real database, never mocks); pgvector is not used until memory
-(spec §6). Local dev URL:
+Postgres 16 with pgvector is required (tests use a real database, never mocks); pgvector serves search by
+meaning (ADR 0030). Local dev URL:
 `postgresql+asyncpg://enzo:enzo@localhost:5432/enzo` (`ENZO_DATABASE_URL` overrides). Set it up with:
 
 ```bash
-sudo apt-get install -y postgresql-16 && sudo pg_ctlcluster 16 main start
+sudo apt-get install -y postgresql-16 postgresql-16-pgvector && sudo pg_ctlcluster 16 main start
 ```
 
 ```bash
@@ -255,6 +255,13 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
   "stopped". `service.stop` is async; `ConversationService` hooks (`turn_ended`, `moved_on`, `stop`) end what a turn
   left running. Browser tests use a real Chrome/Edge/Chromium (or `ENZO_BROWSER_PATH`) and `tests/browser/shop.py`;
   with `CI` set and no browser they fail, never skip.
+- Tools that send text to third parties declare `outbound` (Outgoing: message/field/search/address); MCP servers use `McpServer.outbound` and `Ready(sends=…)` for text outside the arguments; the loop checks them in `_gate`. Privacy tests share one database: the `rules` fixture in `tests/privacy/conftest.py` clears rules; avoid names other tests remember.
+- Tests set `ENZO_EMBEDDINGS=off` (conftest) so no gateway downloads the model; real-model tests need `ENZO_TEST_MODEL_DIR`. pgvector here is 0.6.0, bundled 0.8.7: use only the `vector` type and exact `<=>`. onnxruntime has no type information (mypy override). Dev Postgres needs `postgresql-16-pgvector`.
+- `ConversationService.planner` (TurnPlanner: plan / step_saved / turn_done) shapes turns; turn_done runs after the chat is released; `background=True` turns make a user's message wait instead of 409. Test helpers: `tests/subagents/fakes.py` (RoutedBrain routes by the chat's first message; `hold(route, n)`); close rigs before truncate.
+- A gated tool's `prepare` runs again on resume: a pin that changes on every run (a timestamp) asks again forever; pin to the content. Never pass `extra={"event": …}` to a log call (it replaces the event name). Watches are a `Runner` worker (`runner.add`); in tests call `runner.tick()` then `watcher.settle()`.
+- Images (ADR 0033): `ImagePart` holds an id only; `Router.attach` fills `data`/`detail` per call and keeps them out of every dump. `POST /images` takes raw bytes (name and source in `x-enzo-image-*` headers); `CantSeeImagesError` is a 422 before anything is saved. Test images: `tests/images/pictures.py`; test the clipboard live with Xvfb + xclip. Anthropic's vision table and its reference code disagree at 2000x1500: follow the code.
+- Deploy (`enzo.deploy`, ADR 0034): ssh in BatchMode with `sh -s` scripts; the tunnel is `ssh -N -L 127.0.0.1:P:127.0.0.1:P` (same port both ends, for sign-in callbacks); a remote vault reads `config/vault.key` (0600) after `ENZO_VAULT_KEY`. Tests: `tests/deploy/fakes.py` (fake systemctl/loginctl/launchctl, `FAKE_RUN=1`, fake ssh with a port relay); one-machine live runs need `ENZO_TUNNEL_PORT`.
+- Migrations are chained in the order they landed: 0011 is unused; 0012 privacy, 0013 chunks, 0014 helpers, 0015 hooks. The messages `origin` check holds user, schedule, brief, handoff and watch.
 - `scripts/dev.sh` is tested by `server/tests/test_dev_script.py`: fake `psql`, `uname`, `node` … on PATH set
   each state (Mac/Linux, role or database missing, old server). Keep its FIX lines covered there.
 - Pin actions by commit: `git ls-remote https://github.com/<owner>/<repo> refs/tags/<tag>^{}` (the API only
@@ -347,4 +354,10 @@ Run pieces by hand: `cd server && uv run enzo-server` (port 8787), then `pnpm --
   (`enzo.evals.suite` v1, `FINGERPRINT` pinned) through the real loop and tools on each connected account's
   everyday brain (`--brain`, `--brain all`, `--task`, `--offline`), in a throwaway DB + workspace, graded from the
   records; `--compare A B` exits 1 on a pass-rate drop; `enzo trace [turn|last]`. Real-brain run pending on the laptop.
+- [x] Privacy (spec §12.5/§12.7, ADR 0029): outbound check on everything sent to others (card lines "This includes …"; an ungated search, page address or typed field asks first), discretion rules only from the user's quoted words (`/privacy`, `/privacy lift`, migration 0012), a declined call never runs.
+- [x] Search by meaning (spec §6.3, ADR 0030): local all-MiniLM-L6-v2 (ONNX, verified download, off on Intel Macs), chunks of memories/goals/turns/stored texts (migration 0013), hybrid vector + words (RRF), checked against sources; recall adds ≤2 past-chat excerpts within `[context] recall_tokens`; `search_past_chats`; `/memory` + doctor status.
+- [x] Helpers (spec §9.5, ADR 0028): `delegate` / `stop_helper`; each helper is a turn in its own chat (origin "brief"), saved step by step, resumed after a restart (then reported interrupted); handoff = notice + `/events` "helper" + fenced report reviewed by an automatic turn (origin "handoff"); two levels (a helper's helper cannot delegate); `ENZO_HELPERS_MAX` / `ENZO_HELPER_STEPS`; `/helpers [stop]`. Migration 0014.
+- [x] Watches (spec §9.4, ADR 0031): `watch` / `enable_watch` (two yeses, a dry run shown) / `list_watches` / `cancel_watch`; a page (selector, line, whole), a Gmail search, the calendar, a PR's checks or comments; no model call per check; one wake per change across restarts; a 429 stops that scope; `/watches`, `/enable`, `/cancel`. Migration 0015.
+- [x] Images (ADR 0033): image parts in messages and tool results, `[vision.*]` profiles in brains.toml, routing only to brains that can see (an honest refusal before anything is sent), EXIF/GPS stripped, a private store with provenance (§11.2), older images summarized; terminal drag or Ctrl+V, web paste/drop; `browser_screenshot`, `view_image`.
+- [x] Always on (`enzo deploy`, ADR 0034, `docs/ops/deploy.md`): over the user's own ssh; systemd user unit + linger or a LaunchAgent; `enzo` reaches it through a shared ssh tunnel; data copied only after a yes; accounts signed in again through the tunnel. Phone access (Tailscale/Cloudflare/none) is Atishay's call. Real VM and Mac pending on the laptop.
 - Then continue in the order of the spec §17 checklist.
