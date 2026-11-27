@@ -4,13 +4,19 @@ import {
   CHATGPT_USAGE_URL,
   type ChatClient,
   type ConversationMemory,
+  canSeeImages,
   describeApproval,
   formatCost,
+  type ImagesClient,
   STEP_MARK,
   stepLine,
   useChat,
+  userText,
 } from "@enzo/chat";
+import type { ImageSource, UploadedImage } from "@enzo/sdk";
 import {
+  type ClipboardEvent,
+  type DragEvent,
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
@@ -57,13 +63,29 @@ function greeting(now = new Date()): string {
   return "Good evening.";
 }
 
-export function App({ client }: { client: ChatClient & AccountsClient }) {
+/** An image in the composer: a preview of the file, and the gateway's id once it is kept. */
+interface Attached {
+  key: number;
+  name: string;
+  preview: string;
+  image: UploadedImage | null;
+}
+
+/** Said when the chat's model can't see images, before anything is sent (#53). */
+export const CANT_SEE =
+  "The current model can't see images. Choose one that can in the model menu.";
+
+export function App({ client }: { client: ChatClient & AccountsClient & ImagesClient }) {
   const { state, send, decide, chooseBrain, refreshBrains, newChat, stop } = useChat(
     client,
     browserMemory,
     "web",
   );
   const [text, setText] = useState("");
+  const [attached, setAttached] = useState<Attached[]>([]);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const picker = useRef<HTMLInputElement>(null);
+  const nextKey = useRef(0);
   const [accountsOpen, setAccountsOpen] = useState(false);
   const composer = useRef<HTMLTextAreaElement>(null);
   const end = useRef<HTMLDivElement>(null);
@@ -77,12 +99,56 @@ export function App({ client }: { client: ChatClient & AccountsClient }) {
     end.current?.scrollIntoView?.({ block: "end" });
   }, [state.items.length, state.draft, state.approvals.length, state.working]);
 
+  const uploading = attached.some((a) => a.image === null);
   const submit = (e?: FormEvent) => {
     e?.preventDefault();
     const value = text.trim();
-    if (!value || busy) return;
+    const ids = attached.flatMap((a) => (a.image ? [a.image.id] : []));
+    if ((!value && ids.length === 0) || busy || uploading) return;
     setText("");
-    void send(value);
+    for (const a of attached) URL.revokeObjectURL(a.preview);
+    setAttached([]);
+    void send(value, ids);
+  };
+
+  /** Each image is kept by the gateway at once, so a problem shows before sending. */
+  const attach = (files: File[], source: ImageSource) => {
+    setImageError(null);
+    for (const file of files.filter((f) => f.type.startsWith("image/"))) {
+      const key = nextKey.current++;
+      const preview = URL.createObjectURL(file);
+      setAttached((all) => [...all, { key, name: file.name, preview, image: null }]);
+      client
+        .uploadImage(file, { source, name: file.name, type: file.type })
+        .then((image) =>
+          setAttached((all) => all.map((a) => (a.key === key ? { ...a, image } : a))),
+        )
+        .catch((err: unknown) => {
+          URL.revokeObjectURL(preview);
+          setAttached((all) => all.filter((a) => a.key !== key));
+          const why =
+            err instanceof Error ? err.message.replace(/^.*?HTTP \d+: /, "") : String(err);
+          setImageError(`Couldn't attach ${file.name || "the image"}: ${why}`);
+        });
+    }
+  };
+  const remove = (key: number) =>
+    setAttached((all) => {
+      const gone = all.find((a) => a.key === key);
+      if (gone) URL.revokeObjectURL(gone.preview);
+      return all.filter((a) => a.key !== key);
+    });
+  const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = [...e.clipboardData.files].filter((f) => f.type.startsWith("image/"));
+    if (files.length === 0) return; // text pastes as text
+    e.preventDefault();
+    attach(files, "pasted");
+  };
+  const onDrop = (e: DragEvent<HTMLFormElement>) => {
+    const files = [...e.dataTransfer.files];
+    if (files.length === 0) return;
+    e.preventDefault();
+    attach(files, "file");
   };
 
   // Enter sends; Shift+Enter is a new line (and IME composition is left alone).
@@ -188,6 +254,8 @@ export function App({ client }: { client: ChatClient & AccountsClient }) {
                     </button>{" "}
                     to connect your ChatGPT plan, Anthropic, OpenAI, xAI or Moonshot.
                   </>
+                ) : item.role === "user" ? (
+                  userText(item)
                 ) : (
                   item.text
                 )}
@@ -267,7 +335,61 @@ export function App({ client }: { client: ChatClient & AccountsClient }) {
       </main>
 
       <footer className="dock">
-        <form className="composer" onSubmit={submit}>
+        {attached.length > 0 && (
+          <ul className="attachments" aria-label="Images to send">
+            {attached.map((a) => (
+              <li key={a.key} className={a.image ? "" : "uploading"}>
+                <img src={a.preview} alt={a.name || "image"} />
+                <button
+                  type="button"
+                  className="remove"
+                  aria-label={`Remove ${a.name || "image"}`}
+                  onClick={() => remove(a.key)}
+                >
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {attached.length > 0 && !canSeeImages(state) && (
+          <p className="banner error image-warning" role="alert">
+            {CANT_SEE}
+          </p>
+        )}
+        {imageError && (
+          <p className="banner error image-warning" role="alert">
+            {imageError}
+          </p>
+        )}
+        <form
+          className="composer"
+          onSubmit={submit}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={onDrop}
+        >
+          <button
+            type="button"
+            className="add-image ghost"
+            aria-label="Add an image"
+            title="Add an image"
+            disabled={state.status === "offline"}
+            onClick={() => picker.current?.click()}
+          >
+            +
+          </button>
+          <input
+            ref={picker}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
+            multiple
+            hidden
+            aria-label="Image file"
+            onChange={(e) => {
+              attach([...(e.target.files ?? [])], "file");
+              e.target.value = "";
+            }}
+          />
           <textarea
             ref={composer}
             aria-label="Message"
@@ -276,6 +398,7 @@ export function App({ client }: { client: ChatClient & AccountsClient }) {
             placeholder={busy ? "Enzo is working…" : "Message Enzo"}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKeyDown}
+            onPaste={onPaste}
             disabled={state.status === "offline"}
           />
           {state.status === "streaming" ? (
@@ -288,7 +411,7 @@ export function App({ client }: { client: ChatClient & AccountsClient }) {
               type="submit"
               className="send"
               aria-label="Send"
-              disabled={busy || !text.trim()}
+              disabled={busy || uploading || (!text.trim() && attached.length === 0)}
             >
               ↑
             </button>
