@@ -39,9 +39,12 @@ from enzo.gateway.connections import build_accounts, connection_routes
 from enzo.gateway.conversations import ServiceDep, conversation_routes
 from enzo.gateway.goals import goal_routes
 from enzo.gateway.google import google_routes
+from enzo.gateway.images import image_routes
 from enzo.gateway.memory import memory_routes
 from enzo.gateway.scheduled import scheduled_routes
 from enzo.goals import Goals
+from enzo.images.store import ImageStore
+from enzo.images.tools import image_tools
 from enzo.memory import Memory
 from enzo.paths import data_dir
 from enzo.schedule import Background, Bus, FinishedTasks, Runner, Schedule
@@ -72,6 +75,8 @@ class BrainOut(BaseModel):
     note: str | None
     #: The provider is connected (or has an environment key), so this brain can answer now.
     available: bool
+    #: It can see images (its vision profile in brains.toml, ADR 0033).
+    vision: bool = False
 
 
 def create_app(
@@ -137,11 +142,13 @@ def create_app(
                 recommended=b.recommended,
                 note=b.note,
                 available=router.available(n),
+                vision=router.config.sees(n),
             )
             for n, b in router.config.brains.items()
         ]
 
     app.include_router(conversation_routes(auth))
+    app.include_router(image_routes(auth))
     app.include_router(memory_routes(auth))
     app.include_router(goal_routes(auth))
     app.include_router(scheduled_routes(auth))
@@ -172,10 +179,13 @@ async def _running(
     google = GoogleConnectors(lambda: acct.google)
     acct.set_google_check(google.check)
     env = os.environ if cfg.use_env_keys else None  # opt-in only (#24)
+    # Images the user attaches and screenshots, kept privately with provenance (ADR 0033).
+    images = ImageStore(data_dir() / "images")
     router = Router(
         config,
         build=lambda c: build_brain(c, env, keys=acct.auth),
         available=lambda c: acct.usable(c) or has_key(c, env),
+        images=images,
     )
     acct.on_change(router.forget)
     app.state.accounts = acct
@@ -215,7 +225,8 @@ async def _running(
                 on_set=runner.poke,
             ),
             *stored_tools(outputs),
-            *browser_tools(browsers),
+            *image_tools(images),
+            *browser_tools(browsers, images),
         ],
         retain=outputs,
     )
@@ -228,6 +239,7 @@ async def _running(
         goals=goals,
         outputs=outputs,
         hooks=[browsers],
+        images=images,
     )
     app.state.service = service
     # Scheduled tasks run as agent turns: the runner hands each due one to the task runner.

@@ -17,8 +17,8 @@ from typing import Literal, Protocol
 from enzo.agent.history import close_open_calls, open_calls, repair
 from enzo.agent.loop import AgentEvent, StopReason, TurnDone, TurnOutcome, run_turn
 from enzo.agent.prompt import MemorySnippet, compose_prompt
-from enzo.brain.models import Message, TextPart
-from enzo.brain.router import Router, classify
+from enzo.brain.models import ImagePart, Message, TextPart
+from enzo.brain.router import NoBrainAvailableError, Router, classify
 from enzo.brain.tokens import TokenCounter
 from enzo.compaction import Compaction, ContextWindow
 from enzo.context import (
@@ -31,6 +31,7 @@ from enzo.context import (
 )
 from enzo.goals import Goals, goals_note
 from enzo.goals.store import user_today
+from enzo.images.store import ImageStore
 from enzo.memory import Fact, FileEdits, Memory
 from enzo.store.repository import ConversationInfo, Store
 from enzo.store.schema import ApprovalRow
@@ -50,6 +51,10 @@ class ConversationNotFoundError(Exception):
 
 class TurnInProgressError(Exception):
     """One turn at a time per conversation, so the transcript stays in order."""
+
+
+class ImageNotFoundError(Exception):
+    """A message names an image Enzo does not have (it was never kept, or its file is gone)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +106,7 @@ class ConversationService:
         max_steps: int = 16,
         outputs: OutputStore | None = None,
         hooks: Sequence[TurnHooks] = (),
+        images: ImageStore | None = None,
     ) -> None:
         self.store = store
         self.router = router
@@ -109,6 +115,8 @@ class ConversationService:
         self.goals = goals
         #: Long texts kept as files out of the context (pastes, older turns' long parts).
         self.outputs = outputs
+        #: Images the user attaches and tools take, kept with provenance (ADR 0033).
+        self.images = images
         #: Learns each brain's real prompt sizes across chats (ADR 0024).
         self.counter = TokenCounter(router.config)
         self._system = system_prompt
@@ -132,13 +140,20 @@ class ConversationService:
         meta: TurnMeta | None = None,
         *,
         origin: Literal["user", "schedule"] = "user",
+        images: Sequence[str] = (),
     ) -> AsyncGenerator[ServiceEvent]:
         """Start a turn for a new user message; returns its event stream.
 
         If an approval is still open, the user has moved on: its calls are closed as "not run" and
         the open approval is dropped, so nothing runs unasked and the history stays valid (#39).
+
+        ``images``: ids of kept images the user attached. If no brain this chat may use can see
+        them, the router's ``CantSeeImagesError`` says so before anything is saved or sent.
         """
         info = await self._claim(conversation_id)
+        attached = self._attached(images)
+        if attached:
+            self._check_sees(info, text)
         for hook in self._hooks:
             await hook.moved_on(conversation_id)
         history = await self.store.history(conversation_id)
@@ -147,7 +162,7 @@ class ConversationService:
             history.append(closing)
             dropped = await self.store.drop_pending(conversation_id)
             log.info("moved on", extra={"conversation": str(conversation_id), "dropped": dropped})
-        user = _user_message(text, meta or TurnMeta())
+        user = _user_message(text, meta or TurnMeta(), attached)
         # Spec §3 step 2: what Enzo remembers that this message is about. (The chat is set for
         # this request too, so the recall's log line names it.)
         conversation_var.set(str(conversation_id))
@@ -175,6 +190,26 @@ class ConversationService:
         # the user typed. (The brain sees it as a user message, written by the schedule.)
         scheduled = saved_from + (1 if closing is not None else 0) if origin == "schedule" else None
         return self._start(info, prompt, first_new=saved_from, scheduled=scheduled)
+
+    def _attached(self, ids: Sequence[str]) -> list[ImagePart]:
+        parts: list[ImagePart] = []
+        for found in dict.fromkeys(ids):
+            stored = self.images.get(found) if self.images else None
+            if stored is None:
+                msg = "That image is no longer available. Attach it again."
+                raise ImageNotFoundError(msg)
+            parts.append(stored.part())
+        return parts
+
+    def _check_sees(self, info: ConversationInfo, text: str) -> None:
+        """Say before sending when no brain this chat may use can see images (issue #53)."""
+        task, _ = classify(self.router.config, [Message.user(text or " ")])
+        try:
+            self.router.plan(
+                task, override=info.brain, affinity=str(info.id), quiet=True, vision=True
+            )
+        except NoBrainAvailableError:
+            return  # nothing connected at all: the turn says so in its usual words
 
     async def resume(self, conversation_id: uuid.UUID) -> AsyncGenerator[ServiceEvent]:
         """Continue a paused turn (after an approval decision or an interruption)."""
@@ -386,12 +421,13 @@ def _snippet(fact: Fact) -> MemorySnippet:
     return MemorySnippet(text, f"{who}{where}", fact.learned_at.date(), fact.id)
 
 
-def _user_message(text: str, meta: TurnMeta) -> Message:
-    """The message plus its context, kept in the user's turn so the cached prefix stays stable."""
+def _user_message(text: str, meta: TurnMeta, images: Sequence[ImagePart] = ()) -> Message:
+    """The message plus its context, kept in the user's turn so the cached prefix stays stable.
+    The user's words come first, then their images, then the context."""
     when = meta.received_at.isoformat(timespec="seconds")
     context = (
         f"[sent {when}; timezone: {meta.timezone or 'unknown'}; device: {meta.device or 'unknown'}]"
     )
     if meta.note:
         context += f" {meta.note}"
-    return Message(role="user", parts=(TextPart(text=text), TextPart(text=context)))
+    return Message(role="user", parts=(TextPart(text=text), *images, TextPart(text=context)))
