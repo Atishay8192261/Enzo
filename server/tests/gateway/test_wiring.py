@@ -120,6 +120,10 @@ async def test_the_app_registers_the_core_tools(
             "browser_back",
             "browser_read",
             "browser_close",
+            "watch",
+            "enable_watch",
+            "list_watches",
+            "cancel_watch",
         ]
         # Long results are kept whole outside the context (ADR 0024).
         assert registry.retain is app.state.service.outputs is not None
@@ -133,12 +137,18 @@ async def test_the_app_registers_the_core_tools(
         # The browser lives as long as a turn: the service tells it when turns end (ADR 0027).
         (browsers,) = app.state.service._hooks
         assert browsers.own_port == settings.port
+        # Watches check on the runner's clock and never read Enzo's own port (ADR 0031).
+        watcher = app.state.background.watcher
+        assert watcher in app.state.background.runner._workers
+        assert watcher.sources.own_site(f"http://127.0.0.1:{settings.port}/healthz")
     # A task acts on its own: approved first. A browser task is approved once, as a whole.
-    assert gated == ["delete_file", "schedule_task", "browser_start"]
+    # Setting up a watch and turning it on are two separate yeses (spec §9.4, §12.4).
+    assert gated == ["delete_file", "schedule_task", "browser_start", "watch", "enable_watch"]
     assert fenced == [
         "web_search",
         "read_page",
         "read_file",
         "read_stored_output",
         *(n for n in names if n.startswith("browser_") and n != "browser_close"),
+        "list_watches",  # what a watch last read is outside content
     ]

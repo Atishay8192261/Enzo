@@ -16,6 +16,7 @@ import socket
 import urllib.request
 import warnings
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Literal
 from urllib.parse import urljoin, urlsplit
 
@@ -42,6 +43,11 @@ type KeyLookup = Callable[[], str | None]
 
 class WebToolError(Exception):
     """A plain-language failure the brain can relay. Never claims the site itself is down."""
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        #: The site's HTTP status when it answered with an error (a watch stops on 429, §8.3).
+        self.status = status
 
 
 class _Params(BaseModel):
@@ -177,9 +183,31 @@ async def search(
 
 
 async def fetch_page(params: ReadParams, *, http: httpx2.AsyncClient) -> Page:
-    url = params.url
+    got = await fetch_body(params.url, http=http)
+    return _to_page(got.url, got.kind, got.body, params.max_chars)
+
+
+@dataclass(frozen=True, slots=True)
+class Fetched:
+    """A page as fetched: its address after redirects, its content type and its bytes."""
+
+    url: str
+    kind: str
+    body: bytes
+
+
+async def fetch_body(
+    start: str, *, http: httpx2.AsyncClient, private_ok: Callable[[str], bool] | None = None
+) -> Fetched:
+    """Fetch a text page, checking every redirect hop (SSRF guard).
+
+    ``private_ok``: an address inside a private network that the user named themselves (a watch
+    on a page on this computer, approved on its card) may be fetched. Every other hop is checked.
+    """
+    url = start
     for _ in range(MAX_REDIRECTS + 1):
-        await check_public(url)  # every hop: a redirect must not lead inside the network
+        if private_ok is None or not private_ok(url):
+            await check_public(url)  # every hop: a redirect must not lead inside the network
         request = http.build_request("GET", url, headers={"User-Agent": USER_AGENT})
         try:
             response = await http.send(request, stream=True)
@@ -193,7 +221,7 @@ async def fetch_page(params: ReadParams, *, http: httpx2.AsyncClient) -> Page:
                 continue
             if response.status_code != 200:
                 msg = f"fetching {url} returned HTTP {response.status_code}; this fetch failed"
-                raise WebToolError(msg)
+                raise WebToolError(msg, status=response.status_code)
             kind = response.headers.get("content-type", "").split(";")[0].strip().lower()
             if kind not in TEXT_TYPES:
                 msg = (
@@ -203,8 +231,8 @@ async def fetch_page(params: ReadParams, *, http: httpx2.AsyncClient) -> Page:
             body = await _read_capped(response)
         finally:
             await response.aclose()
-        return _to_page(url, kind, body, params.max_chars)
-    msg = f"{params.url} redirected more than {MAX_REDIRECTS} times; this fetch failed"
+        return Fetched(url, kind, body)
+    msg = f"{start} redirected more than {MAX_REDIRECTS} times; this fetch failed"
     raise WebToolError(msg)
 
 
@@ -285,16 +313,20 @@ async def _read_capped(response: httpx2.Response) -> bytes:
     return b"".join(chunks)
 
 
-def _to_page(url: str, kind: str, body: bytes, max_chars: int) -> Page:
+def main_text(url: str, kind: str, body: bytes) -> tuple[str | None, str]:
+    """A page's title and main text: as is for plain text, trafilatura's extraction for HTML."""
     if kind == "text/plain":
-        title, text = None, body.decode("utf-8", errors="replace")
-    else:
-        doc = trafilatura.bare_extraction(
-            body, url=url, with_metadata=True, include_comments=False, include_tables=True
-        )
-        if doc is None or isinstance(doc, dict) or not doc.text:
-            msg = f"{url} has no readable main text (it may need a browser to render)"
-            raise WebToolError(msg)
-        title, text = doc.title, doc.text
+        return None, body.decode("utf-8", errors="replace")
+    doc = trafilatura.bare_extraction(
+        body, url=url, with_metadata=True, include_comments=False, include_tables=True
+    )
+    if doc is None or isinstance(doc, dict) or not doc.text:
+        msg = f"{url} has no readable main text (it may need a browser to render)"
+        raise WebToolError(msg)
+    return doc.title, doc.text
+
+
+def _to_page(url: str, kind: str, body: bytes, max_chars: int) -> Page:
+    title, text = main_text(url, kind, body)
     truncated = len(text) > max_chars
     return Page(url=url, title=title, text=text[:max_chars], truncated=truncated)

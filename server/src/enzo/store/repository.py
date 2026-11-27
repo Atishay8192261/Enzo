@@ -143,13 +143,17 @@ class Store:
 
     async def scheduled(self, conversation_id: uuid.UUID) -> set[int]:
         """The positions of messages a scheduled task's run started (not typed by the user)."""
+        return {i for i, o in (await self.origins(conversation_id)).items() if o == "schedule"}
+
+    async def origins(self, conversation_id: uuid.UUID) -> dict[int, str]:
+        """Messages the user did not type, by position: what started them (a schedule, a watch)."""
         async with self._sessions() as session:
             origins = await session.scalars(
                 select(MessageRow.origin)
                 .where(MessageRow.conversation_id == conversation_id)
                 .order_by(MessageRow.seq)
             )
-            return {i for i, origin in enumerate(origins) if origin == "schedule"}
+            return {i: origin for i, origin in enumerate(origins) if origin != "user"}
 
     async def history(self, conversation_id: uuid.UUID) -> list[Message]:
         async with self._sessions() as session:
@@ -171,8 +175,12 @@ class Store:
         turn_id: str | None = None,
         scheduled: int | None = None,
         compactions: Sequence[Compaction] = (),
+        origin: str = "schedule",
     ) -> None:
-        """Persist one turn atomically: all of it or none of it (its summaries included)."""
+        """Persist one turn atomically: all of it or none of it (its summaries included).
+
+        ``scheduled``: the message a schedule or a watch started (``origin``), not the user.
+        """
         async with self._sessions.begin() as session:
             # Lock the conversation so two turns cannot interleave their message numbers.
             locked = await session.get(Conversation, conversation_id, with_for_update=True)
@@ -200,7 +208,7 @@ class Store:
                     seq=start + i,
                     role=m.role,
                     body=m.model_dump(mode="json"),
-                    origin="schedule" if i == scheduled else "user",
+                    origin=origin if i == scheduled else "user",
                 )
                 for i, m in enumerate(messages)
             )

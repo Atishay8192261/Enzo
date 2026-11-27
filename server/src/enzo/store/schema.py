@@ -66,7 +66,7 @@ class MessageRow(Base):
     __tablename__ = "messages"
     __table_args__ = (
         UniqueConstraint("conversation_id", "seq"),
-        CheckConstraint("origin IN ('user', 'schedule')", name="origin"),
+        CheckConstraint("origin IN ('user', 'schedule', 'watch')", name="origin"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -316,6 +316,116 @@ class JobRunRow(Base):
     #: delivered (a reminder); reported, quiet (nothing new yet), finished (its stop was met),
     #: needs_approval (it waits for the user) or failed (a task run).
     outcome: Mapped[str] = mapped_column(Text, server_default="delivered")
+
+
+class HookRow(Base):
+    """A watch: Enzo checks something cheaply, with no model call, and wakes up only when it
+    changes (spec §9.4, ADR 0031). It starts off; the user turns it on after a dry run.
+
+    Like a scheduled task it has an owner (the user), a stop condition (``ends_at`` or
+    ``max_wakes``) and a delivery destination (the chat it was set in); a change runs in its
+    own chat (``chat_id``).
+    """
+
+    __tablename__ = "hooks"
+    __table_args__ = (
+        CheckConstraint("source IN ('page', 'email', 'calendar', 'pull_request')", name="source"),
+        CheckConstraint("rule IN ('changes', 'new', 'above', 'below', 'appears')", name="rule"),
+        CheckConstraint("status IN ('off', 'on', 'stopped', 'done', 'cancelled')", name="status"),
+        CheckConstraint("interval_s >= 60", name="interval"),
+        CheckConstraint("ends_at IS NOT NULL OR max_wakes IS NOT NULL", name="stop"),
+        Index(None, "status", "next_poll_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    #: What it watches, in the user's words: "the price of the blue kettle".
+    what: Mapped[str] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(Text)
+    #: Where and how to read it (a page and a selector, an email search, a pull request).
+    target: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    #: Who answers its checks: a site ("site:shop.example") or a service ("gmail"). A rate
+    #: limit stops every watch of that scope (§8.3).
+    scope: Mapped[str] = mapped_column(Text, index=True)
+    rule: Mapped[str] = mapped_column(Text)
+    threshold: Mapped[Decimal | None] = mapped_column(Numeric)
+    #: For "appears": the words to look for.
+    match: Mapped[str | None] = mapped_column(Text)
+    #: What Enzo does when it changes.
+    instruction: Mapped[str] = mapped_column(Text)
+    interval_s: Mapped[int] = mapped_column(Integer)
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    max_wakes: Mapped[int | None] = mapped_column(Integer)
+    wakes: Mapped[int] = mapped_column(Integer, server_default="0")
+    polls: Mapped[int] = mapped_column(Integer, server_default="0")
+    #: Checks that failed in a row: it backs off, then stops after a few.
+    failures: Mapped[int] = mapped_column(Integer, server_default="0")
+    last_error: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, server_default="off")
+    #: Why it stopped: rate_limited, auth, failing, ended, max_wakes.
+    stop_reason: Mapped[str | None] = mapped_column(Text)
+    #: The last reading: what is compared (a digest for long text) and what the user sees.
+    value: Mapped[str | None] = mapped_column(Text)
+    shown: Mapped[str | None] = mapped_column(Text)
+    number: Mapped[Decimal | None] = mapped_column(Numeric)
+    matched: Mapped[bool | None]
+    value_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The dry run the user saw before turning it on; turning it on starts from it.
+    dry_value: Mapped[str | None] = mapped_column(Text)
+    dry_shown: Mapped[str | None] = mapped_column(Text)
+    dry_number: Mapped[Decimal | None] = mapped_column(Numeric)
+    dry_matched: Mapped[bool | None]
+    dry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_poll_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: A check in progress since then: it is never claimed twice.
+    polling_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    timezone: Mapped[str] = mapped_column(Text)
+    chat_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    turn_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+    enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class HookEventRow(Base):
+    """A change a watch saw (one wake, recorded with the reading that caused it, so it runs once
+    even across restarts), or the watch stopping; with how its report went."""
+
+    __tablename__ = "hook_events"
+    __table_args__ = (
+        CheckConstraint("kind IN ('wake', 'stopped')", name="kind"),
+        CheckConstraint("state IN ('pending', 'running', 'done')", name="state"),
+        CheckConstraint(
+            "outcome IS NULL OR outcome IN ('reported', 'needs_approval', 'failed', 'stopped')",
+            name="outcome",
+        ),
+        Index(None, "state"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    hook_id: Mapped[int] = mapped_column(ForeignKey("hooks.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(Text)
+    #: The readings before and after the change, as the user sees them.
+    before: Mapped[str | None] = mapped_column(Text)
+    after: Mapped[str | None] = mapped_column(Text)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    state: Mapped[str] = mapped_column(Text, server_default="pending")
+    outcome: Mapped[str | None] = mapped_column(Text)
+    #: The report (the first line of the wake's answer), or why the watch stopped.
+    text: Mapped[str | None] = mapped_column(Text)
+    #: The chat it was set in, where the report shows, after this many of its messages.
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    position: Mapped[int | None] = mapped_column(Integer)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: It was a while after the change: Enzo was not running when it was seen.
+    late: Mapped[bool] = mapped_column(server_default="false")
 
 
 class GoalRow(Base):

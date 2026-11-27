@@ -41,11 +41,16 @@ from enzo.gateway.goals import goal_routes
 from enzo.gateway.google import google_routes
 from enzo.gateway.memory import memory_routes
 from enzo.gateway.scheduled import scheduled_routes
+from enzo.gateway.watches import watch_routes
 from enzo.goals import Goals
+from enzo.hooks.sources import Sources
+from enzo.hooks.store import Hooks
+from enzo.hooks.tools import watch_tools
+from enzo.hooks.watcher import Watcher
 from enzo.memory import Memory
 from enzo.paths import data_dir
 from enzo.schedule import Background, Bus, FinishedTasks, Runner, Schedule
-from enzo.schedule.notify import desktop, silent
+from enzo.schedule.notify import Notify, desktop, silent
 from enzo.schedule.tasks import TaskRunner
 from enzo.store.repository import Store
 from enzo.tools.registry import ToolRegistry
@@ -145,6 +150,7 @@ def create_app(
     app.include_router(memory_routes(auth))
     app.include_router(goal_routes(auth))
     app.include_router(scheduled_routes(auth))
+    app.include_router(watch_routes(auth))
     app.include_router(connection_routes(auth))
     app.include_router(chatgpt_routes(auth, cfg.port))
     app.include_router(google_routes(auth, cfg.port))
@@ -184,7 +190,6 @@ async def _running(
     goals = Goals(store.engine, cfg.workspace_dir, schedule)
     notify = desktop if cfg.notify else silent
     runner = Runner(schedule, Bus(), notify=notify, on_idle=on_idle)
-    app.state.background = Background(schedule, runner.bus, runner)
     finished = FinishedTasks()
     # Long tool results and pastes are kept whole in Enzo's private data folder (ADR 0024).
     ctx = config.context
@@ -219,6 +224,8 @@ async def _running(
         ],
         retain=outputs,
     )
+    watcher = _watcher(store, http, tools, runner, cfg, notify)
+    app.state.background = Background(schedule, runner.bus, runner, watcher)
     service = ConversationService(
         store,
         router,
@@ -233,6 +240,7 @@ async def _running(
     # Scheduled tasks run as agent turns: the runner hands each due one to the task runner.
     tasks = TaskRunner(schedule, service, runner.bus, finished, notify=notify)
     runner.connect(tasks.start, lambda: tasks.running > 0)
+    watcher.connect(service, runner.poke)
     connectors = Connectors(tools, acct, http, google)
     await connectors.refresh("github")
     await connectors.refresh("google")
@@ -243,10 +251,29 @@ async def _running(
     finally:
         await runner.stop()
         await tasks.stop()
+        await watcher.stop()
         await browsers.close_all()
         await connectors.close()
         await http.aclose()
         await store.close()
+
+
+def _watcher(
+    store: Store,
+    http: httpx2.AsyncClient,
+    tools: ToolRegistry,
+    runner: Runner,
+    cfg: Settings,
+    notify: Notify,
+) -> Watcher:
+    """Watches check on the runner's clock with no model call; a change wakes a turn (ADR 0031).
+    Their checks read through the connected accounts' tools, found by name when they run."""
+    sources = Sources(http=http, tools=tools.get, own_port=cfg.port)
+    watcher = Watcher(Hooks(store.engine), sources, runner.bus, notify=notify)
+    for t in watch_tools(watcher, on_set=runner.poke):
+        tools.register(t)
+    runner.add(watcher)
+    return watcher
 
 
 def _google_client(cfg: Settings) -> GoogleClient | None:

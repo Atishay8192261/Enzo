@@ -131,7 +131,7 @@ class ConversationService:
         text: str,
         meta: TurnMeta | None = None,
         *,
-        origin: Literal["user", "schedule"] = "user",
+        origin: Literal["user", "schedule", "watch"] = "user",
     ) -> AsyncGenerator[ServiceEvent]:
         """Start a turn for a new user message; returns its event stream.
 
@@ -173,8 +173,8 @@ class ConversationService:
         saved_from = len(prompt) - (2 if closing is not None else 1)
         # A scheduled run's message is marked as such: the apps show it as a run, not as words
         # the user typed. (The brain sees it as a user message, written by the schedule.)
-        scheduled = saved_from + (1 if closing is not None else 0) if origin == "schedule" else None
-        return self._start(info, prompt, first_new=saved_from, scheduled=scheduled)
+        scheduled = saved_from + (1 if closing is not None else 0) if origin != "user" else None
+        return self._start(info, prompt, first_new=saved_from, scheduled=scheduled, origin=origin)
 
     async def resume(self, conversation_id: uuid.UUID) -> AsyncGenerator[ServiceEvent]:
         """Continue a paused turn (after an approval decision or an interruption)."""
@@ -227,10 +227,13 @@ class ConversationService:
         *,
         first_new: int,
         scheduled: int | None = None,
+        origin: str = "schedule",
     ) -> AsyncGenerator[ServiceEvent]:
         queue: asyncio.Queue[ServiceEvent | object] = asyncio.Queue()
         stop = asyncio.Event()
-        task = asyncio.create_task(self._drive(info, prompt, first_new, queue, stop, scheduled))
+        task = asyncio.create_task(
+            self._drive(info, prompt, first_new, queue, stop, scheduled, origin)
+        )
         self._running[info.id] = task
         self._stops[info.id] = stop
 
@@ -249,6 +252,7 @@ class ConversationService:
         queue: asyncio.Queue[ServiceEvent | object],
         stop: asyncio.Event,
         scheduled: int | None = None,
+        origin: str = "schedule",
     ) -> None:
         # Every log line of this run, and its ledger rows, carry these (#48).
         turn_id = new_turn_id()
@@ -293,7 +297,7 @@ class ConversationService:
                 if isinstance(event, TurnDone):
                     # Persist, and end what the turn had running, before telling the client.
                     await self._save(
-                        info.id, event.outcome, first_new, turn_id, scheduled, window.made
+                        info.id, event.outcome, first_new, turn_id, scheduled, window.made, origin
                     )
                     _log_end(event.outcome, began)
                     ended = event.outcome.stop
@@ -323,6 +327,7 @@ class ConversationService:
         turn_id: str,
         scheduled: int | None = None,
         compactions: Sequence[Compaction] = (),
+        origin: str = "schedule",
     ) -> None:
         await self.store.save_turn(
             conversation_id,
@@ -333,6 +338,7 @@ class ConversationService:
             turn_id=turn_id,
             # Which saved message a scheduled run started (counted within this save).
             scheduled=None if scheduled is None else scheduled - first_new,
+            origin=origin,
             compactions=compactions,
         )
 

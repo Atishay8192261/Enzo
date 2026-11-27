@@ -22,7 +22,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequenc
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 import httpx2
 import mcp_types as types
@@ -59,8 +59,17 @@ type CallFn = Callable[[str, dict[str, Any]], Awaitable[McpResult]]
 type PrepareFn = Callable[[dict[str, Any], CallFn], Awaitable[tuple[dict[str, Any], str | None]]]
 
 
+type Stop = Literal["rate_limited", "auth"]
+
+
 class ConnectorError(Exception):
     """A plain-language failure the brain can relay (§8.3)."""
+
+    def __init__(self, message: str, *, stop: Stop | None = None) -> None:
+        super().__init__(message)
+        #: The connector stopped over this: rate limited, or its sign-in was rejected. A watch
+        #: that polls through it stops too, and says so (§8.3, ADR 0031).
+        self.stop = stop
 
 
 class ConnectorStoppedError(ConnectorError):
@@ -181,6 +190,7 @@ class McpConnector:
         self._ready = ready
         self._stopped_until = 0.0
         self._stopped_why = ""
+        self._stopped_kind: Stop | None = None
 
     async def tools(self) -> list[Tool[Any, Any]]:
         """The server's allowed tools as Enzo tools. Fails loudly if the server cannot be listed."""
@@ -216,26 +226,26 @@ class McpConnector:
             async with self._connect() as client:
                 result = await client.call_tool(name, arguments)
         except Exception as exc:
-            self._notice_failure(str(exc), seen)
+            stop = self._notice_failure(str(exc), seen)
             if seen:
                 last = seen[-1]
                 msg = f"{self.server.label} refused the request (HTTP {last.status}): {last.text}"
-                raise ConnectorError(msg) from exc
+                raise ConnectorError(msg, stop=stop) from exc
             msg = f"could not reach {self.server.label} ({type(exc).__name__})"
-            raise ConnectorError(msg) from exc
+            raise ConnectorError(msg, stop=stop) from exc
         finally:
             _HTTP_FAILURES.reset(mark)
         text = _text(result)
         if result.is_error:
-            self._notice_failure(text, seen)
-            raise ConnectorError(f"{self.server.label} said: {text[:500]}")
+            stop = self._notice_failure(text, seen)
+            raise ConnectorError(f"{self.server.label} said: {text[:500]}", stop=stop)
         return McpResult(text=text, data=result.structured_content)
 
     def _check_running(self) -> None:
         if self._clock() < self._stopped_until:
-            raise ConnectorStoppedError(self._stopped_why)
+            raise ConnectorStoppedError(self._stopped_why, stop=self._stopped_kind)
 
-    def _notice_failure(self, text: str, http: Sequence[HttpFailure] = ()) -> None:
+    def _notice_failure(self, text: str, http: Sequence[HttpFailure] = ()) -> Stop | None:
         lowered = " ".join([text, *(f.text for f in http)]).lower()
         statuses = {f.status for f in http}
         label = self.server.label
@@ -248,19 +258,25 @@ class McpConnector:
                 RATE_LIMIT_PAUSE_S,
                 f"{label} is rate limiting Enzo: all {label} actions are paused for "
                 f"{RATE_LIMIT_PAUSE_S // 60} minutes. Nothing was retried; report what is done.",
+                "rate_limited",
             )
-        elif httpx2.codes.UNAUTHORIZED in statuses or any(
+            return "rate_limited"
+        if httpx2.codes.UNAUTHORIZED in statuses or any(
             p in lowered for p in ("bad credentials", "401 unauthorized", "requires authentication")
         ):
             self._stop(
                 float("inf"),
                 f"{label} rejected the sign-in or token: reconnect with {login}. "
                 f"{label} actions are paused until then.",
+                "auth",
             )
+            return "auth"
+        return None
 
-    def _stop(self, seconds: float, why: str) -> None:
+    def _stop(self, seconds: float, why: str, kind: Stop) -> None:
         self._stopped_until = self._clock() + seconds
         self._stopped_why = why
+        self._stopped_kind = kind
         log.warning("connector stopped", extra={"server": self.server.name, "why": why})
 
     def _wrap(self, remote: types.Tool) -> Tool[Any, Any] | None:
