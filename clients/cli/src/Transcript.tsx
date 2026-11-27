@@ -5,6 +5,7 @@ import {
   formatDuration,
   STEP_MARK,
   stepNote,
+  userText,
 } from "@enzo/chat";
 import type { SyntaxStyle } from "@opentui/core";
 import { useEffect, useState } from "react";
@@ -85,7 +86,7 @@ function UserMessage({ item, details }: { item: ChatItem; details: boolean }) {
       marginTop={1}
       flexShrink={0}
     >
-      <text>{item.text}</text>
+      <text>{userText(item)}</text>
     </box>
   );
 }

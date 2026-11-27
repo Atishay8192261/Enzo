@@ -21,6 +21,23 @@ export interface Brain {
   note: string | null;
   /** The provider is connected, so this model can answer now. */
   available: boolean;
+  /** It can see images (older gateways leave it out: treat as false). */
+  vision?: boolean;
+}
+
+/** How an image came to Enzo: pasted (or from the clipboard), or a file the user picked. */
+export type ImageSource = "pasted" | "file";
+
+/** An image the gateway kept (cleaned of its metadata), to send with a message by `id`. */
+export interface UploadedImage {
+  id: string;
+  media_type: string;
+  width: number;
+  height: number;
+  bytes: number;
+  name: string | null;
+  /** What was removed before it was kept: "EXIF", "GPS position", ... */
+  stripped: string[];
 }
 
 export interface Conversation {
@@ -349,10 +366,14 @@ export interface StoredMessage {
   summarized?: number;
 }
 
-/** One part of a stored message: text, a tool call (with its step in plain words) or a result. */
+/** One part of a stored message: text, an image, a tool call (with its step) or a result. */
 export interface StoredPart {
   type: string;
   text?: string;
+  /** An image (`type: "image"`): its size; a tool result's images are in `images`. */
+  width?: number;
+  height?: number;
+  images?: StoredPart[];
   name?: string;
   content?: string;
   /** A tool call's id; a result names the call it answers with `call_id`. */
@@ -432,6 +453,8 @@ export interface ConnectionCheck {
 export interface TurnContext {
   timezone?: string;
   device?: string;
+  /** Images kept with `uploadImage` first, in the order the user attached them. */
+  images?: string[];
 }
 
 export class GatewayError extends Error {
@@ -694,6 +717,23 @@ export class GatewayClient {
     await this.#json("PUT", "/connections/google/client", { client });
   }
 
+  /**
+   * Keep an image for a message: the gateway reads its real type from the bytes, strips its
+   * metadata (camera, GPS) and answers with the id to send. The name never goes in the URL.
+   */
+  async uploadImage(
+    data: Blob | ArrayBuffer | Uint8Array,
+    { source = "pasted", name, type }: { source?: ImageSource; name?: string; type?: string } = {},
+  ): Promise<UploadedImage> {
+    const headers: Record<string, string> = {
+      "content-type": type || "application/octet-stream",
+      "x-enzo-image-source": source,
+    };
+    if (name) headers["x-enzo-image-name"] = encodeURIComponent(name);
+    const res = await this.#request("POST", "/images", data, undefined, headers);
+    return (await res.json()) as UploadedImage;
+  }
+
   checkConnection(provider: string): Promise<ConnectionCheck> {
     return this.#json("POST", `/connections/${enc(provider)}/check`) as Promise<ConnectionCheck>;
   }
@@ -735,12 +775,14 @@ export class GatewayClient {
     path: string,
     body?: unknown,
     signal?: AbortSignal,
+    /** Set: `body` is sent as it is (raw bytes), with these headers. */
+    raw?: Record<string, string>,
   ): Promise<Response> {
-    const headers: Record<string, string> = {};
-    if (body !== undefined) headers["content-type"] = "application/json";
+    const headers: Record<string, string> = { ...raw };
+    if (body !== undefined && !raw) headers["content-type"] = "application/json";
     if (this.#token) headers.authorization = `Bearer ${this.#token}`;
     const init: RequestInit = { method, headers };
-    if (body !== undefined) init.body = JSON.stringify(body);
+    if (body !== undefined) init.body = raw ? (body as BodyInit) : JSON.stringify(body);
     if (signal) init.signal = signal;
     let res: Response;
     try {

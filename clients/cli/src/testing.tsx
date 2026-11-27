@@ -7,6 +7,7 @@ import type {
   ConversationMemory,
   GoalsClient,
   HelpersClient,
+  ImagesClient,
   MemoryClient,
   PrivacyClient,
   ScheduleClient,
@@ -148,7 +149,8 @@ export type Client = ChatClient &
   PrivacyClient &
   ScheduleClient &
   GoalsClient &
-  HelpersClient;
+  HelpersClient &
+  ImagesClient;
 
 /** An event stream with nothing to say: it stays open until the app closes it. */
 export async function* quiet(signal?: AbortSignal): AsyncGenerator<GatewayEvent> {
@@ -234,6 +236,15 @@ export function fakeClient(overrides: Partial<Client> = {}): Client {
     }),
     cancelWatch: mock(async () => {}),
     events: quiet,
+    uploadImage: mock(async (_data: unknown, options?: { name?: string }) => ({
+      id: "img_0123456789abcdef",
+      media_type: "image/png",
+      width: 1456,
+      height: 819,
+      bytes: 1000,
+      name: options?.name ?? null,
+      stripped: [],
+    })),
     forgetMemory: mock(async () => {}),
     privacyRules: async () => [],
     removePrivacyRule: mock(async () => {}),
@@ -264,6 +275,8 @@ export interface ScreenOptions {
   start?: Start;
   /** What the terminal says it supports once it answers (e.g. the kitty keyboard protocol). */
   terminal?: Partial<TerminalCapabilities>;
+  /** The system clipboard's image, for Ctrl+V. */
+  readClipboard?: () => Promise<{ bytes: Uint8Array; type: string } | null>;
 }
 
 /** The app on a test screen, ready to type into. */
@@ -278,6 +291,7 @@ export async function screen(client: Client, options: ScreenOptions = {}): Promi
       version="0.1.0"
       healthEveryMs={options.healthEveryMs ?? 60_000}
       start={options.start ?? "fresh"}
+      readClipboard={options.readClipboard ?? (async () => null)}
     />,
     {
       width: options.width ?? 90,
