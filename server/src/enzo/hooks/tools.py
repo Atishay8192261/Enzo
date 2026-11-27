@@ -349,7 +349,7 @@ def watch_tools(
     )
     async def enable_watch(p: EnableParams) -> WatchOut:
         try:
-            on = await hooks.enable(p.id, p.checked)
+            on = await hooks.enable(p.id, p.checked, watcher.now())
         except HookRefusedError as exc:
             raise ValueError(str(exc)) from None
         on_set()

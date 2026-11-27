@@ -112,12 +112,18 @@ def release(state: Path, port: int | None = None, *, say: Callable[[str], None] 
         if pid is None:
             return
         waiting = upcoming(port) if port is not None else None
-        if waiting:
+        watches = watching(port) if port is not None else 0
+        if waiting or watches:
             (state / BACKGROUND).touch()
-            count, soonest = waiting
-            things = "1 scheduled item" if count == 1 else f"{count} scheduled items"
+            parts = []
+            if waiting:
+                count = waiting[0]
+                parts.append("1 scheduled item" if count == 1 else f"{count} scheduled items")
+            if watches:  # a watch that is on checks on its own (ADR 0031)
+                parts.append("1 watch" if watches == 1 else f"{watches} watches")
+            soonest = f" (next: {waiting[1]})" if waiting else ""
             say(
-                f"Enzo stays on in the background for your {things} (next: {soonest}). "
+                f"Enzo stays on in the background for your {' and '.join(parts)}{soonest}. "
                 "`enzo stop` turns it off."
             )
             return
@@ -134,6 +140,16 @@ def upcoming(port: int) -> tuple[int, str] | None:
     if not items:
         return None
     return len(items), str(items[0].get("next") or "soon")
+
+
+def watching(port: int) -> int:
+    """How many watches are on at the gateway on ``port`` (each checks on its own)."""
+    try:
+        reply = httpx2.get(f"{url_for(port)}/watches", timeout=3.0)
+        items = reply.json()["watches"] if reply.status_code == httpx2.codes.OK else []
+        return sum(1 for w in items if w.get("status") == "on")
+    except (httpx2.HTTPError, ValueError, KeyError, TypeError, AttributeError):
+        return 0
 
 
 def stop_background(state: Path) -> bool:

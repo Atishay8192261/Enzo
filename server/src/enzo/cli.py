@@ -485,6 +485,8 @@ def _check_gateway() -> tuple[str, str]:
     where = f"{info.get('version')} at {launcher.url_for(port)}"
     waiting = launcher.upcoming(port)
     scheduled = f" · scheduled: {waiting[0]}, next {waiting[1]}" if waiting else ""
+    if watches := launcher.watching(port):
+        scheduled += f" · watches on: {watches}"
     return OK, f"Gateway: running {where} · accounts: {accounts}{scheduled}"
 
 

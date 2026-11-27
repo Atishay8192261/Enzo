@@ -69,10 +69,10 @@ def watch_routes(auth: params.Depends) -> APIRouter:
     async def enable(hook_id: int, body: EnableIn, w: WatcherDep, request: Request) -> WatchOut:
         """Turn it on, from the dry run the user saw: the app asked them first."""
         try:
-            on = await w.hooks.enable(hook_id, body.token)
+            on = await w.hooks.enable(hook_id, body.token, w.now())
         except HookRefusedError as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
-        request.app.state.background.runner.poke()
+        request.app.state.background.runner.poke()  # its first check comes on time
         return watch_out(on)
 
     @router.delete("/{hook_id}", status_code=status.HTTP_204_NO_CONTENT)
