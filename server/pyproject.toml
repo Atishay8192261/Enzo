@@ -33,6 +33,7 @@ dependencies = [
     "onnxruntime>=1.23.2; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "openai>=3.52.0",
     "pgvector>=0.5.1",
+    "pillow>=13.0.0",
     "pixeltable-pgserver>=0.7.2",
     "playwright>=1.65.2",
     "psutil>=7.2.2",

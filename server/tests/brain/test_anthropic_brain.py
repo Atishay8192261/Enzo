@@ -27,6 +27,7 @@ from enzo.brain import (
     UnsupportedCapabilityError,
 )
 from enzo.brain.adapters.anthropic_brain import AnthropicBrain, from_wire
+from enzo.brain.models import ImagePart, TextPart
 from tests.brain.schemas import SearchWeb
 
 MODEL = "claude-opus-5-5"
@@ -394,3 +395,37 @@ async def test_cache_writes_are_broken_down_by_retention() -> None:
     }
     r = await brain(streaming(message)).chat([Message.user("x")], max_output_tokens=10)
     assert r.usage.cache_write_breakdown == {"5m": 30, "1h": 20}
+
+
+def test_images_go_as_base64_blocks_in_user_messages_and_tool_results() -> None:
+    pic = ImagePart(id="img_0123456789abcdef", media_type="image/png", width=4, height=3)
+    sent = pic.model_copy(update={"data": "QUJD"})
+    request = brain(streaming(wire_message([]))).build_request(
+        [
+            Message(
+                role="user", parts=(TextPart(text="what is it?"), sent, TextPart(text="[ctx]"))
+            ),
+            Message.assistant(None, (ToolCall(id="t1", name="shot", arguments_json="{}"),)),
+            Message.tool(ToolResult(call_id="t1", name="shot", content="{}", images=(sent,))),
+        ],
+        [],
+        "auto",
+        100,
+    )
+    block = {
+        "type": "image",
+        "source": {"type": "base64", "media_type": "image/png", "data": "QUJD"},
+    }
+    assert request["messages"][0]["content"] == [
+        {"type": "text", "text": "what is it?"},
+        block,
+        {"type": "text", "text": "[ctx]"},
+    ]
+    assert request["messages"][2]["content"][0]["content"] == [
+        {"type": "text", "text": "{}"},
+        block,
+    ]
+    with pytest.raises(ValueError, match="not attached"):  # never sent without its bytes
+        brain(streaming(wire_message([]))).build_request(
+            [Message(role="user", parts=(TextPart(text="x"), pic))], [], "auto", 100
+        )
