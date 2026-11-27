@@ -14,7 +14,7 @@ BASH = shutil.which("bash") or "/bin/bash"
 
 FAKE_PSQL = r"""#!/bin/bash
 # A Postgres server in the state the test sets: FAKE_ROLE, FAKE_PASSWORD, FAKE_DB, FAKE_LOGIN,
-# FAKE_VERSION.
+# FAKE_VERSION, FAKE_VECTOR (pgvector installed).
 [ "$1" = "--version" ] && { echo "psql (PostgreSQL) 14.19 (Homebrew)"; exit 0; }
 target="" prev=""
 for a in "$@"; do [ "$prev" = "-d" ] && target="$a"; prev="$a"; done
@@ -30,6 +30,7 @@ case "$*" in
   *"SHOW server_version"*) echo "$((FAKE_VERSION / 10000)).$((FAKE_VERSION % 10000)) (Fake)" ;;
   *pg_roles*) [ "$FAKE_ROLE" = 1 ] && echo 1 ;;
   *pg_database*) [ "$FAKE_DB" = 1 ] && echo 1 ;;
+  *pg_available_extensions*) [ "$FAKE_VECTOR" = 1 ] && echo 1 ;;
 esac
 exit 0
 """
@@ -63,7 +64,7 @@ def fake_bin(tmp_path: Path) -> Path:
     return bin_dir
 
 
-def doctor(
+def doctor(  # noqa: PLR0913 - one keyword per faked state
     fake_bin: Path,
     *,
     role: bool,
@@ -72,6 +73,7 @@ def doctor(
     version: int = 160010,
     mac: bool = True,
     node: str = "v24.1.0",
+    vector: bool = True,
 ) -> str:
     env = {
         "PATH": f"{fake_bin}:/usr/bin:/bin",
@@ -84,6 +86,7 @@ def doctor(
         "FAKE_VERSION": str(version),
         "FAKE_OS": "Darwin" if mac else "Linux",
         "FAKE_NODE": node,
+        "FAKE_VECTOR": "1" if vector else "0",
     }
     run = subprocess.run(  # noqa: S603 - the repo's own script, fixed arguments
         [BASH, str(SCRIPT), "doctor"],
@@ -156,3 +159,15 @@ def test_an_old_node_points_to_the_current_lts_installer(fake_bin: Path) -> None
     assert "Install the current Node LTS (22.12 or newer) from https://nodejs.org" in out
     assert "macOS Installer (.pkg)" in out
     assert "Node 24" not in out  # #32: nodejs.org's LTS moved on
+
+
+@pytest.mark.parametrize("mac", [True, False])
+def test_a_server_without_pgvector_says_how_to_add_it(fake_bin: Path, *, mac: bool) -> None:
+    """Search by meaning keeps its vectors in pgvector (ADR 0030): migrations need it."""
+    out = doctor(fake_bin, role=True, db=True, mac=mac, vector=False)
+    assert "pgvector is missing (Enzo keeps its search by meaning in it)" in out
+    if mac:
+        assert "https://github.com/pgvector/pgvector#installation" in out
+    else:
+        assert "Run: sudo apt-get install -y postgresql-16-pgvector" in out
+    assert "ok    pgvector" in doctor(fake_bin, role=True, db=True, mac=mac)

@@ -159,3 +159,14 @@ async def test_the_brain_searches_past_chats_by_meaning_and_gets_them_fenced(
     assert hit["text"] == "User: Find ramen near work\nEnzo: Try Ippudo on 4th."
     assert found["by_meaning"] is True
     assert uuid.UUID(lunch)  # a real chat
+
+
+async def test_the_memory_list_says_whether_enzo_finds_things_by_meaning(
+    store: Store, tmp_path: Path
+) -> None:
+    async with client(service(store, ScriptedBrain([]), tmp_path)) as c:
+        body = (await c.get("/memory")).json()
+    assert body["search"] == (
+        "Enzo also finds memories and past chats by meaning, with a model on this computer "
+        "(nothing is sent anywhere): 0 pieces indexed."
+    )

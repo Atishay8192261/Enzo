@@ -42,6 +42,23 @@ describe("/memory (spec §6.2, §15.2)", () => {
     expect(card.indexOf("Preferences")).toBeLessThan(card.indexOf("People"));
   });
 
+  it("says whether it also finds things by meaning (ADR 0030)", async () => {
+    const search =
+      "Enzo also finds memories and past chats by meaning, with a model on this computer (nothing is sent anywhere): 12 pieces indexed.";
+    await using s = await screen(fakeClient({ memories: async () => ({ ...KNOWN, search }) }), {
+      height: 40,
+    });
+    await enter(s, "/memory");
+    const card = await until(s, "Preferences");
+    const flat = card
+      .split("\n")
+      .map((r) => r.replaceAll("│", "").trim())
+      .join(" ");
+    expect(flat).toContain("finds memories and past chats by meaning");
+    expect(flat).toContain("12 pieces indexed.");
+    expect(flat.indexOf("~/Enzo/Memory.md")).toBeLessThan(flat.indexOf("by meaning"));
+  });
+
   it("says how to teach it when it remembers nothing yet", async () => {
     await using s = await screen(fakeClient());
     await enter(s, "/memory");

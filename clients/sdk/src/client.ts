@@ -67,6 +67,8 @@ export interface MemoryList {
   memories: Remembered[];
   /** Where the readable copy is, as the user types it: ~/Enzo/Memory.md. */
   file: string | null;
+  /** Whether Enzo also finds things by meaning, in plain words (ADR 0030); absent from older gateways. */
+  search?: string | null;
 }
 
 /** A reminder or scheduled task still to come (spec §9.3). */

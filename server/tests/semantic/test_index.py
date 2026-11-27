@@ -1,9 +1,11 @@
 """Search by meaning (spec §6.3): chunk, embed, retrieve, verify, over memories, goals, past chats
 and stored texts, with a deterministic embedder (``embedders.ConceptEmbedder``)."""
 
+import asyncio
 import json
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import pytest
@@ -403,3 +405,77 @@ async def test_chunks_count_matches_what_was_written(store: Store, index: Semant
         total = await conn.scalar(select(func.count(ChunkRow.id)))
         await conn.execute(update(ChunkRow).values(model=None))
     assert total == 2
+
+
+# ---- the background indexer -----------------------------------------------------------------
+
+
+async def until(check: Callable[[], Awaitable[bool]]) -> None:
+    async with asyncio.timeout(10):
+        while not await check():  # noqa: ASYNC110 - polling the database: no event to wait on
+            await asyncio.sleep(0.02)
+
+
+async def test_the_indexer_gets_the_model_ready_backfills_and_wakes_on_writes(
+    store: Store, tmp_path: Path
+) -> None:
+    embedder = ConceptEmbedder(ready=False)
+    index = SemanticIndex(store.engine, embedder)
+    await Memory(store.engine, None).remember("Allergic to shellfish.", kind="about")
+
+    async def embedded(n: int) -> bool:
+        return (await index.status()).embedded == n
+
+    index.start()
+    try:
+        await until(lambda: embedded(1))  # the backfill, once the model was ready
+        assert embedder.prepared == 1
+        await chat(store, "Ramen", ("Find ramen", "Ippudo."))
+        index.wake()
+        await until(lambda: embedded(2))
+    finally:
+        await index.close()
+
+
+async def test_a_failing_pass_is_logged_and_the_indexer_keeps_going(
+    index: SemanticIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = index.sync
+    calls = 0
+
+    async def flaky(**_kw: object) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            msg = "database went away"
+            raise OSError(msg)
+        return await real()
+
+    async def twice() -> bool:
+        index.wake()
+        return calls >= 2
+
+    monkeypatch.setattr(index, "sync", flaky)
+    index.start()
+    try:
+        await until(twice)
+    finally:
+        await index.close()
+
+
+async def test_a_model_that_could_not_be_fetched_is_tried_again_later_not_at_once(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Failing(ConceptEmbedder):
+        async def prepare(self) -> bool:
+            self.prepared += 1
+            return False
+
+    embedder = Failing(ready=False)
+    index = SemanticIndex(store.engine, embedder)
+    await index._prepare()
+    await index._prepare()
+    assert embedder.prepared == 1  # not again before RETRY_S
+    monkeypatch.setattr("enzo.semantic.index.time.monotonic", lambda: 10.0**9)
+    await index._prepare()
+    assert embedder.prepared == 2

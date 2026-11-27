@@ -456,13 +456,15 @@ export const MEMORY_KINDS: [Remembered["kind"], string][] = [
 export const memoryLine = (m: Remembered) => (m.about ? `${m.about}: ${m.text}` : m.text);
 
 /** What /memory shows: each memory under its kind, with where it came from (spec §15.2). */
-export function memoryReply({ memories, file }: MemoryList): Reply {
+export function memoryReply({ memories, file, search }: MemoryList): Reply {
   // The path on a line of its own: a terminal wraps it at a "/" otherwise (#56).
   const copy = file ? ["A copy you can read and edit by hand:", file] : [];
+  const meaning = search ? ["", search] : [];
   if (memories.length === 0) {
     return [
       "Enzo remembers nothing yet. Tell it something, like “remember I prefer window seats”.",
       ...copy,
+      ...meaning,
     ].join("\n");
   }
   const lines: string[] = [];
@@ -473,7 +475,7 @@ export function memoryReply({ memories, file }: MemoryList): Reply {
     lines.push(heading);
     for (const m of group) lines.push(`• ${memoryLine(m)}`, `  ${m.source} · #${m.id}`);
   }
-  lines.push("", "To change one, just tell Enzo. /forget removes one.", ...copy);
+  lines.push("", "To change one, just tell Enzo. /forget removes one.", ...copy, ...meaning);
   return lines.join("\n");
 }
 
