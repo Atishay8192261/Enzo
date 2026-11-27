@@ -204,7 +204,8 @@ if forward is not None:
     while True:
         client, _ = server.accept()
         try:
-            upstream = socket.create_connection((rhost, int(rport)))
+            to = int(os.environ.get("FAKE_FORWARD_TO") or rport)
+            upstream = socket.create_connection((rhost, to))
         except OSError:
             sys.stderr.write("channel 2: open failed: connect failed: Connection refused\n")
             sys.stderr.flush(); client.close(); continue

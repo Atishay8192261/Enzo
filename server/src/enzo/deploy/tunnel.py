@@ -133,7 +133,7 @@ def _ensure(here: Path, dep: Deployment, ssh: str, *, wait_s: float) -> dict[str
         time.sleep(0.25)
     said = _log(here)
     _stop(here)
-    if "administratively prohibited" in said or "open failed" in said:
+    if "administratively prohibited" in said:  # the SSH server forbids forwarding
         raise SshError(explain(said, dep.destination))
     msg = f"Enzo on {dep.name} isn't answering (SSH works). See why with: enzo deploy status"
     raise TunnelError(msg)
