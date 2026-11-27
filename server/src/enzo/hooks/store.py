@@ -183,8 +183,10 @@ def backoff_s(interval_s: int, failures: int) -> int:
     return wait
 
 
-def _token(hook_id: int, at: datetime, key: str) -> str:
-    return hashlib.sha256(f"{hook_id}|{at.isoformat()}|{key}".encode()).hexdigest()[:16]
+def _token(hook_id: int, key: str) -> str:
+    """Names what a dry run read. The same reading gives the same token, so a yes still holds
+    when Enzo checks again just before acting; a changed reading means asking again (§12.3)."""
+    return hashlib.sha256(f"{hook_id}|{key}".encode()).hexdigest()[:16]
 
 
 def stop_words(hook: Hook, reason: StopReason, error: str | None = None) -> str:
@@ -318,7 +320,7 @@ class Hooks:
             row.dry_number, row.dry_matched, row.dry_at = reading.number, reading.matched, now
             hook = _hook(row)
         log.info("hook.dry_run", extra={"hook": hook_id})
-        return DryRun(hook, reading, now, _token(hook_id, now, reading.key))
+        return DryRun(hook, reading, now, _token(hook_id, reading.key))
 
     async def enable(self, hook_id: int, token: str | None, now: datetime | None = None) -> Hook:
         """Turn a watch on, starting from the dry run the user saw (``token``)."""
@@ -332,7 +334,7 @@ class Hooks:
             if row.dry_at is None or row.dry_value is None or not token:
                 msg = "Check it first: the user must see what it reads now before it goes on."
                 raise HookRefusedError(msg)
-            if token != _token(hook_id, row.dry_at, row.dry_value):
+            if token != _token(hook_id, row.dry_value):
                 msg = "That is not the latest check of this watch: check it again first."
                 raise HookRefusedError(msg)
             if now - row.dry_at > DRY_RUN_FRESH:
