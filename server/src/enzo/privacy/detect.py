@@ -535,7 +535,7 @@ def _counts(kind: Kind, channel: Channel, *, personal: bool) -> bool:
     if channel in ("search", "address"):
         if kind in _TOPIC_KINDS:
             return personal  # "pregnancy-safe restaurants" is no one's secret
-        return kind != "memory"
+        return True  # memories are matched in messages only (see detect)
     return kind != "contact"  # a receiver needs a way to answer
 
 

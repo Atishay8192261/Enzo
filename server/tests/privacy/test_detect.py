@@ -211,6 +211,7 @@ def test_an_email_that_quotes_a_memory_says_so_but_a_search_does_not() -> None:
     (quote,) = detect(Outgoing("Big news: moving to Lisbon in March!", "message"), known)
     assert (quote.kind, quote.memory, quote.asks) == ("memory", 7, False)
     assert found("moving to Lisbon in March", "search", known) == []
+    assert found("moving to Lisbon in March", "field", known, field="Special requests") == []
     # A run of common words is not a quote.
     common = Known(memories=(Remembered(8, "It is in the box at the top"),))
     assert found("It is in the box over there", known=common) == []
