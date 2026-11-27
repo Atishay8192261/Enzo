@@ -40,10 +40,12 @@ from enzo.gateway.conversations import ServiceDep, conversation_routes
 from enzo.gateway.goals import goal_routes
 from enzo.gateway.google import google_routes
 from enzo.gateway.memory import memory_routes
+from enzo.gateway.privacy import privacy_routes
 from enzo.gateway.scheduled import scheduled_routes
 from enzo.goals import Goals
 from enzo.memory import Memory
 from enzo.paths import data_dir
+from enzo.privacy import Discretion, Rules, privacy_tools
 from enzo.schedule import Background, Bus, FinishedTasks, Runner, Schedule
 from enzo.schedule.notify import desktop, silent
 from enzo.schedule.tasks import TaskRunner
@@ -143,6 +145,7 @@ def create_app(
 
     app.include_router(conversation_routes(auth))
     app.include_router(memory_routes(auth))
+    app.include_router(privacy_routes(auth))
     app.include_router(goal_routes(auth))
     app.include_router(scheduled_routes(auth))
     app.include_router(connection_routes(auth))
@@ -180,6 +183,8 @@ async def _running(
     acct.on_change(router.forget)
     app.state.accounts = acct
     memory = Memory(store.engine, cfg.workspace_dir)
+    # What is sent out is checked for private details; the user's discretion rules (ADR 0029).
+    discretion = Discretion(Rules(store.engine), memory)
     schedule = Schedule(store.engine)
     goals = Goals(store.engine, cfg.workspace_dir, schedule)
     notify = desktop if cfg.notify else silent
@@ -216,6 +221,7 @@ async def _running(
             ),
             *stored_tools(outputs),
             *browser_tools(browsers),
+            *privacy_tools(discretion.rules),
         ],
         retain=outputs,
     )
@@ -228,6 +234,7 @@ async def _running(
         goals=goals,
         outputs=outputs,
         hooks=[browsers],
+        discretion=discretion,
     )
     app.state.service = service
     # Scheduled tasks run as agent turns: the runner hands each due one to the task runner.

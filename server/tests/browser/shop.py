@@ -38,6 +38,7 @@ class Record:
     cart: dict[str, int] = field(default_factory=dict)
     orders: list[dict[str, str]] = field(default_factory=list)
     sign_ins: list[str] = field(default_factory=list)
+    bookings: list[dict[str, str]] = field(default_factory=list)
 
 
 def _page(title: str, body: str) -> bytes:
@@ -129,6 +130,18 @@ class _Shop(BaseHTTPRequestHandler):
                     "value=hidden-token-123><button type=submit>Place order</button></form>",
                 )
             )
+        if path == "/book":
+            # A table booking: a name and a party size, and a free-text box (ADR 0029).
+            return self._send(
+                _page(
+                    "Book a table",
+                    "<h1>Book a table</h1><form method=post action='/book'>"
+                    "<label>Name <input name=name autocomplete=name></label>"
+                    "<label>Party size <select name=size><option>2</option><option>4</option>"
+                    "</select></label><label>Special requests <textarea name=notes>"
+                    "</textarea></label><button type=submit>Request a table</button></form>",
+                )
+            )
         if path == "/login":
             return self._send(
                 _page(
@@ -175,6 +188,9 @@ class _Shop(BaseHTTPRequestHandler):
             self.record.orders.append(data)
             self.record.cart.clear()
             return self._send(_page("Thank you", "<h1>Thank you: order #1001 is placed</h1>"))
+        if self.path == "/book":
+            self.record.bookings.append(data)
+            return self._send(_page("Requested", "<h1>Table requested</h1>"))
         if self.path == "/login":
             self.record.sign_ins.append(data.get("email", ""))
             return self._send(_page("Welcome", "<h1>Signed in</h1>"))

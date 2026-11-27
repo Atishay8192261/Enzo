@@ -23,7 +23,8 @@ async def test_a_reopened_chat_shows_the_open_approval_card(store: Store) -> Non
         conversation = (await c.get(f"/conversations/{cid}")).json()
         (card,) = conversation["pending_approvals"]
         assert (card["tool"], card["arguments"]) == ("send_email", {"value": "hi bob"})
-        assert set(card) == {"id", "tool", "arguments", "summary", "detail"}
+        assert set(card) == {"id", "tool", "arguments", "summary", "detail", "privacy"}
+        assert card["privacy"] == []  # nothing private in it
         assert conversation["running"] is False
         assert t.ran == []
 

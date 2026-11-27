@@ -31,8 +31,9 @@ from enzo.browser.session import (
 )
 from enzo.browser.sites import allowed, split_site
 from enzo.context import current_conversation
-from enzo.tools.registry import Prepared, Tool, plain_words, tool
-from enzo.tools.web import page_name, private_addresses
+from enzo.memory.guard import secret_reason
+from enzo.tools.registry import Outgoing, Prepared, Tool, plain_words, tool
+from enzo.tools.web import address_words, page_name, private_addresses
 
 #: What every task's approval card says Enzo will still ask about.
 ASKS_AGAIN = (
@@ -101,6 +102,9 @@ class ClickParams(_RefParams):
 class TypeParams(_RefParams):
     text: str = Field(max_length=4000, description="The text to type; it replaces what is there.")
     submit: bool = Field(default=False, description="Press Enter afterwards (submits the form).")
+    #: Pinned by prepare: what the field asks for (label, name, autocomplete hint); None for
+    #: an editor that takes free text, like a message box (ADR 0029).
+    fills: SkipJsonSchema[str | None] = None
 
 
 class SelectParams(_RefParams):
@@ -169,6 +173,7 @@ def browser_tools(browsers: Browsers) -> list[Tool[Any, Any]]:  # noqa: PLR0915 
         ),
         activity=lambda a: f"Opening {page_name(a.url)}",
         prepare=prepare_start,
+        outbound=lambda a: [Outgoing(address_words(a.url), "address")],
     )
     async def browser_start(args: StartParams) -> PageView:
         conversation = current_conversation()
@@ -212,6 +217,9 @@ def browser_tools(browsers: Browsers) -> list[Tool[Any, Any]]:  # noqa: PLR0915 
         untrusted_output=True,
         activity=lambda a: f"Opening {page_name(a.url)}",
         prepare=prepare_open,
+        # An address that carries a private detail asks first (§12.5, ADR 0029).
+        summary=lambda a: plain_words(f"Open {a.url} in the browser", 200),
+        outbound=lambda a: [Outgoing(address_words(a.url), "address")],
     )
     async def browser_open(args: OpenParams) -> PageView:
         s = session()
@@ -279,6 +287,7 @@ def browser_tools(browsers: Browsers) -> list[Tool[Any, Any]]:  # noqa: PLR0915 
             update={
                 "seen": s.type_pin(element, args.text, submit=args.submit),
                 "target": label,
+                "fills": _fills(element),
             }
         )
         why = type_risk(element, args.text, submit=args.submit)
@@ -318,6 +327,16 @@ def browser_tools(browsers: Browsers) -> list[Tool[Any, Any]]:  # noqa: PLR0915 
             + (" and pressing Enter" if a.submit else "")
         ),
         prepare=prepare_type,
+        # What is typed goes to the site: a private detail the field does not ask for asks
+        # first (§12.5, ADR 0029). The card's words never spell out a secret.
+        summary=lambda a: plain_words(
+            f"Type {_typed_text(a.text)} into “{a.target or a.element}”"
+            + (" and press Enter" if a.submit else ""),
+            200,
+        ),
+        outbound=lambda a: [
+            Outgoing(a.text, "field" if a.fills is not None else "message", field=a.fills)
+        ],
     )
     async def browser_type(args: TypeParams) -> PageView:
         s = session()
@@ -464,6 +483,22 @@ def _typed_words(element: Element, text: str) -> str:
     if kind == "code":
         return "a one-time code"
     return f"“{plain_words(text, 80)}”"
+
+
+def _typed_text(text: str) -> str:
+    """Typed text as a card says it, when the field itself is not a secret one."""
+    if secret_reason(text) or looks_like_card(text):
+        return "text that looks like a password, key or card number"
+    return f"“{plain_words(text, 120)}”"
+
+
+def _fills(element: Element) -> str | None:
+    """What a field asks for, in the page's words; None for a free-text editor."""
+    f = element.field
+    if f is None:
+        return None
+    words = (f.label, f.name, f.id, f.placeholder, f.autocomplete, f.type)
+    return " ".join(w for w in words if w) or "field"
 
 
 def _form_detail(element: Element) -> str:

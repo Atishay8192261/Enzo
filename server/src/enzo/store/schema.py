@@ -151,6 +151,8 @@ class ApprovalRow(Base):
     #: What the card says: the action in plain words, and what it changes (e.g. a diff).
     summary: Mapped[str | None] = mapped_column(Text)
     detail: Mapped[str | None] = mapped_column(Text)
+    #: Private details the card says the action includes ("This includes a health detail: …").
+    privacy: Mapped[list[str] | None] = mapped_column(JSONB)
     #: NULL while waiting; set once, by the user.
     approved: Mapped[bool | None]
     requested_at: Mapped[datetime] = _created_at()
@@ -229,6 +231,34 @@ class MemoryRow(Base):
         TSVECTOR,
         Computed("to_tsvector('english', coalesce(about, '') || ' ' || text)", persisted=True),
     )
+
+
+class DiscretionRuleRow(Base):
+    """A discretion rule the user stated (spec §12.5): what Enzo never shares with others.
+
+    Saved only from the user's own words (``quote``), never inferred. ``conversation_id`` set:
+    the rule holds in that chat only; NULL: in every chat. Removing a rule deletes it.
+    """
+
+    __tablename__ = "discretion_rules"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    #: The rule in plain words: "Don't mention my health to anyone".
+    text: Mapped[str] = mapped_column(Text)
+    #: The kinds of private detail it covers (``enzo.privacy.RULE_KINDS``), and its own words.
+    kinds: Mapped[list[str]] = mapped_column(JSONB)
+    words: Mapped[list[str]] = mapped_column(JSONB)
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    #: The user's words that stated it, from their message (the evidence, §6.5).
+    quote: Mapped[str] = mapped_column(Text)
+    #: Where it was said: the chat and the run (the same id as its log lines).
+    said_in: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    turn_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
 
 
 class JobRow(Base):

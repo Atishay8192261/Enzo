@@ -71,6 +71,8 @@ class ApprovalOut(BaseModel):
     arguments: dict[str, Any]
     summary: str | None
     detail: str | None
+    #: Private details the action includes, one plain line each (ADR 0029).
+    privacy: list[str] = Field(default_factory=list)
 
 
 class ConversationOut(BaseModel):
@@ -159,7 +161,12 @@ def conversation_routes(auth: params.Depends) -> APIRouter:
             brain=info.brain,
             pending_approvals=[
                 ApprovalOut(
-                    id=r.id, tool=r.tool, arguments=r.arguments, summary=r.summary, detail=r.detail
+                    id=r.id,
+                    tool=r.tool,
+                    arguments=r.arguments,
+                    summary=r.summary,
+                    detail=r.detail,
+                    privacy=r.privacy or [],
                 )
                 for r in pending
             ],
@@ -329,6 +336,7 @@ def _sse(event: ServiceEvent) -> ServerSentEvent:  # noqa: PLR0911 - one return 
                 "arguments": r.arguments,
                 "summary": r.summary,
                 "detail": r.detail,
+                "privacy": list(r.privacy),
             }
             return ServerSentEvent(event="approval_needed", data=data)
         case TurnDone(outcome=o):

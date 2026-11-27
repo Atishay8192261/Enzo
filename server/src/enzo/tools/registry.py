@@ -69,6 +69,22 @@ class JsonArgs(BaseModel):
         return dict(self.model_extra or {})
 
 
+#: How text leaves the computer (spec §12.5, ADR 0029): an email or a post, a web form's field,
+#: a search query, or a page's address. It decides which private details count.
+type Channel = Literal["message", "field", "search", "address"]
+
+
+@dataclass(frozen=True, slots=True)
+class Outgoing:
+    """Text a call sends to someone outside the conversation, checked before it goes."""
+
+    text: str
+    channel: Channel
+    #: For a form field: what it asks for (label, name, autocomplete hint), e.g. "Delivery
+    #: address street-address". A detail of that kind typed into it is what the site needs.
+    field: str | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class Prepared[P: BaseModel]:
     """A call made exact before it runs or the user is asked (e.g. pinned to a commit)."""
@@ -82,6 +98,9 @@ class Prepared[P: BaseModel]:
     #: For a tool that does not always need approval: True when this exact call does (a
     #: browser click that would place an order). A tool with ``requires_approval`` always asks.
     ask: bool = False
+    #: Text the call also sends that is not in its arguments (a forwarded email's own text),
+    #: checked for private details with the call's ``outbound`` text (ADR 0029).
+    sends: tuple[Outgoing, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +131,9 @@ class Tool[P: BaseModel, R: BaseModel]:
     group: str | None = None
     #: Its result always stays whole in the context, however long (it reads stored text itself).
     keep_whole: bool = False
+    #: What the call sends to a third party (a query, an email's text, a typed field), from its
+    #: prepared arguments: checked for private details before it runs (§12.5, ADR 0029).
+    outbound: Callable[[P], Sequence[Outgoing]] | None = None
 
     def spec(self) -> ToolSpec:
         # The card is the one confirmation: a model that asks in chat first makes the user
@@ -134,6 +156,7 @@ def tool[P: BaseModel, R: BaseModel](  # noqa: PLR0913 - keyword-only tool optio
     summary: Callable[[P], str] | None = None,
     activity: Callable[[P], str] | None = None,
     prepare: Callable[[P], Awaitable[Prepared[P]]] | None = None,
+    outbound: Callable[[P], Sequence[Outgoing]] | None = None,
 ) -> Callable[[Handler[P, R]], Tool[P, R]]:
     """Declare a tool from an async function; parameter and result models come from its hints."""
 
@@ -156,6 +179,7 @@ def tool[P: BaseModel, R: BaseModel](  # noqa: PLR0913 - keyword-only tool optio
             summary=summary,
             activity=activity,
             prepare=prepare,
+            outbound=outbound,
         )
 
     return wrap

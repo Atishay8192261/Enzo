@@ -12,18 +12,19 @@ Both return outside content, fenced as untrusted data (§12.4).
 
 import asyncio
 import ipaddress
+import re
 import socket
 import urllib.request
 import warnings
 from collections.abc import Callable
 from typing import Any, Literal
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import unquote_plus, urljoin, urlsplit
 
 import httpx2
 from pydantic import BaseModel, ConfigDict, Field
 from urllib3.exceptions import DependencyWarning
 
-from enzo.tools.registry import Tool, plain_words, tool
+from enzo.tools.registry import Outgoing, Tool, plain_words, tool
 
 with warnings.catch_warnings():
     # trafilatura probes urllib3's optional SOCKS support on import, and urllib3 warns when
@@ -49,7 +50,16 @@ class _Params(BaseModel):
 
 
 class SearchParams(_Params):
-    query: str = Field(min_length=1, max_length=400, description="What to search the web for.")
+    query: str = Field(
+        min_length=1,
+        max_length=400,
+        description=(
+            "What to search the web for: the topic only. It goes to a search company, so never "
+            "put the user's or their family's names, address, contact details, ID numbers or a "
+            "private detail about them in it unless they asked: 'alcohol-free restaurants "
+            "Austin', not 'restaurant for my pregnant wife'."
+        ),
+    )
     max_results: int = Field(default=5, ge=1, le=10, description="How many results to return.")
     topic: Literal["general", "news", "finance"] = Field(
         default="general", description="Use news for current events, finance for markets."
@@ -103,6 +113,9 @@ def web_tools(*, tavily_key: KeyLookup, http: httpx2.AsyncClient) -> list[Tool[A
         timeout_s=30,
         untrusted_output=True,
         activity=_search_activity,
+        # The query leaves the computer: private details in it ask first (§12.5, ADR 0029).
+        summary=lambda p: f"Search the web for “{plain_words(p.query, 160)}”",
+        outbound=lambda p: [Outgoing(p.query, "search")],
     )
     async def web_search(params: SearchParams) -> SearchResults:
         return await search(params, http=http, key=tavily_key())
@@ -116,6 +129,9 @@ def web_tools(*, tavily_key: KeyLookup, http: httpx2.AsyncClient) -> list[Tool[A
         timeout_s=30,
         untrusted_output=True,
         activity=_read_activity,
+        # The address goes to the site: one that carries a private detail asks first.
+        summary=lambda p: f"Open {plain_words(p.url, 200)} to read it",
+        outbound=lambda p: [Outgoing(address_words(p.url), "address")],
     )
     async def read_page(params: ReadParams) -> Page:
         return await fetch_page(params, http=http)
@@ -125,6 +141,14 @@ def web_tools(*, tavily_key: KeyLookup, http: httpx2.AsyncClient) -> list[Tool[A
 
 def _search_activity(params: SearchParams) -> str:
     return f"Searching the web for “{plain_words(params.query, 60)}”"
+
+
+def address_words(url: str) -> str:
+    """What a web address tells the site beyond its name: its path and query, as words
+    ("/collect?address=12+Oak+Street" is "collect address 12 Oak Street")."""
+    parts = urlsplit(url)
+    raw = " ".join((parts.path, parts.query, parts.fragment))
+    return " ".join(re.sub(r"[/?&=#;_]+", " ", unquote_plus(raw)).split())
 
 
 def _read_activity(params: ReadParams) -> str:
