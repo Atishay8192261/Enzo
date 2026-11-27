@@ -227,14 +227,16 @@ export function App({
 
   // Reminders arrive while the app is open (spec §9.3): each shows in the chat on screen. The
   // stream ends when the gateway goes away; it is opened again, waiting longer each time.
-  const { reminded } = chat;
+  const { reminded, refresh } = chat;
   useEffect(() => {
     const stop = new AbortController();
     void (async () => {
       let wait = RETRY_MIN_MS;
       while (!stop.signal.aborted) {
         try {
-          for await (const event of client.events(stop.signal)) {
+          // Each time the stream opens again (Enzo restarted), the chat on screen catches up on
+          // what it missed meanwhile: a helper that picked up again, or finished.
+          for await (const event of client.events(stop.signal, () => void refresh())) {
             wait = RETRY_MIN_MS;
             reminded(event);
           }
@@ -246,7 +248,7 @@ export function App({
       }
     })();
     return () => stop.abort();
-  }, [client, reminded]);
+  }, [client, reminded, refresh]);
 
   // Accounts drive the status bar, the opening screen and completion: load them when the chat
   // opens, when the gateway is back, and whenever a command connects or disconnects one.
