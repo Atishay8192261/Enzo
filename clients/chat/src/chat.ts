@@ -34,8 +34,18 @@ export type ChatsClient = Pick<
   "conversations" | "renameConversation" | "deleteConversation"
 >;
 
-/** Reminders and scheduled tasks (spec §9.3): the ones to come, cancelling, live arrivals. */
-export type ScheduleClient = Pick<GatewayClient, "scheduled" | "cancelScheduled" | "events">;
+/** Reminders, scheduled tasks (spec §9.3) and watches (§9.4): the ones to come, cancelling,
+ * turning a watch on after a check, live arrivals. */
+export type ScheduleClient = Pick<
+  GatewayClient,
+  | "scheduled"
+  | "cancelScheduled"
+  | "events"
+  | "watches"
+  | "checkWatch"
+  | "enableWatch"
+  | "cancelWatch"
+>;
 
 /** Helpers (spec §9.5): long work handed to child agents, each in its own chat. */
 export type HelpersClient = Pick<GatewayClient, "helpers" | "stopHelper" | "conversationHelpers">;
@@ -542,14 +552,18 @@ export const SOME_STEP = "Working on a step";
 /** A reminder or a task's report, as the chat shows it: "⏰ Reminder: Call mom". */
 export const scheduledItem = (text: string): ChatItem => ({
   role: "notice",
-  text: `⏰ ${text}`,
+  text: text.startsWith(WATCH_ICON) ? text : `⏰ ${text}`,
   reminder: true,
 });
+
+/** A watch's report or stop starts with this (spec §9.4), not the clock of a schedule. */
+export const WATCH_ICON = "👀";
 
 /** What a live event says in the chat on screen; null when it should not interrupt. */
 export function eventText(event: GatewayEvent): string | null {
   if (event.kind === "helper") return event.words;
   if (event.kind === "reminder") return `Reminder: ${event.words}`;
+  if (event.kind === "watch") return `${WATCH_ICON} ${event.words}`;
   return event.outcome === "quiet" ? null : event.words;
 }
 
@@ -558,6 +572,7 @@ export function noticeText(n: ScheduledNotice): string | null {
   if (n.kind === "reminder") {
     return `Reminder: ${n.late ? `${n.text} (late: due ${n.due}, Enzo wasn't running)` : n.text}`;
   }
+  if (n.kind === "watch") return `${WATCH_ICON} ${n.text}`; // the gateway words it whole
   const what = n.task ?? "Scheduled task";
   switch (n.outcome) {
     case "quiet":
@@ -616,6 +631,16 @@ export function toItems(
       // A helper's chat starts with the work it was given, not with something the user typed.
       starts.push(items.length);
       items.push({ role: "notice", text: `Helper's brief: ${texts[0] ?? ""}` });
+      return;
+    }
+    if (m.role === "user" && m.origin === "watch") {
+      // A watch saw a change and woke Enzo: what the user asked it to do then, not typing.
+      starts.push(items.length);
+      items.push({
+        role: "notice",
+        text: `${WATCH_ICON} Watch: ${texts[0] ?? ""}`,
+        reminder: true,
+      });
       return;
     }
     if (m.role === "user" && m.origin === "schedule") {

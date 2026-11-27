@@ -225,6 +225,14 @@ export function fakeClient(overrides: Partial<Client> = {}): Client {
     helpers: async () => [],
     stopHelper: mock(async (id: number) => ({ stopped: true, helper: helperOf(id) })),
     conversationHelpers: async () => [],
+    watches: async () => [],
+    checkWatch: mock(async () => {
+      throw new Error("no watch");
+    }),
+    enableWatch: mock(async () => {
+      throw new Error("no watch");
+    }),
+    cancelWatch: mock(async () => {}),
     events: quiet,
     forgetMemory: mock(async () => {}),
     privacyRules: async () => [],

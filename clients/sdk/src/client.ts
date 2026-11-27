@@ -95,6 +95,43 @@ export interface Scheduled {
   goal_id?: number | null;
 }
 
+/**
+ * A watch (spec §9.4): Enzo checks something on its own with no model call and wakes up only
+ * when it changes. It starts off; turning it on needs a check the user saw (`checkWatch`).
+ */
+export interface Watch {
+  id: number;
+  /** "the price of the blue kettle". */
+  what: string;
+  status: "off" | "on" | "stopped" | "done" | "cancelled";
+  /** "the text at “.price” on shop.example/kettle, every 30 minutes". */
+  checks: string;
+  /** What counts as a change: "the number in it goes below 40". */
+  change: string;
+  /** "until Thu 10 Dec 2026, at most 1 wake". */
+  ends: string;
+  /** What Enzo does when it changes. */
+  on_change: string;
+  /** What it read last (outside content: show it as plain text), and when. */
+  reads: string | null;
+  read_at: string | null;
+  next_check: string | null;
+  /** Why a stopped one stopped: rate_limited, auth, failing. */
+  stop_reason: string | null;
+  last_error: string | null;
+  wakes: number;
+}
+
+/** A watch read right now: what the user sees before turning it on. */
+export interface WatchCheck {
+  watch: Watch;
+  reads: string;
+  change: string;
+  checked_at: string | null;
+  /** Turning it on names this check: the one the user saw. */
+  token: string;
+}
+
 /** What a change of a goal rests on (spec §6.5). */
 export interface GoalEvidence {
   evidence: string | null;
@@ -154,21 +191,24 @@ export interface GoalList {
   file: string | null;
 }
 
-/** How a task run went: a report, nothing new yet, done, waiting for approval, or failed. */
+/** How a task run or a watch's wake went: a report, nothing new yet, done, waiting for
+ * approval, failed, or (a watch) stopped. */
 export type RunOutcome =
   | "delivered"
   | "reported"
   | "quiet"
   | "finished"
   | "needs_approval"
-  | "failed";
+  | "failed"
+  | "stopped";
 
-/** A reminder, or a task's report, that arrived in a chat: shown after `after` messages. */
+/** A reminder, a task's report or a watch's, that arrived in a chat: shown after `after`
+ * messages. */
 export interface ScheduledNotice {
-  kind: "reminder" | "task";
-  /** A task: what it does. */
+  kind: "reminder" | "task" | "watch";
+  /** A task: what it does. A watch: what it watches. */
   task: string | null;
-  /** A reminder's words, or the run's report. */
+  /** A reminder's words, or the run's report (a watch's is the whole line to show). */
   text: string;
   due_at: string;
   delivered_at: string;
@@ -254,6 +294,17 @@ export type GatewayEvent =
       /** The helper's own chat, and the user's chat its lines show in. */
       chat_id?: string | null;
       conversation_id: string | null;
+    }
+  | {
+      kind: "watch";
+      watch: number;
+      outcome: RunOutcome;
+      /** The whole line to show: "the kettle's price: now $39.00, under your $40." */
+      words: string;
+      chat_id: string | null;
+      conversation_id: string | null;
+      /** The watch is no longer on (its last wake, or it stopped). */
+      stopped: boolean;
     };
 
 export interface ApprovalCard {
@@ -289,10 +340,11 @@ export interface StoredMessage {
   role: "system" | "user" | "assistant" | "tool";
   parts: StoredPart[];
   /**
-   * Who wrote it, when not the user: "schedule" (a scheduled task's run), "brief" (the work a
-   * helper was given, in its own chat), "handoff" (helpers' reports, for Enzo to review).
+   * Who wrote it, when not the user: "schedule" (a scheduled task's run), "watch" (a watch
+   * saw a change), "brief" (the work a helper was given, in its own chat), "handoff"
+   * (helpers' reports, for Enzo to review).
    */
-  origin?: "schedule" | "brief" | "handoff";
+  origin?: "schedule" | "watch" | "brief" | "handoff";
   /** Older messages were summarized just before this one (how many turns the summary covers). */
   summarized?: number;
 }
@@ -475,6 +527,26 @@ export class GatewayClient {
     await this.#json("DELETE", `/scheduled/${id}`);
   }
 
+  /** Watches that are on, off or stopped, newest first. */
+  async watches(): Promise<Watch[]> {
+    const body = (await this.#json("GET", "/watches")) as { watches: Watch[] };
+    return body.watches;
+  }
+
+  /** Read a watch right now (its dry run), to show the user before turning it on. */
+  checkWatch(id: number): Promise<WatchCheck> {
+    return this.#json("POST", `/watches/${id}/check`) as Promise<WatchCheck>;
+  }
+
+  /** Turn a watch on, from the check the user saw. Only after they said yes. */
+  enableWatch(id: number, token: string): Promise<Watch> {
+    return this.#json("POST", `/watches/${id}/enable`, { token }) as Promise<Watch>;
+  }
+
+  async cancelWatch(id: number): Promise<void> {
+    await this.#json("DELETE", `/watches/${id}`);
+  }
+
   /** The reminders and task reports that arrived in a chat, in order. */
   conversationScheduled(id: string): Promise<ScheduledNotice[]> {
     return this.#json("GET", `/conversations/${enc(id)}/scheduled`) as Promise<ScheduledNotice[]>;
@@ -489,7 +561,7 @@ export class GatewayClient {
     if (!res.body) throw new GatewayError("event stream has no body", res.status);
     opened?.();
     for await (const message of parseSse(res.body)) {
-      if (!["reminder", "task", "helper"].includes(message.event)) continue; // not known here
+      if (!["reminder", "task", "helper", "watch"].includes(message.event)) continue; // not known here
       try {
         yield { kind: message.event, ...JSON.parse(message.data) } as GatewayEvent;
       } catch {

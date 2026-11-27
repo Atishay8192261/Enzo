@@ -176,7 +176,7 @@ describe("command output (#36)", () => {
     const long = rows.findIndex((l) => l.includes("/scheduled "));
     const first = rows[long] ?? "";
     const next = rows[long + 1] ?? "";
-    const column = first.indexOf("your reminders and scheduled tasks");
+    const column = first.indexOf("your reminders, scheduled tasks");
     expect(column).toBeGreaterThan(0);
     // the wrapped rest starts under the description, never back at the left edge
     expect(next.slice(0, column).replace(/[│\s]/g, "")).toBe("");

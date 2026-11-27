@@ -22,6 +22,8 @@ import type {
   ProviderConnection,
   Remembered,
   Scheduled,
+  Watch,
+  WatchCheck,
 } from "@enzo/sdk";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
@@ -42,6 +44,7 @@ import {
 import { type Copy, lastCodeBlock } from "./clipboard.ts";
 import {
   type CommandContext,
+  checkReply,
   echoOf,
   helperLine,
   memoryLine,
@@ -50,6 +53,7 @@ import {
   ruleLine,
   runCommand,
   scheduledLine,
+  watchLine,
 } from "./commands.ts";
 import { suggest } from "./complete.ts";
 import { KeyPrompt } from "./KeyPrompt.tsx";
@@ -78,7 +82,13 @@ export const PALETTE: Choice[] = [
   { label: "Goals", description: "what you are working toward", value: "/goals" },
   { label: "Finished goals", description: "done or given up", value: "/goals done" },
   { label: "Scheduled", description: "reminders and tasks still to come", value: "/scheduled" },
-  { label: "Cancel a reminder or task", description: "asks first", value: "/cancel" },
+  { label: "Cancel a reminder, task or watch", description: "asks first", value: "/cancel" },
+  { label: "Watches", description: "what Enzo watches for a change", value: "/watches" },
+  {
+    label: "Turn on a watch",
+    description: "shows what it reads now, asks first",
+    value: "/enable",
+  },
   { label: "Helpers", description: "long work handed to helpers", value: "/helpers" },
   { label: "Stop a helper", value: "/helpers stop" },
   { label: "Help", description: "commands and keys", value: "/help" },
@@ -100,6 +110,8 @@ const PICKER_TITLE: Record<PickerKind | "palette", string> = {
   lift: "Lift this rule?",
   helpers: "Your helpers: open one's chat",
   stophelper: "Stop which helper?",
+  watches: "Turn on which watch?",
+  enable: "Turn this watch on?",
 };
 
 /** Waits before opening the live event stream again: from this, doubling, up to the max. */
@@ -212,6 +224,10 @@ export function App({
   const [lifting, setLifting] = useState<PrivacyRule | null>(null);
   // /helpers: the helpers to open or stop.
   const [helpers, setHelpers] = useState<Helper[]>([]);
+  // Watches: the list to pick from, the one being cancelled, and the check shown before /enable.
+  const [watchList, setWatchList] = useState<Watch[]>([]);
+  const [unwatching, setUnwatching] = useState<Watch | null>(null);
+  const [enabling, setEnabling] = useState<WatchCheck | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -413,12 +429,46 @@ export function App({
     },
     keepRule: () => setLifting(null),
     pickReminder: async () => {
-      const all = await client.scheduled();
-      if (all.length === 0) return "Nothing scheduled to cancel.";
+      const [all, watches] = await Promise.all([client.scheduled(), client.watches()]);
+      if (all.length === 0 && watches.length === 0) return "Nothing scheduled to cancel.";
       setReminders(all);
+      setWatchList(watches);
       setPicker("reminders");
       return null;
     },
+    askCancelWatch: async (id) => {
+      const found = (await client.watches()).find((w) => w.id === id);
+      if (!found) {
+        return { text: `There is no watch #${id}. /watches lists them.`, error: true };
+      }
+      setCancelling(null);
+      setUnwatching(found);
+      setPicker("cancel");
+      return null;
+    },
+    pickWatch: async () => {
+      const off = (await client.watches()).filter((w) => w.status !== "on");
+      if (off.length === 0) {
+        return "No watch is off. Ask Enzo to watch something, like “tell me when the kettle is under $40”.";
+      }
+      setWatchList(off);
+      setPicker("watches");
+      return null;
+    },
+    askEnable: async (id) => {
+      const check = await client.checkWatch(id); // the dry run: what it reads right now
+      setEnabling(check);
+      setPicker("enable");
+      return checkReply(check);
+    },
+    enableWatch: async () => {
+      const check = enabling;
+      if (!check) return null;
+      setEnabling(null);
+      const on = await client.enableWatch(check.watch.id, check.token);
+      return `Watch #${on.id} is on: ${on.checks}. Unchanged checks stay silent; a change wakes Enzo.`;
+    },
+    keepWatchOff: () => setEnabling(null),
     askCancel: async (id) => {
       const found =
         reminders.find((r) => r.id === id) ?? (await client.scheduled()).find((r) => r.id === id);
@@ -427,18 +477,28 @@ export function App({
           text: `There is nothing scheduled with #${id}. /scheduled lists them.`,
           error: true,
         };
+      setUnwatching(null);
       setCancelling(found);
       setPicker("cancel");
       return null;
     },
     cancelReminder: async () => {
+      const watch = unwatching;
+      if (watch) {
+        setUnwatching(null);
+        await client.cancelWatch(watch.id);
+        return `Stopped watching “${watch.what}”.`;
+      }
       const target = cancelling;
       if (!target) return null;
       setCancelling(null);
       await client.cancelScheduled(target.id);
       return `Cancelled “${target.text}”.`;
     },
-    keepReminder: () => setCancelling(null),
+    keepReminder: () => {
+      setCancelling(null);
+      setUnwatching(null);
+    },
     pickHelper: async (stopping) => {
       const all = await client.helpers();
       const shown = stopping
@@ -627,11 +687,29 @@ export function App({
       }));
     }
     if (kind === "reminders") {
-      return reminders.map((r) => ({ label: scheduledLine(r), value: `/cancel ${r.id}` }));
+      return [
+        ...reminders.map((r) => ({ label: scheduledLine(r), value: `/cancel ${r.id}` })),
+        ...watchList.map((w) => ({ label: `Watch: ${w.what}`, value: `/cancel w${w.id}` })),
+      ];
+    }
+    if (kind === "watches") {
+      return watchList.map((w) => ({ label: watchLine(w), value: `/enable ${w.id}` }));
+    }
+    if (kind === "enable") {
+      // Keeping it off is first: a stray Enter never turns anything on. The dry run is on the
+      // choice itself: the list covers the card that showed it (spec §9.4: inspect, then enable).
+      const reads = enabling ? enabling.reads : "";
+      return [
+        { label: "No, keep it off", value: "/enable keep" },
+        {
+          label: `Yes, turn it on: it reads “${reads.length > 40 ? `${reads.slice(0, 39)}…` : reads}” now`,
+          value: "/enable confirm",
+        },
+      ];
     }
     if (kind === "cancel") {
       // Keeping it is first: a stray Enter never cancels anything.
-      const what = cancelling ? cancelling.text : "";
+      const what = unwatching ? `watching ${unwatching.what}` : cancelling ? cancelling.text : "";
       return [
         { label: "No, keep it", value: "/cancel keep" },
         {
