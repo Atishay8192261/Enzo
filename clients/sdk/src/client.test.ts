@@ -47,6 +47,44 @@ describe("GatewayClient", () => {
     });
   });
 
+  it("uploads an image as raw bytes, its name in a header, and sends its id", async () => {
+    const seen: Seen[] = [];
+    const kept = { id: "img_0123456789abcdef", media_type: "image/png", width: 2, height: 1 };
+    const client = new GatewayClient({
+      baseUrl: "http://enzo",
+      token: "t",
+      fetch: fakeFetch(
+        (url) =>
+          url.endsWith("/images")
+            ? Response.json(kept, { status: 201 })
+            : sse('event: error\ndata: {"message":"x"}\n\n'),
+        seen,
+      ),
+    });
+    const bytes = new Uint8Array([137, 80, 78, 71]);
+    const got = await client.uploadImage(bytes, {
+      source: "file",
+      name: "Screen Shot 1.png",
+      type: "image/png",
+    });
+    expect(got.id).toBe(kept.id);
+    expect(seen[0]?.url).toBe("http://enzo/images");
+    expect(seen[0]?.init.body).toBe(bytes);
+    expect(seen[0]?.init.headers).toEqual({
+      "content-type": "image/png",
+      "x-enzo-image-source": "file",
+      "x-enzo-image-name": "Screen%20Shot%201.png",
+      authorization: "Bearer t",
+    });
+    for await (const _ of client.send("c-1", "what is it?", { images: [got.id] })) {
+      // drain
+    }
+    expect(JSON.parse(String(seen[1]?.init.body))).toEqual({
+      message: "what is it?",
+      images: [kept.id],
+    });
+  });
+
   it("reports HTTP errors with the server's reason before any streaming", async () => {
     const client = new GatewayClient({
       baseUrl: "http://enzo",
