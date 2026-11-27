@@ -22,6 +22,7 @@ from enzo.brain.errors import (
 from enzo.brain.models import (
     BrainResponse,
     Capabilities,
+    ImagePart,
     Message,
     NativePart,
     Part,
@@ -196,7 +197,7 @@ def to_wire_messages(messages: Sequence[Message]) -> tuple[str, list[dict[str, A
             else:
                 system.append(message.text)
         elif message.role == "user":
-            wire.append({"role": "user", "content": _text_blocks(message)})
+            wire.append({"role": "user", "content": _user_blocks(message)})
         elif message.role == "assistant":
             wire.append({"role": "assistant", "content": _assistant_blocks(message)})
         else:
@@ -209,7 +210,12 @@ def to_wire_messages(messages: Sequence[Message]) -> tuple[str, list[dict[str, A
                         {
                             "type": "tool_result",
                             "tool_use_id": r.call_id,
-                            "content": r.content,
+                            # A result that shows an image (a screenshot) is a list of blocks.
+                            "content": (
+                                [{"type": "text", "text": r.content}, *map(_image_block, r.images)]
+                                if r.images
+                                else r.content
+                            ),
                             "is_error": r.is_error,
                         }
                         for r in message.parts
@@ -220,8 +226,25 @@ def to_wire_messages(messages: Sequence[Message]) -> tuple[str, list[dict[str, A
     return "\n\n".join(system), wire
 
 
-def _text_blocks(message: Message) -> list[dict[str, Any]]:
-    return [{"type": "text", "text": p.text} for p in message.parts if isinstance(p, TextPart)]
+def _user_blocks(message: Message) -> list[dict[str, Any]]:
+    """Text and images, in their order: the user's words, their images, then the context."""
+    blocks: list[dict[str, Any]] = []
+    for part in message.parts:
+        if isinstance(part, TextPart):
+            blocks.append({"type": "text", "text": part.text})
+        elif isinstance(part, ImagePart):
+            blocks.append(_image_block(part))
+    return blocks
+
+
+def _image_block(image: ImagePart) -> dict[str, Any]:
+    if image.data is None:  # the router fills in each brain's copy just before the call
+        msg = f"image {image.id} was not attached before the call"
+        raise ValueError(msg)
+    return {
+        "type": "image",
+        "source": {"type": "base64", "media_type": image.media_type, "data": image.data},
+    }
 
 
 def _assistant_blocks(message: Message) -> list[dict[str, Any]]:

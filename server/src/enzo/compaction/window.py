@@ -203,7 +203,12 @@ class ContextWindow:
         self, brain: str, messages: Sequence[Message], tools: Sequence[ToolSpec], limit: int
     ) -> Count:
         return await self._counter.count(
-            brain, messages, tools, limit=limit, provider=lambda: self._provider(brain)
+            brain,
+            messages,
+            tools,
+            limit=limit,
+            provider=lambda: self._provider(brain),
+            attach=lambda ms: self._router.attach(brain, ms),
         )
 
     def _provider(self, brain: str) -> BrainProvider | None:

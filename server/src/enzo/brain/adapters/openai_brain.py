@@ -36,6 +36,7 @@ from enzo.brain.errors import (
 from enzo.brain.models import (
     BrainResponse,
     Capabilities,
+    ImagePart,
     Message,
     NativePart,
     Part,
@@ -241,7 +242,9 @@ class OpenAIBrain:
         request: dict[str, Any] = {
             "model": self._model,
             "input": to_wire_input(
-                messages, self._provider, namespace=NAMESPACE if self._plan else None
+                messages,
+                self._provider,
+                namespace=NAMESPACE if self._plan else None,
             ),
             "store": False,
         }
@@ -274,7 +277,10 @@ class OpenAIBrain:
 
 
 def to_wire_input(
-    messages: Sequence[Message], provider: str, *, namespace: str | None = None
+    messages: Sequence[Message],
+    provider: str,
+    *,
+    namespace: str | None = None,
 ) -> list[dict[str, Any]]:
     """``namespace``: the tool namespace calls belong to, when tools are grouped in one."""
     items: list[dict[str, Any]] = []
@@ -284,30 +290,46 @@ def to_wire_input(
             # instead of rewriting the prefix (which would drop reasoning on newer models).
             items.append({"role": "developer", "content": message.text})
         elif message.role == "user":
-            items.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": p.text}
-                        for p in message.parts
-                        if isinstance(p, TextPart)
-                    ],
-                }
-            )
+            content: list[dict[str, Any]] = []
+            for p in message.parts:
+                if isinstance(p, TextPart):
+                    content.append({"type": "input_text", "text": p.text})
+                elif isinstance(p, ImagePart):
+                    content.append(_image_item(p))
+            items.append({"role": "user", "content": content})
         elif message.role == "assistant":
             items.extend(_assistant_items(message, provider, namespace))
         else:
-            items.extend(
-                {
-                    "type": "function_call_output",
-                    "call_id": r.call_id,
-                    # The Responses API has no error flag on outputs, so say it in the text.
-                    "output": f"Error: {r.content}" if r.is_error else r.content,
-                }
-                for r in message.parts
-                if r.type == "tool_result"
-            )
+            for r in message.parts:
+                if r.type != "tool_result":
+                    continue
+                # The Responses API has no error flag on outputs, so say it in the text.
+                text = f"Error: {r.content}" if r.is_error else r.content
+                output: str | list[dict[str, Any]] = (
+                    [
+                        {"type": "input_text", "text": text},
+                        *map(_image_item, r.images),
+                    ]
+                    if r.images
+                    else text
+                )
+                items.append(
+                    {"type": "function_call_output", "call_id": r.call_id, "output": output}
+                )
     return items
+
+
+def _image_item(image: ImagePart) -> dict[str, Any]:
+    if image.data is None:  # the router fills in each brain's copy just before the call
+        msg = f"image {image.id} was not attached before the call"
+        raise ValueError(msg)
+    item: dict[str, Any] = {
+        "type": "input_image",
+        "image_url": f"data:{image.media_type};base64,{image.data}",
+    }
+    if image.detail is not None:  # from the brain's vision profile
+        item["detail"] = image.detail
+    return item
 
 
 def _assistant_items(

@@ -9,7 +9,9 @@ Rules this module enforces:
   same-tier brain exists;
 - only rate-limit, server, connection and timeout failures fall back, exactly once;
 - a stream only falls back before its first token, so the user never sees two half-answers;
-- every attempt, failed or not, becomes a ``CallRecord`` with tokens, latency and cost (or None).
+- every attempt, failed or not, becomes a ``CallRecord`` with tokens, latency and cost (or None);
+- a prompt with an image goes only to brains that can see it, each getting its own copy sized to
+  its limits (ADR 0033); when none can, nothing is sent and the user is told why.
 """
 
 import asyncio
@@ -19,7 +21,7 @@ import time
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from enzo.brain.config import TIERS, BrainConfig, BrainsConfig, TaskKind, Tier
 from enzo.brain.errors import BrainError, ProviderServerError
@@ -35,6 +37,9 @@ from enzo.brain.models import (
 )
 from enzo.brain.pricing import cost_usd
 from enzo.brain.provider import BrainProvider
+
+if TYPE_CHECKING:
+    from enzo.images.store import ImageStore
 
 log = logging.getLogger("enzo.brain.router")
 
@@ -98,6 +103,16 @@ class NoBrainAvailableError(BrainError):
     """No connected account can serve this request. Nothing was sent to any provider."""
 
     kind = "not_connected"
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, provider="none", model="none")
+
+
+class CantSeeImagesError(BrainError):
+    """The request has an image and no brain it may go to can see images. Nothing was sent, and
+    the image was not dropped: the user is told what to do instead (ADR 0033)."""
+
+    kind = "no_vision"
 
     def __init__(self, message: str) -> None:
         super().__init__(message, provider="none", model="none")
@@ -194,6 +209,7 @@ class Router:
         available: Availability = has_key,
         ledger: Ledger | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        images: "ImageStore | None" = None,
     ) -> None:
         self._config = config
         self._build = build
@@ -201,6 +217,8 @@ class Router:
         self.ledger: Ledger = ledger if ledger is not None else InMemoryLedger()
         self._clock = clock
         self._live: dict[str, BrainProvider] = {}
+        #: Where images live: each call gets its brain's own copy of every image in the prompt.
+        self.images = images
 
     @property
     def config(self) -> BrainsConfig:
@@ -228,10 +246,12 @@ class Router:
         override: str | None = None,
         affinity: str | None = None,
         quiet: bool = False,
+        vision: bool = False,
     ) -> RoutePlan:
         """Choose a primary and one fallback. ``override`` is a brain or a tier the user picked;
         ``affinity`` (the conversation id) keeps a conversation with one provider. ``quiet``: a
-        look ahead (e.g. at the budget) that sends nothing, so it is not logged as a route."""
+        look ahead (e.g. at the budget) that sends nothing, so it is not logged as a route.
+        ``vision``: the prompt has an image, so only brains that can see are chosen."""
         brains = self._config.brains
         if override is not None and override not in brains and override not in TIERS:
             msg = f"unknown brain or tier {override!r}"
@@ -239,8 +259,10 @@ class Router:
         order = self._providers(affinity)
         if override in brains:
             chosen = brains[override]
+            if vision and not self._config.sees(override):
+                raise CantSeeImagesError(self._cant_see(override))
             others = [p for p in order if p != chosen.provider_name]
-            backup = self._candidates(chosen.tier, others)
+            backup = self._candidates(chosen.tier, others, vision=vision)
             plan = RoutePlan(
                 task,
                 chosen.tier,
@@ -250,14 +272,18 @@ class Router:
             )
         else:
             tier: Tier = override if override in TIERS else self._config.tier_of(task)
-            candidates = self._candidates(tier, order)
+            candidates = self._candidates(tier, order, vision=vision)
             if not candidates:
+                if vision and self._candidates(tier, order):
+                    raise CantSeeImagesError(self._cant_see(None))
                 raise NoBrainAvailableError(_nothing_connected(self._config))
             (primary, got), backup = candidates[0], candidates[1:]
             why = "selected by user" if override else f"task {task}"
             reason = f"tier {tier} ({why}); providers in order: {', '.join(order)}"
             if got != tier:
                 reason += f"; {brains[primary].provider_name} has no {tier} brain, using {got}"
+            if vision:
+                reason += "; the prompt has an image: only brains that can see"
             plan = RoutePlan(task, tier, primary, backup[0][0] if backup else None, reason)
         if quiet:
             return plan
@@ -283,15 +309,20 @@ class Router:
         shift = int.from_bytes(hashlib.sha256(affinity.encode()).digest()[:8]) % len(names)
         return names[shift:] + names[:shift]
 
-    def _candidates(self, tier: Tier, providers: Sequence[str]) -> list[tuple[str, Tier]]:
+    def _candidates(
+        self, tier: Tier, providers: Sequence[str], *, vision: bool = False
+    ) -> list[tuple[str, Tier]]:
         """Per provider: its recommended brain of the nearest tier it has. Same or stronger tiers
-        come first, in provider order; a weaker brain only when no provider has one (§1.3.4)."""
+        come first, in provider order; a weaker brain only when no provider has one (§1.3.4).
+        ``vision``: only brains that can see images."""
         out: list[tuple[str, Tier]] = []
         for provider in providers:
             own = [
                 (n, c)
                 for n, c in self._config.brains.items()
-                if c.provider_name == provider and self._available(c)
+                if c.provider_name == provider
+                and self._available(c)
+                and (not vision or self._config.sees(n))
             ]
             for want in _NEAREST[tier]:
                 fits = [n for n, c in own if c.tier == want]
@@ -300,6 +331,44 @@ class Router:
                     out.append((picks[0], want))
                     break
         return sorted(out, key=lambda c: TIERS.index(c[1]) < TIERS.index(tier))  # stable
+
+    def can_see(
+        self,
+        task: TaskKind,
+        *,
+        override: str | None = None,
+        affinity: str | None = None,
+        vision: bool = False,
+    ) -> bool:
+        """Whether this route's brain sees images (tools that show the brain an image are only
+        offered then). False when no brain is available: the call will say why."""
+        try:
+            plan = self.plan(task, override=override, affinity=affinity, quiet=True, vision=vision)
+        except (BrainError, KeyError):
+            return False
+        return self._config.sees(plan.primary)
+
+    def _cant_see(self, pinned: str | None) -> str:
+        """What to do when a message has an image and its route cannot see it (§10.3 words)."""
+        seeing = [
+            n for n, c in self._config.brains.items() if self._available(c) and self._config.sees(n)
+        ]
+        if pinned is not None:
+            label = self._config.brains[pinned].model
+            if seeing:
+                return (
+                    f"{label} can't see images, so nothing was sent. Choose a model that can "
+                    f"with /model (for example {seeing[0]}), or send the message without the image."
+                )
+            return (
+                f"{label} can't see images, and none of your connected models can, so nothing "
+                "was sent. Connect one that can (Claude or ChatGPT: /login), or send the "
+                "message without the image."
+            )
+        return (
+            "None of your connected models can see images, so nothing was sent. Connect one that "
+            "can (Claude or ChatGPT: /login), or send the message without the image."
+        )
 
     async def chat(  # noqa: PLR0913 - keyword-only call settings
         self,
@@ -351,7 +420,8 @@ class Router:
     ) -> AsyncIterator[TextDelta | RoutedDone]:
         """``fallback=False``: this brain only, e.g. a summary that must stay with the
         conversation's provider. ``label``: the task as the ledger records it ("compact")."""
-        plan = self.plan(task, override=override, affinity=affinity)
+        vision = any(m.images for m in messages)
+        plan = self.plan(task, override=override, affinity=affinity, vision=vision)
         attempts: list[CallRecord] = []
         candidates = [plan.primary] + ([plan.fallback] if plan.fallback and fallback else [])
         for number, name in enumerate(candidates, start=1):
@@ -364,12 +434,13 @@ class Router:
                 # Inside the try: a fallback brain with no key must still be recorded as tried.
                 brain = self.brain(name)
                 attempt = replace(attempt, billing=billing_of(brain))
+                sent = await self.attach(name, messages) if vision else messages
                 if budget_tokens is not None:
                     await self._check_budget(
-                        name, brain, messages, tools, max_output_tokens, budget_tokens
+                        name, brain, sent, tools, max_output_tokens, budget_tokens
                     )
                 async for event in brain.stream(
-                    messages,
+                    sent,
                     tools=tools,
                     tool_choice=tool_choice,
                     max_output_tokens=max_output_tokens,
@@ -401,6 +472,16 @@ class Router:
                     exc.attempts = tuple(attempts)
                     raise
                 raise AllBrainsFailedError(attempts) from exc
+
+    async def attach(self, name: str, messages: Sequence[Message]) -> list[Message]:
+        """The prompt with every image filled in as brain ``name`` takes it (its own size)."""
+        vision = self._config.vision_of(name)
+        if vision is None:  # never sent without its image (ADR 0033)
+            raise CantSeeImagesError(self._cant_see(name))
+        if self.images is None:
+            msg = "this router has no image store, so it cannot send images"
+            raise RuntimeError(msg)
+        return await self.images.attach(messages, vision)
 
     async def _check_budget(
         self,
