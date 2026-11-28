@@ -4,8 +4,12 @@ import {
   type ChatClient,
   type ChatsClient,
   type ConversationMemory,
+  canSeeImages,
   type GoalsClient,
+  type HelpersClient,
+  type ImagesClient,
   type MemoryClient,
+  type PrivacyClient,
   type ScheduleClient,
   type Start,
   signInWithChatGPT,
@@ -15,9 +19,13 @@ import {
 import type {
   ChatSummary,
   GoogleAccess,
+  Helper,
+  PrivacyRule,
   ProviderConnection,
   Remembered,
   Scheduled,
+  Watch,
+  WatchCheck,
 } from "@enzo/sdk";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
@@ -38,14 +46,24 @@ import {
 import { type Copy, lastCodeBlock } from "./clipboard.ts";
 import {
   type CommandContext,
+  checkReply,
   echoOf,
+  helperLine,
   memoryLine,
   type PickerKind,
   type Reply,
+  ruleLine,
   runCommand,
   scheduledLine,
+  watchLine,
 } from "./commands.ts";
 import { suggest } from "./complete.ts";
+import {
+  type ClipboardImage,
+  type ImageAttacher,
+  readClipboardImage,
+  uploadFile,
+} from "./images.ts";
 import { KeyPrompt } from "./KeyPrompt.tsx";
 import { type Choice, Picker } from "./Picker.tsx";
 import { Prompt } from "./Prompt.tsx";
@@ -67,10 +85,20 @@ export const PALETTE: Choice[] = [
   { label: "Message details", description: "show or hide times, tokens, cost", value: "/details" },
   { label: "Memory", description: "what Enzo remembers about you", value: "/memory" },
   { label: "Forget a memory", description: "remove something Enzo remembers", value: "/forget" },
+  { label: "Privacy rules", description: "what Enzo never shares", value: "/privacy" },
+  { label: "Lift a privacy rule", description: "asks first", value: "/privacy lift" },
   { label: "Goals", description: "what you are working toward", value: "/goals" },
   { label: "Finished goals", description: "done or given up", value: "/goals done" },
   { label: "Scheduled", description: "reminders and tasks still to come", value: "/scheduled" },
-  { label: "Cancel a reminder or task", description: "asks first", value: "/cancel" },
+  { label: "Cancel a reminder, task or watch", description: "asks first", value: "/cancel" },
+  { label: "Watches", description: "what Enzo watches for a change", value: "/watches" },
+  {
+    label: "Turn on a watch",
+    description: "shows what it reads now, asks first",
+    value: "/enable",
+  },
+  { label: "Helpers", description: "long work handed to helpers", value: "/helpers" },
+  { label: "Stop a helper", value: "/helpers stop" },
   { label: "Help", description: "commands and keys", value: "/help" },
   { label: "Quit", description: "or type exit, or ctrl+d", value: "/quit" },
 ];
@@ -86,6 +114,12 @@ const PICKER_TITLE: Record<PickerKind | "palette", string> = {
   forget: "Forget this?",
   reminders: "Cancel which one?",
   cancel: "Cancel this?",
+  rules: "Lift which privacy rule?",
+  lift: "Lift this rule?",
+  helpers: "Your helpers: open one's chat",
+  stophelper: "Stop which helper?",
+  watches: "Turn on which watch?",
+  enable: "Turn this watch on?",
 };
 
 /** Waits before opening the live event stream again: from this, doubling, up to the max. */
@@ -140,8 +174,17 @@ export function App({
   gatewayUrl = "http://127.0.0.1:8787",
   healthEveryMs,
   start = "fresh",
+  readClipboard = readClipboardImage,
 }: {
-  client: ChatClient & AccountsClient & ChatsClient & MemoryClient & ScheduleClient & GoalsClient;
+  client: ChatClient &
+    AccountsClient &
+    ChatsClient &
+    MemoryClient &
+    ScheduleClient &
+    GoalsClient &
+    PrivacyClient &
+    HelpersClient &
+    ImagesClient;
   memory: ConversationMemory;
   onQuit: () => void;
   /** Opens sign-in pages; tests pass a fake. */
@@ -155,6 +198,8 @@ export function App({
   healthEveryMs?: number;
   /** A fresh chat (`enzo`), or the last one (`enzo --continue`) (#57). */
   start?: Start;
+  /** Reads an image from the system clipboard (Ctrl+V); tests pass a fake. */
+  readClipboard?: () => Promise<ClipboardImage | null>;
 }) {
   const chat = useChat(client, memory, "cli", {
     start,
@@ -186,6 +231,15 @@ export function App({
   // /cancel: the reminders to come, and the one the user is being asked about.
   const [reminders, setReminders] = useState<Scheduled[]>([]);
   const [cancelling, setCancelling] = useState<Scheduled | null>(null);
+  // /privacy lift: the rules that hold here, and the one the user is being asked about.
+  const [rules, setRules] = useState<PrivacyRule[]>([]);
+  const [lifting, setLifting] = useState<PrivacyRule | null>(null);
+  // /helpers: the helpers to open or stop.
+  const [helpers, setHelpers] = useState<Helper[]>([]);
+  // Watches: the list to pick from, the one being cancelled, and the check shown before /enable.
+  const [watchList, setWatchList] = useState<Watch[]>([]);
+  const [unwatching, setUnwatching] = useState<Watch | null>(null);
+  const [enabling, setEnabling] = useState<WatchCheck | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -201,14 +255,16 @@ export function App({
 
   // Reminders arrive while the app is open (spec §9.3): each shows in the chat on screen. The
   // stream ends when the gateway goes away; it is opened again, waiting longer each time.
-  const { reminded } = chat;
+  const { reminded, refresh } = chat;
   useEffect(() => {
     const stop = new AbortController();
     void (async () => {
       let wait = RETRY_MIN_MS;
       while (!stop.signal.aborted) {
         try {
-          for await (const event of client.events(stop.signal)) {
+          // Each time the stream opens again (Enzo restarted), the chat on screen catches up on
+          // what it missed meanwhile: a helper that picked up again, or finished.
+          for await (const event of client.events(stop.signal, () => void refresh())) {
             wait = RETRY_MIN_MS;
             reminded(event);
           }
@@ -220,7 +276,7 @@ export function App({
       }
     })();
     return () => stop.abort();
-  }, [client, reminded]);
+  }, [client, reminded, refresh]);
 
   // Accounts drive the status bar, the opening screen and completion: load them when the chat
   // opens, when the gateway is back, and whenever a command connects or disconnects one.
@@ -360,13 +416,71 @@ export function App({
       return `Forgot “${memoryLine(target)}”.`;
     },
     keepMemory: () => setForgetting(null),
+    pickRule: async () => {
+      const all = await client.privacyRules(state.conversationId);
+      if (all.length === 0) return "No privacy rules to lift.";
+      setRules(all);
+      setPicker("rules");
+      return null;
+    },
+    askLift: async (id) => {
+      const found =
+        rules.find((r) => r.id === id) ??
+        (await client.privacyRules(state.conversationId)).find((r) => r.id === id);
+      if (!found) return { text: `There is no rule #${id}. /privacy lists them.`, error: true };
+      setLifting(found);
+      setPicker("lift");
+      return null;
+    },
+    liftRule: async () => {
+      const target = lifting;
+      if (!target) return null;
+      setLifting(null);
+      await client.removePrivacyRule(target.id);
+      return `Lifted the rule “${target.text}”.`;
+    },
+    keepRule: () => setLifting(null),
     pickReminder: async () => {
-      const all = await client.scheduled();
-      if (all.length === 0) return "Nothing scheduled to cancel.";
+      const [all, watches] = await Promise.all([client.scheduled(), client.watches()]);
+      if (all.length === 0 && watches.length === 0) return "Nothing scheduled to cancel.";
       setReminders(all);
+      setWatchList(watches);
       setPicker("reminders");
       return null;
     },
+    askCancelWatch: async (id) => {
+      const found = (await client.watches()).find((w) => w.id === id);
+      if (!found) {
+        return { text: `There is no watch #${id}. /watches lists them.`, error: true };
+      }
+      setCancelling(null);
+      setUnwatching(found);
+      setPicker("cancel");
+      return null;
+    },
+    pickWatch: async () => {
+      const off = (await client.watches()).filter((w) => w.status !== "on");
+      if (off.length === 0) {
+        return "No watch is off. Ask Enzo to watch something, like “tell me when the kettle is under $40”.";
+      }
+      setWatchList(off);
+      setPicker("watches");
+      return null;
+    },
+    askEnable: async (id) => {
+      const check = await client.checkWatch(id); // the dry run: what it reads right now
+      setEnabling(check);
+      setPicker("enable");
+      return checkReply(check);
+    },
+    enableWatch: async () => {
+      const check = enabling;
+      if (!check) return null;
+      setEnabling(null);
+      const on = await client.enableWatch(check.watch.id, check.token);
+      return `Watch #${on.id} is on: ${on.checks}. Unchanged checks stay silent; a change wakes Enzo.`;
+    },
+    keepWatchOff: () => setEnabling(null),
     askCancel: async (id) => {
       const found =
         reminders.find((r) => r.id === id) ?? (await client.scheduled()).find((r) => r.id === id);
@@ -375,18 +489,42 @@ export function App({
           text: `There is nothing scheduled with #${id}. /scheduled lists them.`,
           error: true,
         };
+      setUnwatching(null);
       setCancelling(found);
       setPicker("cancel");
       return null;
     },
     cancelReminder: async () => {
+      const watch = unwatching;
+      if (watch) {
+        setUnwatching(null);
+        await client.cancelWatch(watch.id);
+        return `Stopped watching “${watch.what}”.`;
+      }
       const target = cancelling;
       if (!target) return null;
       setCancelling(null);
       await client.cancelScheduled(target.id);
       return `Cancelled “${target.text}”.`;
     },
-    keepReminder: () => setCancelling(null),
+    keepReminder: () => {
+      setCancelling(null);
+      setUnwatching(null);
+    },
+    pickHelper: async (stopping) => {
+      const all = await client.helpers();
+      const shown = stopping
+        ? all.filter((h) => h.status === "working" || h.status === "waiting")
+        : all;
+      if (shown.length === 0) {
+        return stopping
+          ? "No helper is working now."
+          : "No helpers yet. Ask Enzo for long work, like “research these 5 laptops and compare them”: a helper does it while you keep talking.";
+      }
+      setHelpers(shown);
+      setPicker(stopping ? "stophelper" : "helpers");
+      return null;
+    },
     deleteChat: async () => {
       const id = state.conversationId;
       if (!id) return "Nothing to delete: this chat has no messages yet.";
@@ -447,14 +585,26 @@ export function App({
     })();
   };
 
-  const submit = (raw: string): boolean => {
+  // Dragged files and clipboard images are kept by the gateway first, then go by id (#53).
+  const images = useMemo<ImageAttacher>(
+    () => ({
+      file: (path) => uploadFile((data, options) => client.uploadImage(data, options), path),
+      clipboard: async () => {
+        const got = await readClipboard();
+        return got ? client.uploadImage(got.bytes, { source: "pasted", type: got.type }) : null;
+      },
+    }),
+    [client, readClipboard],
+  );
+
+  const submit = (raw: string, attached: string[] = []): boolean => {
     const line = raw.trim();
-    if (!line) return true;
+    if (!line && attached.length === 0) return true;
     if (QUIT_WORDS.has(line.toLowerCase())) {
       onQuit();
       return true;
     }
-    if (line.startsWith("/")) {
+    if (line.startsWith("/") && attached.length === 0) {
       void runLine(line);
       return true;
     }
@@ -474,7 +624,7 @@ export function App({
       return false;
     }
     scroll.current?.scrollTo(Number.POSITIVE_INFINITY);
-    void send(line);
+    void send(line, attached);
     return true;
   };
 
@@ -538,12 +688,52 @@ export function App({
       // The memory itself gets the whole width; /memory shows where each came from.
       return memories.map((m) => ({ label: memoryLine(m), value: `/forget ${m.id}` }));
     }
+    if (kind === "rules") {
+      return rules.map((r) => ({ label: ruleLine(r), value: `/privacy ${r.id}` }));
+    }
+    if (kind === "lift") {
+      // Keeping it is first: a stray Enter never lifts a rule.
+      const what = lifting ? lifting.text : "";
+      return [
+        { label: "No, keep it", value: "/privacy keep" },
+        {
+          label: `Yes, lift “${what.length > 40 ? `${what.slice(0, 39)}…` : what}”`,
+          value: "/privacy confirm",
+        },
+      ];
+    }
+    if (kind === "helpers" || kind === "stophelper") {
+      return helpers.map((h) => ({
+        label: `#${h.id} ${h.title}`,
+        description: helperLine(h),
+        value: kind === "stophelper" ? `/stophelper ${h.id}` : `/open ${h.chat_id ?? ""}`,
+        ...(h.status === "working" || h.status === "waiting" ? {} : { muted: true }),
+      }));
+    }
     if (kind === "reminders") {
-      return reminders.map((r) => ({ label: scheduledLine(r), value: `/cancel ${r.id}` }));
+      return [
+        ...reminders.map((r) => ({ label: scheduledLine(r), value: `/cancel ${r.id}` })),
+        ...watchList.map((w) => ({ label: `Watch: ${w.what}`, value: `/cancel w${w.id}` })),
+      ];
+    }
+    if (kind === "watches") {
+      return watchList.map((w) => ({ label: watchLine(w), value: `/enable ${w.id}` }));
+    }
+    if (kind === "enable") {
+      // Keeping it off is first: a stray Enter never turns anything on. The dry run is on the
+      // choice itself: the list covers the card that showed it (spec §9.4: inspect, then enable).
+      const reads = enabling ? enabling.reads : "";
+      return [
+        { label: "No, keep it off", value: "/enable keep" },
+        {
+          label: `Yes, turn it on: it reads “${reads.length > 40 ? `${reads.slice(0, 39)}…` : reads}” now`,
+          value: "/enable confirm",
+        },
+      ];
     }
     if (kind === "cancel") {
       // Keeping it is first: a stray Enter never cancels anything.
-      const what = cancelling ? cancelling.text : "";
+      const what = unwatching ? `watching ${unwatching.what}` : cancelling ? cancelling.text : "";
       return [
         { label: "No, keep it", value: "/cancel keep" },
         {
@@ -623,6 +813,9 @@ export function App({
       sources={{ connections, brains: state.brains }}
       meta={`${modelWords(state)} · ${accountWords(connections)}`}
       onSubmit={submit}
+      images={images}
+      canSee={canSeeImages(state)}
+      onNotice={(text) => say(text)}
     />
   );
 

@@ -26,7 +26,7 @@ from enzo.accounts.service import AccountsService
 from enzo.agent.prompt import install_note
 from enzo.agent.service import ConversationService
 from enzo.agent.toolset import core_tools
-from enzo.brain.config import Tier, load_config
+from enzo.brain.config import BrainsConfig, Tier, load_config
 from enzo.brain.factory import build_brain, has_key
 from enzo.brain.router import Router
 from enzo.browser.session import Browsers
@@ -39,15 +39,28 @@ from enzo.gateway.connections import build_accounts, connection_routes
 from enzo.gateway.conversations import ServiceDep, conversation_routes
 from enzo.gateway.goals import goal_routes
 from enzo.gateway.google import google_routes
+from enzo.gateway.helpers import helper_routes
+from enzo.gateway.images import image_routes
 from enzo.gateway.memory import memory_routes
+from enzo.gateway.privacy import privacy_routes
 from enzo.gateway.scheduled import scheduled_routes
+from enzo.gateway.watches import watch_routes
 from enzo.goals import Goals
+from enzo.hooks.sources import Sources
+from enzo.hooks.store import Hooks
+from enzo.hooks.tools import watch_tools
+from enzo.hooks.watcher import Watcher
+from enzo.images.store import ImageStore
+from enzo.images.tools import image_tools
 from enzo.memory import Memory
 from enzo.paths import data_dir
+from enzo.privacy import Discretion, Rules, privacy_tools
 from enzo.schedule import Background, Bus, FinishedTasks, Runner, Schedule
-from enzo.schedule.notify import desktop, silent
+from enzo.schedule.notify import Notify, desktop, silent
 from enzo.schedule.tasks import TaskRunner
+from enzo.semantic import LocalEmbedder, Off, SemanticIndex
 from enzo.store.repository import Store
+from enzo.subagents import HelperStore, Subagents, subagent_tools
 from enzo.tools.registry import ToolRegistry
 from enzo.tools.stored import OutputStore, stored_tools
 
@@ -72,6 +85,8 @@ class BrainOut(BaseModel):
     note: str | None
     #: The provider is connected (or has an environment key), so this brain can answer now.
     available: bool
+    #: It can see images (its vision profile in brains.toml, ADR 0033).
+    vision: bool = False
 
 
 def create_app(
@@ -80,6 +95,7 @@ def create_app(
     service: ConversationService | None = None,
     accounts: AccountsService | None = None,
     background: Background | None = None,
+    helpers: Subagents | None = None,
     on_idle: Callable[[], None] | None = None,
 ) -> FastAPI:
     """Build the gateway. Tests inject a service; otherwise the real one is built at startup.
@@ -95,6 +111,8 @@ def create_app(
             app.state.service = service
             if background is not None:
                 app.state.background = background
+            if helpers is not None:
+                app.state.helpers = helpers
             yield
             return
         async with _running(app, cfg, accounts, on_idle):
@@ -107,6 +125,8 @@ def create_app(
         app.state.service = service  # available even when the ASGI server skips lifespan
     if background is not None:
         app.state.background = background
+    if helpers is not None:
+        app.state.helpers = helpers
     if accounts is not None:
         app.state.accounts = accounts
     app.exception_handler(RequestValidationError)(_invalid_request)
@@ -137,14 +157,19 @@ def create_app(
                 recommended=b.recommended,
                 note=b.note,
                 available=router.available(n),
+                vision=router.config.sees(n),
             )
             for n, b in router.config.brains.items()
         ]
 
     app.include_router(conversation_routes(auth))
+    app.include_router(image_routes(auth))
     app.include_router(memory_routes(auth))
+    app.include_router(privacy_routes(auth))
     app.include_router(goal_routes(auth))
     app.include_router(scheduled_routes(auth))
+    app.include_router(helper_routes(auth))
+    app.include_router(watch_routes(auth))
     app.include_router(connection_routes(auth))
     app.include_router(chatgpt_routes(auth, cfg.port))
     app.include_router(google_routes(auth, cfg.port))
@@ -162,46 +187,23 @@ async def _running(
     """Everything a real gateway runs: the store, brains, tools, connectors and reminders."""
     store = Store.from_url(cfg.database_url)
     config = load_config(cfg.brains_config)
-    acct = accounts or build_accounts(cfg, config)
     # One client for tools and sign-in: no automatic redirects (read_page checks every hop).
     http = httpx2.AsyncClient(timeout=httpx2.Timeout(20.0), follow_redirects=False)
-    if acct.chatgpt is None:
-        acct.enable_chatgpt(host_id(cfg.config_dir), http)
-    if acct.google is None:
-        acct.enable_google(http, configured=_google_client(cfg))
-    google = GoogleConnectors(lambda: acct.google)
-    acct.set_google_check(google.check)
-    env = os.environ if cfg.use_env_keys else None  # opt-in only (#24)
-    router = Router(
-        config,
-        build=lambda c: build_brain(c, env, keys=acct.auth),
-        available=lambda c: acct.usable(c) or has_key(c, env),
-    )
-    acct.on_change(router.forget)
+    # Images the user attaches, and screenshots, kept private with where each came from (ADR 0033).
+    images = ImageStore(data_dir() / "images")
+    acct, google, router = _accounts_and_brains(cfg, config, accounts, http, images)
     app.state.accounts = acct
-    memory = Memory(store.engine, cfg.workspace_dir)
+    outputs, index = _context_stores(store, config, cfg)
+    memory = Memory(store.engine, cfg.workspace_dir, index=index)
+    # What is sent out is checked for private details; the user's discretion rules (ADR 0029).
+    discretion = Discretion(Rules(store.engine), memory)
     schedule = Schedule(store.engine)
     goals = Goals(store.engine, cfg.workspace_dir, schedule)
     notify = desktop if cfg.notify else silent
     runner = Runner(schedule, Bus(), notify=notify, on_idle=on_idle)
-    app.state.background = Background(schedule, runner.bus, runner)
     finished = FinishedTasks()
-    # Long tool results and pastes are kept whole in Enzo's private data folder (ADR 0024).
-    ctx = config.context
-    outputs = OutputStore(
-        data_dir() / "context",
-        tool_inline_chars=ctx.tool_inline_chars,
-        paste_inline_chars=ctx.paste_inline_chars,
-        excerpt_chars=ctx.excerpt_chars,
-    )
     # Enzo's own browser profile, in its private data folder (ADR 0027).
-    browsers = Browsers(
-        data_dir() / "browser",
-        executable=cfg.browser_path,
-        headless=cfg.browser_headless,
-        own_port=cfg.port,
-    )
-    browsers.recover()  # a browser left behind by a gateway that crashed
+    browsers = _browsers(cfg)
     tools = ToolRegistry(
         [
             *core_tools(
@@ -213,12 +215,17 @@ async def _running(
                 http=http,
                 tavily_key=lambda: acct.api_key("tavily"),
                 on_set=runner.poke,
+                index=index,
             ),
             *stored_tools(outputs),
-            *browser_tools(browsers),
+            *image_tools(images),
+            *browser_tools(browsers, images),
+            *privacy_tools(discretion.rules),
         ],
         retain=outputs,
     )
+    watcher = _watcher(store, http, tools, runner, cfg, notify)
+    app.state.background = Background(schedule, runner.bus, runner, watcher)
     service = ConversationService(
         store,
         router,
@@ -226,27 +233,125 @@ async def _running(
         developer=install_note(cfg.workspace_dir),
         memory=memory,
         goals=goals,
+        index=index,
         outputs=outputs,
         hooks=[browsers],
+        discretion=discretion,
+        images=images,
     )
     app.state.service = service
+    app.state.helpers = helpers = _helpers(cfg, service, runner.bus, notify)
     # Scheduled tasks run as agent turns: the runner hands each due one to the task runner.
     tasks = TaskRunner(schedule, service, runner.bus, finished, notify=notify)
-    runner.connect(tasks.start, lambda: tasks.running > 0)
+    runner.connect(tasks.start, lambda: tasks.running > 0 or helpers.busy)
+    watcher.connect(service, runner.poke)
     connectors = Connectors(tools, acct, http, google)
     await connectors.refresh("github")
     await connectors.refresh("google")
     acct.on_change(connectors.changed)
     runner.start()  # reminders due while Enzo was not running arrive now, marked late
+    index.start()  # fetch the model if needed, then index what is new (the first time: all)
+    await helpers.recover()  # helpers that were working pick up where they stopped
     try:
         yield
     finally:
+        await helpers.close()
+        await index.close()
         await runner.stop()
         await tasks.stop()
+        await watcher.stop()
         await browsers.close_all()
         await connectors.close()
         await http.aclose()
         await store.close()
+
+
+def _accounts_and_brains(
+    cfg: Settings,
+    config: BrainsConfig,
+    accounts: AccountsService | None,
+    http: httpx2.AsyncClient,
+    images: ImageStore,
+) -> tuple[AccountsService, GoogleConnectors, Router]:
+    """The user's own accounts (sign-ins and keys) and the router over the brains they open."""
+    acct = accounts or build_accounts(cfg, config)
+    if acct.chatgpt is None:
+        acct.enable_chatgpt(host_id(cfg.config_dir), http)
+    if acct.google is None:
+        acct.enable_google(http, configured=_google_client(cfg))
+    google = GoogleConnectors(lambda: acct.google)
+    acct.set_google_check(google.check)
+    env = os.environ if cfg.use_env_keys else None  # opt-in only (#24)
+    router = Router(
+        config,
+        build=lambda c: build_brain(c, env, keys=acct.auth),
+        available=lambda c: acct.usable(c) or has_key(c, env),
+        images=images,
+    )
+    acct.on_change(router.forget)
+    return acct, google, router
+
+
+def _context_stores(
+    store: Store, config: BrainsConfig, cfg: Settings
+) -> tuple[OutputStore, SemanticIndex]:
+    """Long texts kept as files (ADR 0024) and the index that finds things by meaning (ADR 0030)."""
+    # Long tool results and pastes are kept whole in Enzo's private data folder.
+    ctx = config.context
+    outputs = OutputStore(
+        data_dir() / "context",
+        tool_inline_chars=ctx.tool_inline_chars,
+        paste_inline_chars=ctx.paste_inline_chars,
+        excerpt_chars=ctx.excerpt_chars,
+    )
+    # Search by meaning: a model on this computer, fetched once in the background.
+    embedder = LocalEmbedder(data_dir() / "models") if cfg.embeddings == "local" else Off()
+    return outputs, SemanticIndex(store.engine, embedder, stored=outputs.root)
+
+
+def _helpers(cfg: Settings, service: ConversationService, bus: Bus, notify: Notify) -> Subagents:
+    """Long work handed to helpers, each in its own chat, and the brain's tools for it."""
+    helpers = Subagents(
+        service,
+        HelperStore(service.store.engine),
+        bus,
+        max_working=cfg.helpers_max,
+        steps=cfg.helper_steps,
+        notify=notify,
+    )
+    for t in subagent_tools(helpers):
+        service.registry.register(t)
+    return helpers
+
+
+def _browsers(cfg: Settings) -> Browsers:
+    """Enzo's own browser profile, in its private data folder (ADR 0027)."""
+    browsers = Browsers(
+        data_dir() / "browser",
+        executable=cfg.browser_path,
+        headless=cfg.browser_headless,
+        own_port=cfg.port,
+    )
+    browsers.recover()  # a browser left behind by a gateway that crashed
+    return browsers
+
+
+def _watcher(
+    store: Store,
+    http: httpx2.AsyncClient,
+    tools: ToolRegistry,
+    runner: Runner,
+    cfg: Settings,
+    notify: Notify,
+) -> Watcher:
+    """Watches check on the runner's clock with no model call; a change wakes a turn (ADR 0031).
+    Their checks read through the connected accounts' tools, found by name when they run."""
+    sources = Sources(http=http, tools=tools.get, own_port=cfg.port)
+    watcher = Watcher(Hooks(store.engine), sources, runner.bus, notify=notify)
+    for t in watch_tools(watcher, on_set=runner.poke):
+        tools.register(t)
+    runner.add(watcher)
+    return watcher
 
 
 def _google_client(cfg: Settings) -> GoogleClient | None:

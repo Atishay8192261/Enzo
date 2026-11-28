@@ -1,4 +1,4 @@
-import type { AccountsClient, ChatClient } from "@enzo/chat";
+import type { AccountsClient, ChatClient, ImagesClient } from "@enzo/chat";
 import { NO_USAGE } from "@enzo/chat";
 import {
   type AgentEvent,
@@ -7,10 +7,10 @@ import {
   GatewayError,
   type StoredMessage,
 } from "@enzo/sdk";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { App } from "./App.tsx";
+import { App, CANT_SEE } from "./App.tsx";
 
 afterEach(() => {
   cleanup();
@@ -45,10 +45,19 @@ async function* events(...list: AgentEvent[]): AsyncGenerator<AgentEvent> {
   for (const e of list) yield e;
 }
 
-function fakeClient(
-  overrides: Partial<ChatClient & AccountsClient> = {},
-): ChatClient & AccountsClient {
+type Client = ChatClient & AccountsClient & ImagesClient;
+
+function fakeClient(overrides: Partial<Client> = {}): Client {
   return {
+    uploadImage: vi.fn(async (_data: unknown, options?: { name?: string }) => ({
+      id: "img_0123456789abcdef",
+      media_type: "image/png",
+      width: 1456,
+      height: 819,
+      bytes: 1000,
+      name: options?.name ?? null,
+      stripped: [],
+    })),
     connections: async () => [],
     connect: vi.fn(async () => {}),
     disconnect: vi.fn(async () => ({ remote_sign_out: null })),
@@ -151,6 +160,7 @@ describe("App", () => {
             summary: "Email bob@example.com",
             detail: "To: bob@example.com\nhi",
             arguments: { to: "bob@example.com", body: "hi" },
+            privacy: ["This includes a health detail: “my wife is pregnant”"],
           },
           {
             type: "done",
@@ -188,6 +198,9 @@ describe("App", () => {
     expect(card.textContent).toContain("What it changes"); // the detail, e.g. a merge's diff
     expect(card.textContent).toContain("To: bob@example.com");
     expect(card.textContent).toContain('"to": "bob@example.com"'); // the exact action (§12.3)
+    // What private detail it sends, said plainly (ADR 0029).
+    const details = within(card).getByRole("list", { name: "Private details" });
+    expect(details.textContent).toBe("This includes a health detail: “my wife is pregnant”");
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
     expect(await screen.findByText("Sent.")).toBeDefined();
     expect(decide).toHaveBeenCalledWith("c1", "appr_1", true);
@@ -404,5 +417,78 @@ describe("App", () => {
       <App client={fakeClient({ health: () => Promise.reject(new Error("ECONNREFUSED")) })} />,
     );
     expect(await screen.findByText(/Gateway unreachable: ECONNREFUSED/)).toBeDefined();
+  });
+});
+
+describe("images in the web app (#53, ADR 0033)", () => {
+  const png = () =>
+    new File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" });
+  const seeing = BRAINS.map((b) => ({ ...b, vision: b.name === "claude-opus" }));
+
+  it("a picked image is kept first, shown, and sent with the message by id", async () => {
+    URL.createObjectURL = vi.fn(() => "blob:preview");
+    URL.revokeObjectURL = vi.fn();
+    const send = vi.fn(() => events({ type: "error", message: "x" }));
+    const client = fakeClient({ send, brains: async () => seeing });
+    render(<App client={client} />);
+    await screen.findByRole("option", { name: /claude-opus/ });
+    fireEvent.change(screen.getByLabelText("Image file"), { target: { files: [png()] } });
+    await screen.findByRole("img", { name: "shot.png" });
+    expect(client.uploadImage).toHaveBeenCalledWith(expect.any(File), {
+      source: "file",
+      name: "shot.png",
+      type: "image/png",
+    });
+    expect(screen.queryByText(/can't see images/)).toBeNull();
+    fireEvent.change(screen.getByLabelText("Message"), { target: { value: "what is it?" } });
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(send).toHaveBeenCalled());
+    expect(send.mock.calls[0]).toEqual([
+      "c1",
+      "what is it?",
+      expect.objectContaining({ images: ["img_0123456789abcdef"] }),
+    ]);
+    expect(await screen.findByText(/what is it\?\s*\[image\]/)).toBeTruthy();
+    expect(screen.queryByRole("img", { name: "shot.png" })).toBeNull();
+  });
+
+  it("a pasted image is attached; a model that can't see is named before sending", async () => {
+    URL.createObjectURL = vi.fn(() => "blob:preview");
+    const client = fakeClient(); // no model that sees
+    render(<App client={client} />);
+    await screen.findByRole("option", { name: /claude-opus/ });
+    fireEvent.paste(screen.getByLabelText("Message"), { clipboardData: { files: [png()] } });
+    await screen.findByRole("img", { name: "shot.png" });
+    expect(client.uploadImage).toHaveBeenCalledWith(expect.any(File), {
+      source: "pasted",
+      name: "shot.png",
+      type: "image/png",
+    });
+    expect(screen.getByText(CANT_SEE)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Remove shot.png" }));
+    expect(screen.queryByRole("img", { name: "shot.png" })).toBeNull();
+  });
+
+  it("an image the gateway refuses is said plainly", async () => {
+    URL.createObjectURL = vi.fn(() => "blob:preview");
+    URL.revokeObjectURL = vi.fn();
+    const uploadImage = vi.fn(async () => {
+      throw new GatewayError(
+        "/images failed: HTTP 415: That file isn't an image Enzo can read.",
+        415,
+      );
+    });
+    render(<App client={fakeClient({ uploadImage })} />);
+    await screen.findByRole("option", { name: /claude-opus/ });
+    fireEvent.change(screen.getByLabelText("Image file"), { target: { files: [png()] } });
+    expect(
+      await screen.findByText("Couldn't attach shot.png: That file isn't an image Enzo can read."),
+    ).toBeTruthy();
+    expect(screen.queryByRole("img", { name: "shot.png" })).toBeNull();
   });
 });

@@ -4,6 +4,7 @@ import type {
   ConversationUsage,
   GatewayClient,
   GatewayEvent,
+  HelperNotice,
   ScheduledNotice,
   StoredMessage,
   StoredPart,
@@ -33,11 +34,29 @@ export type ChatsClient = Pick<
   "conversations" | "renameConversation" | "deleteConversation"
 >;
 
-/** Reminders and scheduled tasks (spec §9.3): the ones to come, cancelling, live arrivals. */
-export type ScheduleClient = Pick<GatewayClient, "scheduled" | "cancelScheduled" | "events">;
+/** Reminders, scheduled tasks (spec §9.3) and watches (§9.4): the ones to come, cancelling,
+ * turning a watch on after a check, live arrivals. */
+export type ScheduleClient = Pick<
+  GatewayClient,
+  | "scheduled"
+  | "cancelScheduled"
+  | "events"
+  | "watches"
+  | "checkWatch"
+  | "enableWatch"
+  | "cancelWatch"
+>;
+
+/** Helpers (spec §9.5): long work handed to child agents, each in its own chat. */
+export type HelpersClient = Pick<GatewayClient, "helpers" | "stopHelper" | "conversationHelpers">;
 
 /** What Enzo remembers (spec §6.2): seeing it and forgetting a part of it. */
 export type MemoryClient = Pick<GatewayClient, "memories" | "forgetMemory">;
+
+/** The user's discretion rules (spec §12.5): seeing them and lifting one. */
+export type PrivacyClient = Pick<GatewayClient, "privacyRules" | "removePrivacyRule">;
+/** Images attached to messages (ADR 0033): each is kept by the gateway first, then sent by id. */
+export type ImagesClient = Pick<GatewayClient, "uploadImage">;
 
 /** The user's goals (spec §6.4): the open ones and the closed ones, with their evidence. */
 export type GoalsClient = Pick<GatewayClient, "goals">;
@@ -70,6 +89,29 @@ export interface ChatItem {
   offer?: "stop" | "resend";
   /** A notice that is a reminder the user set, arriving (spec §9.3). */
   reminder?: true;
+  /** For a user message: the ids of the images that went with it (shown as "[image]"). */
+  images?: string[];
+}
+
+/** How a user message reads in the chat: its words, then "[image]" for each image the words do
+ * not already name with an "[Image N]" tag (the terminal puts tags in the text). */
+export function userText(item: Pick<ChatItem, "text" | "images">): string {
+  const count = item.images?.length ?? 0;
+  const tagged = item.text.match(/\[Image \d+\]/g)?.length ?? 0;
+  const extra = Array.from({ length: Math.max(0, count - tagged) }, () => "[image]");
+  return [item.text, ...extra].filter(Boolean).join(item.text ? "\n" : " ");
+}
+
+/**
+ * Whether the chat's model can see images: the pinned model, or (a tier, or automatic) any
+ * connected one that can. The gateway checks again before sending and says why it can't.
+ */
+export function canSeeImages(state: Pick<ChatState, "brains" | "brain">): boolean {
+  const pinned = state.brains.find((b) => b.name === state.brain);
+  if (pinned) return pinned.vision === true;
+  return state.brains.some(
+    (b) => b.available && b.vision === true && (!state.brain || b.tier === state.brain),
+  );
 }
 
 /** The facts behind one reply (#49). */
@@ -113,6 +155,8 @@ export interface PendingApproval {
   arguments: Record<string, unknown>;
   summary: string | null;
   detail: string | null;
+  /** Private details the action includes ("This includes a health detail: …", ADR 0029). */
+  privacy: string[];
 }
 
 /** What the approval card says: the tool's plain description, never a bare tool name (§10.3). */
@@ -196,13 +240,16 @@ export type ChatAction =
   | { type: "unsent"; reason: "busy" | "failed" | "unreachable"; message?: string }
   | { type: "stream_lost" }
   /** `at`: when (ms since 1970), so the chat can say how long replies took. */
-  | { type: "user_sent"; text: string; at?: number }
+  | { type: "user_sent"; text: string; at?: number; images?: string[] }
   | { type: "resuming"; at?: number }
   | { type: "brain_chosen"; brain: string | null }
   | { type: "brains_loaded"; brains: Brain[] }
   | { type: "approval_decided"; id: string; approved: boolean }
-  | { type: "event"; event: AgentEvent; at?: number }
-  | { type: "scheduled"; text: string };
+  /** `chat`: the chat the stream belongs to; ignored once another chat is on screen. */
+  | { type: "event"; event: AgentEvent; at?: number; chat?: string | null }
+  | { type: "scheduled"; text: string }
+  /** A line about a helper (it finished, waits for approval, was stopped). */
+  | { type: "notice"; text: string };
 
 /** Said when a message is refused because a reply is still being written (HTTP 409). */
 export const BUSY = "Not sent: Enzo is still finishing the last reply.";
@@ -338,10 +385,12 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
         role: "notice",
         text: `Not approved: ${describeApproval(a)} (you sent a new message)`,
       }));
-      const sent: ChatItem =
-        action.at === undefined
-          ? { role: "user", text: action.text }
-          : { role: "user", text: action.text, at: new Date(action.at).toISOString() };
+      const sent: ChatItem = {
+        role: "user",
+        text: action.text,
+        ...(action.at === undefined ? {} : { at: new Date(action.at).toISOString() }),
+        ...(action.images?.length ? { images: action.images } : {}),
+      };
       return {
         ...state,
         status: "streaming",
@@ -413,7 +462,11 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
     case "scheduled":
       // Shown where the user is now: it is about them, whichever chat it was set in.
       return { ...state, items: [...state.items, scheduledItem(action.text)] };
+    case "notice":
+      return { ...state, items: [...state.items, { role: "notice", text: action.text }] };
     case "event":
+      // A stream for a chat that is no longer on screen (the user opened another) says nothing.
+      if (action.chat && action.chat !== state.conversationId) return state;
       return onEvent(state, action.event, action.at);
   }
 }
@@ -449,10 +502,13 @@ function onEvent(state: ChatState, event: AgentEvent, at?: number): ChatState {
       return { ...state, items, working: Math.max(0, state.working - 1) };
     }
     case "approval_needed": {
-      const { id, tool, summary, detail } = event;
+      const { id, tool, summary, detail, privacy } = event;
       return {
         ...state,
-        approvals: [...state.approvals, { id, tool, arguments: event.arguments, summary, detail }],
+        approvals: [
+          ...state.approvals,
+          { id, tool, arguments: event.arguments, summary, detail, privacy },
+        ],
       };
     }
     case "done": {
@@ -523,13 +579,18 @@ export const SOME_STEP = "Working on a step";
 /** A reminder or a task's report, as the chat shows it: "⏰ Reminder: Call mom". */
 export const scheduledItem = (text: string): ChatItem => ({
   role: "notice",
-  text: `⏰ ${text}`,
+  text: text.startsWith(WATCH_ICON) ? text : `⏰ ${text}`,
   reminder: true,
 });
 
+/** A watch's report or stop starts with this (spec §9.4), not the clock of a schedule. */
+export const WATCH_ICON = "👀";
+
 /** What a live event says in the chat on screen; null when it should not interrupt. */
 export function eventText(event: GatewayEvent): string | null {
+  if (event.kind === "helper") return event.words;
   if (event.kind === "reminder") return `Reminder: ${event.words}`;
+  if (event.kind === "watch") return `${WATCH_ICON} ${event.words}`;
   return event.outcome === "quiet" ? null : event.words;
 }
 
@@ -538,6 +599,7 @@ export function noticeText(n: ScheduledNotice): string | null {
   if (n.kind === "reminder") {
     return `Reminder: ${n.late ? `${n.text} (late: due ${n.due}, Enzo wasn't running)` : n.text}`;
   }
+  if (n.kind === "watch") return `${WATCH_ICON} ${n.text}`; // the gateway words it whole
   const what = n.task ?? "Scheduled task";
   switch (n.outcome) {
     case "quiet":
@@ -557,6 +619,7 @@ export function toItems(
   messages: StoredMessage[],
   usage?: ConversationUsage | null,
   notices: ScheduledNotice[] = [],
+  helpers: HelperNotice[] = [],
 ): ChatItem[] {
   const results = new Map<string, StepStatus>();
   for (const m of messages) {
@@ -572,16 +635,41 @@ export function toItems(
     const text = noticeText(n);
     if (text) items.push(scheduledItem(text));
   };
+  // Lines about helpers sit where they arrived, the same way.
+  const helped = (n: HelperNotice) => items.push({ role: "notice", text: n.text });
   messages.forEach((m, index) => {
     for (const n of notices) if (n.after === index) arrive(n);
+    for (const n of helpers) if (n.after === index) helped(n);
     // Where older messages were summarized for the model: the chat still shows them all.
     if (m.summarized) items.push({ role: "notice", text: SUMMARIZED });
     addMessage(m);
   });
   for (const n of notices) if (n.after >= messages.length) arrive(n);
+  for (const n of helpers) if (n.after >= messages.length) helped(n);
   function addMessage(m: StoredMessage): void {
     if (m.role !== "user" && m.role !== "assistant") return;
     const texts = m.parts.filter((p) => p.type === "text" && p.text).map((p) => p.text as string);
+    if (m.role === "user" && m.origin === "handoff") {
+      // Enzo handing helpers' reports to itself: the line about the helper says it.
+      starts.push(items.length);
+      return;
+    }
+    if (m.role === "user" && m.origin === "brief") {
+      // A helper's chat starts with the work it was given, not with something the user typed.
+      starts.push(items.length);
+      items.push({ role: "notice", text: `Helper's brief: ${texts[0] ?? ""}` });
+      return;
+    }
+    if (m.role === "user" && m.origin === "watch") {
+      // A watch saw a change and woke Enzo: what the user asked it to do then, not typing.
+      starts.push(items.length);
+      items.push({
+        role: "notice",
+        text: `${WATCH_ICON} Watch: ${texts[0] ?? ""}`,
+        reminder: true,
+      });
+      return;
+    }
     if (m.role === "user" && m.origin === "schedule") {
       // A scheduled task's run started this turn: show it as a run, not as the user typing.
       starts.push(items.length);
@@ -589,11 +677,21 @@ export function toItems(
       return;
     }
     if (m.role === "user") {
-      // A user message's second text part is delivery context (time, device), not words.
-      const text = texts[0] ?? "";
+      // The user's words are the first part (possibly empty when only images were sent); the
+      // last text part is delivery context (time, device), not words.
+      const first = m.parts[0];
+      const text = first?.type === "text" ? (first.text ?? "") : "";
+      const images = m.parts.filter((p) => p.type === "image" && p.id).map((p) => p.id as string);
       const sent = usage?.turns[starts.length]?.started_at;
       starts.push(items.length);
-      if (text) items.push(sent ? { role: "user", text, at: sent } : { role: "user", text });
+      if (text || images.length) {
+        items.push({
+          role: "user",
+          text,
+          ...(sent ? { at: sent } : {}),
+          ...(images.length ? { images } : {}),
+        });
+      }
       return;
     }
     const text = texts.join("");

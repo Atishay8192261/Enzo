@@ -6,6 +6,7 @@ that buy, send, delete, enter a password, card or one-time code, or leave the si
 own yes with the exact action (§12.3). Everything read from a page is fenced as untrusted (§12.4).
 """
 
+import dataclasses
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -30,9 +31,11 @@ from enzo.browser.session import (
     site_or_error,
 )
 from enzo.browser.sites import allowed, split_site
-from enzo.context import current_conversation
-from enzo.tools.registry import Prepared, Tool, plain_words, tool
-from enzo.tools.web import page_name, private_addresses
+from enzo.context import brain_var, conversation_var, current_conversation
+from enzo.images.store import ImageStore
+from enzo.memory.guard import secret_reason
+from enzo.tools.registry import ImageResult, Outgoing, Prepared, Tool, plain_words, tool
+from enzo.tools.web import address_words, page_name, private_addresses
 
 #: What every task's approval card says Enzo will still ask about.
 ASKS_AGAIN = (
@@ -101,6 +104,9 @@ class ClickParams(_RefParams):
 class TypeParams(_RefParams):
     text: str = Field(max_length=4000, description="The text to type; it replaces what is there.")
     submit: bool = Field(default=False, description="Press Enter afterwards (submits the form).")
+    #: Pinned by prepare: what the field asks for (label, name, autocomplete hint); None for
+    #: an editor that takes free text, like a message box (ADR 0029).
+    fills: SkipJsonSchema[str | None] = None
 
 
 class SelectParams(_RefParams):
@@ -128,8 +134,22 @@ class Closed(BaseModel):
     closed: bool
 
 
-def browser_tools(browsers: Browsers) -> list[Tool[Any, Any]]:  # noqa: PLR0915 - one closure per tool
-    """The browser steps, bound to this gateway's browser."""
+class Screenshot(ImageResult):
+    """What the page looks like: the image comes with the result (ADR 0033)."""
+
+    site: str
+    url: str
+    title: str
+    image: str
+    width: int
+    height: int
+
+
+def browser_tools(  # noqa: PLR0915 - one closure per tool
+    browsers: Browsers, images: ImageStore | None = None
+) -> list[Tool[Any, Any]]:
+    """The browser steps, bound to this gateway's browser. With ``images``, also a screenshot
+    step, offered only to brains that can see (ADR 0027 left it out until images existed)."""
 
     def session() -> Session:
         return browsers.get(current_conversation())
@@ -169,6 +189,7 @@ def browser_tools(browsers: Browsers) -> list[Tool[Any, Any]]:  # noqa: PLR0915 
         ),
         activity=lambda a: f"Opening {page_name(a.url)}",
         prepare=prepare_start,
+        outbound=lambda a: [Outgoing(address_words(a.url), "address")],
     )
     async def browser_start(args: StartParams) -> PageView:
         conversation = current_conversation()
@@ -212,6 +233,9 @@ def browser_tools(browsers: Browsers) -> list[Tool[Any, Any]]:  # noqa: PLR0915 
         untrusted_output=True,
         activity=lambda a: f"Opening {page_name(a.url)}",
         prepare=prepare_open,
+        # An address that carries a private detail asks first (§12.5, ADR 0029).
+        summary=lambda a: plain_words(f"Open {a.url} in the browser", 200),
+        outbound=lambda a: [Outgoing(address_words(a.url), "address")],
     )
     async def browser_open(args: OpenParams) -> PageView:
         s = session()
@@ -279,6 +303,7 @@ def browser_tools(browsers: Browsers) -> list[Tool[Any, Any]]:  # noqa: PLR0915 
             update={
                 "seen": s.type_pin(element, args.text, submit=args.submit),
                 "target": label,
+                "fills": _fills(element),
             }
         )
         why = type_risk(element, args.text, submit=args.submit)
@@ -318,6 +343,16 @@ def browser_tools(browsers: Browsers) -> list[Tool[Any, Any]]:  # noqa: PLR0915 
             + (" and pressing Enter" if a.submit else "")
         ),
         prepare=prepare_type,
+        # What is typed goes to the site: a private detail the field does not ask for asks
+        # first (§12.5, ADR 0029). The card's words never spell out a secret.
+        summary=lambda a: plain_words(
+            f"Type {_typed_text(a.text)} into “{a.target or a.element}”"
+            + (" and press Enter" if a.submit else ""),
+            200,
+        ),
+        outbound=lambda a: [
+            Outgoing(a.text, "field" if a.fills is not None else "message", field=a.fills)
+        ],
     )
     async def browser_type(args: TypeParams) -> PageView:
         s = session()
@@ -423,7 +458,7 @@ def browser_tools(browsers: Browsers) -> list[Tool[Any, Any]]:  # noqa: PLR0915 
         closed = conversation is not None and await browsers.close(conversation)
         return Closed(closed=closed)
 
-    return [
+    steps: list[Tool[Any, Any]] = [
         browser_start,
         browser_open,
         browser_click,
@@ -434,6 +469,43 @@ def browser_tools(browsers: Browsers) -> list[Tool[Any, Any]]:  # noqa: PLR0915 
         browser_read,
         browser_close,
     ]
+    if images is None:
+        return steps
+
+    @tool(
+        name="browser_screenshot",
+        description=(
+            "See the browser task's current page as an image (what is on screen), when the "
+            "layout, a picture or a chart matters. Password, card and code fields are blacked "
+            "out. Use browser_read for the page's text and element refs."
+        ),
+        timeout_s=30,
+        untrusted_output=True,
+        activity=lambda _a: "Looking at the page",
+    )
+    async def browser_screenshot(_args: NoParams) -> Screenshot:
+        s = session()
+        async with s.lock:
+            png = await s.screenshot()
+            url, title = s.page.url, await s.page.title()
+        kept = await images.keep_async(
+            png,
+            source="screenshot",
+            tool="browser_screenshot",
+            brain=brain_var.get(),
+            chat=conversation_var.get(),
+        )
+        return Screenshot(
+            site=s.site,
+            url=url,
+            title=title,
+            image=kept.id,
+            width=kept.width,
+            height=kept.height,
+            images=(kept.part(),),
+        )
+
+    return [*steps, dataclasses.replace(browser_screenshot, needs_vision=True)]
 
 
 def _scrolling(args: ScrollParams) -> str:
@@ -464,6 +536,22 @@ def _typed_words(element: Element, text: str) -> str:
     if kind == "code":
         return "a one-time code"
     return f"“{plain_words(text, 80)}”"
+
+
+def _typed_text(text: str) -> str:
+    """Typed text as a card says it, when the field itself is not a secret one."""
+    if secret_reason(text) or looks_like_card(text):
+        return "text that looks like a password, key or card number"
+    return f"“{plain_words(text, 120)}”"
+
+
+def _fills(element: Element) -> str | None:
+    """What a field asks for, in the page's words; None for a free-text editor."""
+    f = element.field
+    if f is None:
+        return None
+    words = (f.label, f.name, f.id, f.placeholder, f.autocomplete, f.type)
+    return " ".join(w for w in words if w) or "field"
 
 
 def _form_detail(element: Element) -> str:

@@ -1,6 +1,6 @@
 import type { ScheduledNotice, StoredMessage } from "@enzo/sdk";
 import { describe, expect, it } from "vitest";
-import { noticeText, toItems } from "./chat.ts";
+import { eventText, noticeText, scheduledItem, toItems } from "./chat.ts";
 
 const base: ScheduledNotice = {
   kind: "task",
@@ -48,6 +48,54 @@ describe("scheduled notices in a chat's timeline (spec §9.3)", () => {
       "find me a table",
       "Watching for one.",
       "⏰ Look for a table on Friday: A table is free at 7pm.",
+    ]);
+  });
+});
+
+describe("watches in a chat (spec §9.4)", () => {
+  const watch: ScheduledNotice = {
+    ...base,
+    kind: "watch",
+    task: "the kettle's price",
+    text: "the kettle's price: now $39.00, under your $40. That was its last wake.",
+  };
+
+  it("shows a watch's report or stop as the gateway words it, with its own sign", () => {
+    expect(noticeText(watch)).toBe(
+      "👀 the kettle's price: now $39.00, under your $40. That was its last wake.",
+    );
+    const stopped = { ...watch, outcome: "stopped" as const, text: "Enzo stopped watching x." };
+    expect(noticeText(stopped)).toBe("👀 Enzo stopped watching x.");
+    const live = eventText({
+      kind: "watch",
+      watch: 3,
+      outcome: "reported",
+      words: "the kettle's price: now $39.00.",
+      chat_id: "w1",
+      conversation_id: "c1",
+      stopped: true,
+    });
+    expect(live).toBe("👀 the kettle's price: now $39.00.");
+    expect(scheduledItem(live ?? "").text).toBe(live); // never a clock on top
+  });
+
+  it("shows a wake's message as the watch's, not as the user typing", () => {
+    const messages: StoredMessage[] = [
+      {
+        role: "user",
+        origin: "watch",
+        parts: [
+          { type: "text", text: "Tell me the new price." },
+          { type: "text", text: "[sent …] Watch #3 saw a change" },
+        ],
+      },
+      { role: "assistant", parts: [{ type: "text", text: "It is $39.00 now." }] },
+    ];
+    const items = toItems(messages, null, [watch]);
+    expect(items.map((i) => [i.role, i.text])).toEqual([
+      ["notice", "👀 Watch: Tell me the new price."],
+      ["assistant", "It is $39.00 now."],
+      ["notice", "👀 the kettle's price: now $39.00, under your $40. That was its last wake."],
     ]);
   });
 });

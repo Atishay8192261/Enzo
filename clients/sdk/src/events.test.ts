@@ -7,7 +7,7 @@ describe("toAgentEvent", () => {
     expect(
       toAgentEvent(
         "approval_needed",
-        '{"id":"appr_1","tool":"send_email","arguments":{"to":"bob"},"summary":"Email bob","detail":null}',
+        '{"id":"appr_1","tool":"send_email","arguments":{"to":"bob"},"summary":"Email bob","detail":null,"privacy":["This includes a health detail: “pregnant”"]}',
       ),
     ).toEqual({
       type: "approval_needed",
@@ -16,6 +16,7 @@ describe("toAgentEvent", () => {
       arguments: { to: "bob" },
       summary: "Email bob",
       detail: null,
+      privacy: ["This includes a health detail: “pregnant”"],
     });
     expect(
       toAgentEvent(
@@ -85,5 +86,10 @@ describe("toAgentEvent", () => {
     expect(() => toAgentEvent("approval_needed", '{"id":"a","tool":"t","arguments":[]}')).toThrow(
       MalformedEventError,
     );
+    // A card's private-detail lines are strings, or the event is refused (ADR 0029).
+    const card = '{"id":"a","tool":"t","arguments":{},"summary":null,"detail":null,"privacy":';
+    for (const bad of ['"x"', "[1]", "null"]) {
+      expect(() => toAgentEvent("approval_needed", `${card}${bad}}`)).toThrow(MalformedEventError);
+    }
   });
 });

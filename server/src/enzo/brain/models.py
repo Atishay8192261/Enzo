@@ -43,20 +43,49 @@ class NativePart(_Frozen):
     payload: dict[str, Any]
 
 
+#: Image ids are a hash of the stored image (``enzo.images``).
+IMAGE_ID_PATTERN = r"^img_[0-9a-f]{16}$"
+
+
+class ImagePart(_Frozen):
+    """An image the brain looks at: one the user attached, or a tool's (a screenshot).
+
+    Messages refer to the stored image by ``id``; its bytes stay in Enzo's private image store.
+    Just before a brain call, ``data`` is filled in with that brain's copy (downscaled to its
+    limits, metadata stripped). ``data`` is never stored, logged or shown: it is left out of every
+    dump and repr.
+    """
+
+    type: Literal["image"] = "image"
+    id: str = Field(pattern=IMAGE_ID_PATTERN)
+    media_type: Literal["image/png", "image/jpeg"]
+    #: The stored image's size, in pixels.
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+    #: The bytes for this call, base64. Filled in per call, for one brain only.
+    data: str | None = Field(default=None, exclude=True, repr=False)
+    #: OpenAI's ``detail`` for this call, from the brain's vision profile (per call, not stored).
+    detail: str | None = Field(default=None, exclude=True, repr=False)
+
+
 class ToolResult(_Frozen):
     type: Literal["tool_result"] = "tool_result"
     call_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     content: str
     is_error: bool = False
+    #: Images the result shows the brain (a browser screenshot), after ``content``.
+    images: tuple[ImagePart, ...] = ()
 
 
-type Part = Annotated[TextPart | ToolCall | ToolResult | NativePart, Field(discriminator="type")]
+type Part = Annotated[
+    TextPart | ImagePart | ToolCall | ToolResult | NativePart, Field(discriminator="type")
+]
 type Role = Literal["system", "user", "assistant", "tool"]
 
 _ALLOWED_PARTS: dict[str, tuple[type[_Frozen], ...]] = {
     "system": (TextPart,),
-    "user": (TextPart,),
+    "user": (TextPart, ImagePart),
     "assistant": (TextPart, ToolCall, NativePart),
     "tool": (ToolResult,),
 }
@@ -99,6 +128,17 @@ class Message(_Frozen):
     @property
     def tool_calls(self) -> tuple[ToolCall, ...]:
         return tuple(p for p in self.parts if isinstance(p, ToolCall))
+
+    @property
+    def images(self) -> tuple[ImagePart, ...]:
+        """Every image in it: attached to a user message, or shown by a tool result."""
+        out: list[ImagePart] = []
+        for part in self.parts:
+            if isinstance(part, ImagePart):
+                out.append(part)
+            elif isinstance(part, ToolResult):
+                out.extend(part.images)
+        return tuple(out)
 
     def native(self, provider: str) -> NativePart | None:
         """This message's replay data for ``provider``, if it was produced by that provider."""

@@ -22,7 +22,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequenc
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 import httpx2
 import mcp_types as types
@@ -31,7 +31,7 @@ from mcp.client.streamable_http import streamable_http_client
 from pydantic import BaseModel
 
 from enzo.brain.models import TOOL_NAME_PATTERN
-from enzo.tools.registry import JsonArgs, Prepared, Tool
+from enzo.tools.registry import JsonArgs, Outgoing, Prepared, Tool
 
 log = logging.getLogger("enzo.connectors.mcp")
 
@@ -54,13 +54,40 @@ class McpResult(BaseModel):
         return json.loads(self.text)
 
 
+@dataclass(frozen=True, slots=True)
+class Ready:
+    """A prepared call: its exact arguments, the card's detail, and text it sends besides them."""
+
+    args: dict[str, Any]
+    detail: str | None
+    #: Text the call also sends that its arguments do not hold: a forwarded email's own words.
+    sends: tuple[str, ...] = ()
+
+
 #: Calls another tool of the same server, by its server-side name, for a ``prepare`` step.
 type CallFn = Callable[[str, dict[str, Any]], Awaitable[McpResult]]
-type PrepareFn = Callable[[dict[str, Any], CallFn], Awaitable[tuple[dict[str, Any], str | None]]]
+type PrepareFn = Callable[
+    [dict[str, Any], CallFn], Awaitable[tuple[dict[str, Any], str | None] | Ready]
+]
+
+#: Arguments that name what a write acts on (a repository, a message id), not text it sends.
+_STRUCTURAL = re.compile(
+    r"(?:^|_)(?:ids?|sha|ref|owner|repo|branch|base|head|method|state|labels?|"
+    r"format|level|visibility)$|(?:Id|Ids|Sha|Number|Format|Level|Method)$"
+)
+
+
+type Stop = Literal["rate_limited", "auth"]
 
 
 class ConnectorError(Exception):
     """A plain-language failure the brain can relay (§8.3)."""
+
+    def __init__(self, message: str, *, stop: Stop | None = None) -> None:
+        super().__init__(message)
+        #: The connector stopped over this: rate limited, or its sign-in was rejected. A watch
+        #: that polls through it stops too, and says so (§8.3, ADR 0031).
+        self.stop = stop
 
 
 class ConnectorStoppedError(ConnectorError):
@@ -92,6 +119,10 @@ class McpServer:
     login: str | None = None
     #: Phrases in this server's errors that mean "rate limited", besides the usual ones.
     rate_limit_phrases: tuple[str, ...] = ()
+    #: Per server-side tool: the arguments that carry text to the receiver, each with what it
+    #: fills (None: free text, like an email's body; "Location": a field asking for a place).
+    #: A write without an entry has all its text checked for private details (ADR 0029).
+    outbound: Mapping[str, Mapping[str, str | None]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,6 +212,7 @@ class McpConnector:
         self._ready = ready
         self._stopped_until = 0.0
         self._stopped_why = ""
+        self._stopped_kind: Stop | None = None
 
     async def tools(self) -> list[Tool[Any, Any]]:
         """The server's allowed tools as Enzo tools. Fails loudly if the server cannot be listed."""
@@ -216,26 +248,26 @@ class McpConnector:
             async with self._connect() as client:
                 result = await client.call_tool(name, arguments)
         except Exception as exc:
-            self._notice_failure(str(exc), seen)
+            stop = self._notice_failure(str(exc), seen)
             if seen:
                 last = seen[-1]
                 msg = f"{self.server.label} refused the request (HTTP {last.status}): {last.text}"
-                raise ConnectorError(msg) from exc
+                raise ConnectorError(msg, stop=stop) from exc
             msg = f"could not reach {self.server.label} ({type(exc).__name__})"
-            raise ConnectorError(msg) from exc
+            raise ConnectorError(msg, stop=stop) from exc
         finally:
             _HTTP_FAILURES.reset(mark)
         text = _text(result)
         if result.is_error:
-            self._notice_failure(text, seen)
-            raise ConnectorError(f"{self.server.label} said: {text[:500]}")
+            stop = self._notice_failure(text, seen)
+            raise ConnectorError(f"{self.server.label} said: {text[:500]}", stop=stop)
         return McpResult(text=text, data=result.structured_content)
 
     def _check_running(self) -> None:
         if self._clock() < self._stopped_until:
-            raise ConnectorStoppedError(self._stopped_why)
+            raise ConnectorStoppedError(self._stopped_why, stop=self._stopped_kind)
 
-    def _notice_failure(self, text: str, http: Sequence[HttpFailure] = ()) -> None:
+    def _notice_failure(self, text: str, http: Sequence[HttpFailure] = ()) -> Stop | None:
         lowered = " ".join([text, *(f.text for f in http)]).lower()
         statuses = {f.status for f in http}
         label = self.server.label
@@ -248,19 +280,25 @@ class McpConnector:
                 RATE_LIMIT_PAUSE_S,
                 f"{label} is rate limiting Enzo: all {label} actions are paused for "
                 f"{RATE_LIMIT_PAUSE_S // 60} minutes. Nothing was retried; report what is done.",
+                "rate_limited",
             )
-        elif httpx2.codes.UNAUTHORIZED in statuses or any(
+            return "rate_limited"
+        if httpx2.codes.UNAUTHORIZED in statuses or any(
             p in lowered for p in ("bad credentials", "401 unauthorized", "requires authentication")
         ):
             self._stop(
                 float("inf"),
                 f"{label} rejected the sign-in or token: reconnect with {login}. "
                 f"{label} actions are paused until then.",
+                "auth",
             )
+            return "auth"
+        return None
 
-    def _stop(self, seconds: float, why: str) -> None:
+    def _stop(self, seconds: float, why: str, kind: Stop) -> None:
         self._stopped_until = self._clock() + seconds
         self._stopped_why = why
+        self._stopped_kind = kind
         log.warning("connector stopped", extra={"server": self.server.name, "why": why})
 
     def _wrap(self, remote: types.Tool) -> Tool[Any, Any] | None:
@@ -281,8 +319,11 @@ class McpConnector:
         if prepare_fn is not None:
 
             async def prepare(args: JsonArgs, _fn: PrepareFn = prepare_fn) -> Prepared[JsonArgs]:
-                exact, detail = await _fn(args.as_dict(), self.call)
-                return Prepared(JsonArgs(**exact), detail)
+                ready = await _fn(args.as_dict(), self.call)
+                if not isinstance(ready, Ready):
+                    ready = Ready(*ready)
+                sends = tuple(Outgoing(t, "message") for t in ready.sends)
+                return Prepared(JsonArgs(**ready.args), ready.detail, sends=sends)
 
         summarize = self.server.summaries.get(remote.name)
 
@@ -299,6 +340,18 @@ class McpConnector:
             def activity(args: JsonArgs, _fn: Callable[[dict[str, Any]], str] = describe) -> str:
                 return _fn(args.as_dict())
 
+        fields = self.server.outbound.get(remote.name)
+
+        def outbound(args: JsonArgs) -> list[Outgoing]:
+            data = args.as_dict()
+            if fields is None:  # every bit of text it sends, but not what it acts on
+                return [Outgoing(t, "message") for t in _texts(data)]
+            return [
+                Outgoing(t, "field" if fill else "message", field=fill)
+                for key, fill in fields.items()
+                for t in _texts(data.get(key))
+            ]
+
         return Tool(
             name=name,
             description=description,
@@ -312,6 +365,8 @@ class McpConnector:
             activity=activity,
             prepare=prepare,
             schema=self._schema(remote),
+            # A write sends text to others: it is checked for private details (§12.5).
+            outbound=None if read_only else outbound,
         )
 
     def _schema(self, remote: types.Tool) -> dict[str, Any]:
@@ -325,6 +380,19 @@ class McpConnector:
             schema["required"] = [r for r in schema["required"] if r not in dropped]
         schema["additionalProperties"] = False  # a dropped field must not come back unseen
         return schema
+
+
+def _texts(value: object, key: str = "") -> list[str]:
+    """The text in an argument, however nested; never what a write acts on (ids, repos)."""
+    if key and _STRUCTURAL.search(key):
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [t for k, v in value.items() for t in _texts(v, str(k))]
+    if isinstance(value, list):
+        return [t for v in value for t in _texts(v)]
+    return []
 
 
 def _target(args: dict[str, Any]) -> str:

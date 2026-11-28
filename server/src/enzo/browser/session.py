@@ -316,6 +316,30 @@ class Session:
             notes.append("The page is long and was cut: read more with a larger max_chars.")
         return PageView(site=self.site, url=url, title=title, page=text, truncated=cut, notes=notes)
 
+    async def screenshot(self) -> bytes:
+        """The visible part of the page as PNG, with password, card and one-time-code fields
+        blacked out (§12.5). Only on an approved site, like ``view``."""
+        self.require_open()
+        if not self.on_allowed_page():
+            msg = f"the page is on {self.site}, which is not an approved site; open one first"
+            raise BrowserToolError(msg)
+        notify(BrowserInUse(self.site))
+        fields = self.page.locator("input, textarea")
+        try:
+            found = await fields.evaluate_all(
+                f"(els) => els.slice(0, {MAX_FIELDS}).map({FIELD_JS})"
+            )
+            secret = [
+                fields.nth(i)
+                for i, data in enumerate(found)
+                if secret_kind(Field.model_validate(data)) is not None
+            ]
+            return await self.page.screenshot(
+                type="png", mask=secret, mask_color="#000000", timeout=ACTION_TIMEOUT_MS
+            )
+        except PlaywrightError as exc:
+            raise self.failed(exc, "could not take a screenshot of the page") from exc
+
     async def _hide_secrets(self, snapshot: str) -> str:
         """Each field's value is shown only if it is not a password, card or one-time code; a
         field that cannot be read is shown without its value."""

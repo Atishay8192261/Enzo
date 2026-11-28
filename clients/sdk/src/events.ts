@@ -22,6 +22,8 @@ export type AgentEvent =
       summary: string | null;
       /** What the action will change (e.g. the diff a merge lands); null when there is nothing. */
       detail: string | null;
+      /** Private details the action includes, one plain line each (ADR 0029); often empty. */
+      privacy: string[];
     }
   | {
       type: "done";
@@ -80,7 +82,7 @@ export type StopReason =
 
 type Shape = Record<
   string,
-  "string" | "number" | "boolean" | "object" | "number|null" | "string|null"
+  "string" | "number" | "boolean" | "object" | "number|null" | "string|null" | "string[]"
 >;
 
 const SHAPES: Record<AgentEvent["type"], Shape> = {
@@ -99,6 +101,7 @@ const SHAPES: Record<AgentEvent["type"], Shape> = {
     arguments: "object",
     summary: "string|null",
     detail: "string|null",
+    privacy: "string[]",
   },
   done: {
     stop: "string",
@@ -144,6 +147,7 @@ function matches(body: unknown, shape: Shape): body is Record<string, unknown> {
     if (kind === "number|null") return v === null || typeof v === "number";
     if (kind === "string|null") return v === null || typeof v === "string";
     if (kind === "object") return typeof v === "object" && v !== null && !Array.isArray(v);
+    if (kind === "string[]") return Array.isArray(v) && v.every((s) => typeof s === "string");
     return typeof v === kind;
   });
 }

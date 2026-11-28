@@ -27,6 +27,7 @@ from enzo.brain import (
     UnsupportedCapabilityError,
 )
 from enzo.brain.adapters.openai_brain import OpenAIBrain
+from enzo.brain.models import ImagePart, TextPart
 from enzo.brain.tokens import estimate_tokens
 from tests.brain.schemas import SearchWeb
 
@@ -637,3 +638,29 @@ async def test_a_failing_token_source_stops_the_request() -> None:
     with pytest.raises(AuthError, match="sign-in has ended"):
         await b.chat([Message.user("x")], max_output_tokens=5)
     assert calls == []  # nothing was sent without a token
+
+
+def test_images_go_as_data_urls_in_user_messages_and_function_outputs() -> None:
+    pic = ImagePart(id="img_0123456789abcdef", media_type="image/jpeg", width=4, height=3)
+    sent = pic.model_copy(update={"data": "QUJD", "detail": "high"})
+    request = brain(streaming(response([]))).build_request(
+        [
+            Message(role="user", parts=(TextPart(text="what is it?"), sent)),
+            Message.assistant(None, (ToolCall(id="c1", name="shot", arguments_json="{}"),)),
+            Message.tool(ToolResult(call_id="c1", name="shot", content="{}", images=(sent,))),
+        ],
+        [],
+        "auto",
+        100,
+    )
+    item = {"type": "input_image", "image_url": "data:image/jpeg;base64,QUJD", "detail": "high"}
+    assert request["input"][0]["content"] == [{"type": "input_text", "text": "what is it?"}, item]
+    assert request["input"][2] == {
+        "type": "function_call_output",
+        "call_id": "c1",
+        "output": [{"type": "input_text", "text": "{}"}, item],
+    }
+    with pytest.raises(ValueError, match="not attached"):
+        brain(streaming(response([]))).build_request(
+            [Message(role="user", parts=(TextPart(text="x"), pic))], [], "auto", 100
+        )

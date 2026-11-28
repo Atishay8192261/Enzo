@@ -52,7 +52,8 @@ class NoticeOut(BaseModel):
     late: bool
     #: Shown after this many of the chat's messages.
     after: int
-    #: delivered (a reminder); reported, quiet, finished, needs_approval or failed (a task run).
+    #: delivered (a reminder); reported, quiet, finished, needs_approval or failed (a task run);
+    #: a watch: reported, needs_approval, failed or stopped.
     outcome: str
     #: When it was due, in the user's zone: "Fri 09:00".
     due: str
@@ -85,7 +86,7 @@ def scheduled_routes(auth: params.Depends) -> APIRouter:
 
     @router.get("/conversations/{conversation_id}/scheduled")
     async def notices(conversation_id: uuid.UUID, bg: BackgroundDep) -> list[NoticeOut]:
-        return [
+        found = [
             NoticeOut(
                 kind=n.kind,
                 task=n.task,
@@ -100,6 +101,23 @@ def scheduled_routes(auth: params.Depends) -> APIRouter:
             )
             for n in await bg.schedule.delivered(conversation_id)
         ]
+        if bg.watcher is not None:  # a watch's reports and stops (ADR 0031)
+            found += [
+                NoticeOut(
+                    kind="watch",
+                    task=r.what,
+                    text=r.text,
+                    due_at=r.detected_at,
+                    delivered_at=r.delivered_at,
+                    late=r.late,
+                    after=r.position,
+                    outcome=r.outcome,
+                    due=f"{r.detected_at.astimezone(zone(r.timezone)):%a %H:%M}",
+                    chat_id=r.chat_id,
+                )
+                for r in await bg.watcher.hooks.reported(conversation_id)
+            ]
+        return sorted(found, key=lambda n: n.delivered_at)
 
     @router.get("/events", response_class=EventSourceResponse)
     async def events(bg: BackgroundDep) -> AsyncIterator[ServerSentEvent]:

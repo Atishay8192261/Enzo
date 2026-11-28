@@ -12,18 +12,20 @@ Both return outside content, fenced as untrusted data (§12.4).
 
 import asyncio
 import ipaddress
+import re
 import socket
 import urllib.request
 import warnings
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Literal
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import unquote_plus, urljoin, urlsplit
 
 import httpx2
 from pydantic import BaseModel, ConfigDict, Field
 from urllib3.exceptions import DependencyWarning
 
-from enzo.tools.registry import Tool, plain_words, tool
+from enzo.tools.registry import Outgoing, Tool, plain_words, tool
 
 with warnings.catch_warnings():
     # trafilatura probes urllib3's optional SOCKS support on import, and urllib3 warns when
@@ -43,13 +45,27 @@ type KeyLookup = Callable[[], str | None]
 class WebToolError(Exception):
     """A plain-language failure the brain can relay. Never claims the site itself is down."""
 
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        #: The site's HTTP status when it answered with an error (a watch stops on 429, §8.3).
+        self.status = status
+
 
 class _Params(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
 class SearchParams(_Params):
-    query: str = Field(min_length=1, max_length=400, description="What to search the web for.")
+    query: str = Field(
+        min_length=1,
+        max_length=400,
+        description=(
+            "What to search the web for: the topic only. It goes to a search company, so never "
+            "put the user's or their family's names, address, contact details, ID numbers or a "
+            "private detail about them in it unless they asked: 'alcohol-free restaurants "
+            "Austin', not 'restaurant for my pregnant wife'."
+        ),
+    )
     max_results: int = Field(default=5, ge=1, le=10, description="How many results to return.")
     topic: Literal["general", "news", "finance"] = Field(
         default="general", description="Use news for current events, finance for markets."
@@ -103,6 +119,9 @@ def web_tools(*, tavily_key: KeyLookup, http: httpx2.AsyncClient) -> list[Tool[A
         timeout_s=30,
         untrusted_output=True,
         activity=_search_activity,
+        # The query leaves the computer: private details in it ask first (§12.5, ADR 0029).
+        summary=lambda p: f"Search the web for “{plain_words(p.query, 160)}”",
+        outbound=lambda p: [Outgoing(p.query, "search")],
     )
     async def web_search(params: SearchParams) -> SearchResults:
         return await search(params, http=http, key=tavily_key())
@@ -116,6 +135,9 @@ def web_tools(*, tavily_key: KeyLookup, http: httpx2.AsyncClient) -> list[Tool[A
         timeout_s=30,
         untrusted_output=True,
         activity=_read_activity,
+        # The address goes to the site: one that carries a private detail asks first.
+        summary=lambda p: f"Open {plain_words(p.url, 200)} to read it",
+        outbound=lambda p: [Outgoing(address_words(p.url), "address")],
     )
     async def read_page(params: ReadParams) -> Page:
         return await fetch_page(params, http=http)
@@ -125,6 +147,14 @@ def web_tools(*, tavily_key: KeyLookup, http: httpx2.AsyncClient) -> list[Tool[A
 
 def _search_activity(params: SearchParams) -> str:
     return f"Searching the web for “{plain_words(params.query, 60)}”"
+
+
+def address_words(url: str) -> str:
+    """What a web address tells the site beyond its name: its path and query, as words
+    ("/collect?address=12+Oak+Street" is "collect address 12 Oak Street")."""
+    parts = urlsplit(url)
+    raw = " ".join((parts.path, parts.query, parts.fragment))
+    return " ".join(re.sub(r"[/?&=#;_]+", " ", unquote_plus(raw)).split())
 
 
 def _read_activity(params: ReadParams) -> str:
@@ -177,9 +207,31 @@ async def search(
 
 
 async def fetch_page(params: ReadParams, *, http: httpx2.AsyncClient) -> Page:
-    url = params.url
+    got = await fetch_body(params.url, http=http)
+    return _to_page(got.url, got.kind, got.body, params.max_chars)
+
+
+@dataclass(frozen=True, slots=True)
+class Fetched:
+    """A page as fetched: its address after redirects, its content type and its bytes."""
+
+    url: str
+    kind: str
+    body: bytes
+
+
+async def fetch_body(
+    start: str, *, http: httpx2.AsyncClient, private_ok: Callable[[str], bool] | None = None
+) -> Fetched:
+    """Fetch a text page, checking every redirect hop (SSRF guard).
+
+    ``private_ok``: an address inside a private network that the user named themselves (a watch
+    on a page on this computer, approved on its card) may be fetched. Every other hop is checked.
+    """
+    url = start
     for _ in range(MAX_REDIRECTS + 1):
-        await check_public(url)  # every hop: a redirect must not lead inside the network
+        if private_ok is None or not private_ok(url):
+            await check_public(url)  # every hop: a redirect must not lead inside the network
         request = http.build_request("GET", url, headers={"User-Agent": USER_AGENT})
         try:
             response = await http.send(request, stream=True)
@@ -193,7 +245,7 @@ async def fetch_page(params: ReadParams, *, http: httpx2.AsyncClient) -> Page:
                 continue
             if response.status_code != 200:
                 msg = f"fetching {url} returned HTTP {response.status_code}; this fetch failed"
-                raise WebToolError(msg)
+                raise WebToolError(msg, status=response.status_code)
             kind = response.headers.get("content-type", "").split(";")[0].strip().lower()
             if kind not in TEXT_TYPES:
                 msg = (
@@ -203,8 +255,8 @@ async def fetch_page(params: ReadParams, *, http: httpx2.AsyncClient) -> Page:
             body = await _read_capped(response)
         finally:
             await response.aclose()
-        return _to_page(url, kind, body, params.max_chars)
-    msg = f"{params.url} redirected more than {MAX_REDIRECTS} times; this fetch failed"
+        return Fetched(url, kind, body)
+    msg = f"{start} redirected more than {MAX_REDIRECTS} times; this fetch failed"
     raise WebToolError(msg)
 
 
@@ -285,16 +337,20 @@ async def _read_capped(response: httpx2.Response) -> bytes:
     return b"".join(chunks)
 
 
-def _to_page(url: str, kind: str, body: bytes, max_chars: int) -> Page:
+def main_text(url: str, kind: str, body: bytes) -> tuple[str | None, str]:
+    """A page's title and main text: as is for plain text, trafilatura's extraction for HTML."""
     if kind == "text/plain":
-        title, text = None, body.decode("utf-8", errors="replace")
-    else:
-        doc = trafilatura.bare_extraction(
-            body, url=url, with_metadata=True, include_comments=False, include_tables=True
-        )
-        if doc is None or isinstance(doc, dict) or not doc.text:
-            msg = f"{url} has no readable main text (it may need a browser to render)"
-            raise WebToolError(msg)
-        title, text = doc.title, doc.text
+        return None, body.decode("utf-8", errors="replace")
+    doc = trafilatura.bare_extraction(
+        body, url=url, with_metadata=True, include_comments=False, include_tables=True
+    )
+    if doc is None or isinstance(doc, dict) or not doc.text:
+        msg = f"{url} has no readable main text (it may need a browser to render)"
+        raise WebToolError(msg)
+    return doc.title, doc.text
+
+
+def _to_page(url: str, kind: str, body: bytes, max_chars: int) -> Page:
+    title, text = main_text(url, kind, body)
     truncated = len(text) > max_chars
     return Page(url=url, title=title, text=text[:max_chars], truncated=truncated)

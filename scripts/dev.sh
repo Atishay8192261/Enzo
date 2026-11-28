@@ -131,6 +131,7 @@ check_database() {
     return 0
   fi
   check_server_version || return 0
+  check_pgvector
   if psql -q -d "$PSQL_URL" -c 'SELECT 1' >/dev/null 2>&1; then
     ok "database reachable"
     return 0
@@ -176,6 +177,21 @@ check_server_version() {
       "Then stop version ${shown%%.*} and run 16 on port 5432: sudo pg_ctlcluster ${shown%%.*} main stop"
   fi
   return 1
+}
+
+# Search by meaning keeps its vectors in pgvector (ADR 0030); installed copies bundle it.
+check_pgvector() {
+  local found
+  found="$(pg_ask "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'")" || return 0
+  if [ "$found" = "1" ]; then
+    ok "pgvector"
+  elif on_mac; then
+    problem "pgvector is missing (Enzo keeps its search by meaning in it)" \
+      "Install it for PostgreSQL 16: https://github.com/pgvector/pgvector#installation"
+  else
+    problem "pgvector is missing (Enzo keeps its search by meaning in it)" \
+      "Run: sudo apt-get install -y postgresql-16-pgvector"
+  fi
 }
 
 # Only what is missing (#32): following a FIX must never fail on a step already done.

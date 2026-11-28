@@ -14,6 +14,7 @@ import {
   type ChatItem,
   type ChatState,
   eventText,
+  type HelpersClient,
   initialState,
   NO_USAGE,
   type PendingApproval,
@@ -94,13 +95,15 @@ async function load(
   client: ChatClient,
   conversation: Conversation,
 ): Promise<Omit<Connection, "brains">> {
-  const [messages, usage, notices] = await Promise.all([
+  const helping = (client as Partial<HelpersClient>).conversationHelpers;
+  const [messages, usage, notices, helpers] = await Promise.all([
     client.messages(conversation.id),
     // Without these the chat still opens; it just shows no totals or past reminders yet.
     client.usage(conversation.id).catch(() => null),
     client.conversationScheduled(conversation.id).catch(() => []),
+    helping ? helping.call(client, conversation.id).catch(() => []) : [],
   ]);
-  const items = toItems(messages, usage, notices);
+  const items = toItems(messages, usage, notices, helpers);
   return {
     conversationId: conversation.id,
     title: conversation.title,
@@ -108,12 +111,13 @@ async function load(
     items,
     // An approval left open when the app closed is shown again, so it can be answered (#39).
     approvals: (conversation.pending_approvals ?? []).map(
-      ({ id, tool, summary, detail, ...rest }) => ({
+      ({ id, tool, summary, detail, privacy, ...rest }) => ({
         id,
         tool,
         arguments: rest.arguments,
         summary,
         detail,
+        privacy: privacy ?? [],
       }),
     ),
     running: conversation.running ?? false,
@@ -129,7 +133,7 @@ async function load(
 async function pump(
   start: () => AsyncIterable<AgentEvent>,
   dispatch: Dispatch<ChatAction>,
-  { sending }: { sending: boolean },
+  { sending, chat = null }: { sending: boolean; chat?: string | null },
 ): Promise<void> {
   let heard = false;
   let finished = false;
@@ -137,7 +141,7 @@ async function pump(
     for await (const event of start()) {
       heard = true;
       if (event.type === "done" || event.type === "error") finished = true;
-      dispatch({ type: "event", event, at: Date.now() });
+      dispatch({ type: "event", event, at: Date.now(), chat });
     }
   } catch (e: unknown) {
     if (sending && !heard) {
@@ -229,10 +233,11 @@ export function useChat(
     return () => clearInterval(timer);
   }, [client, memory, connected, healthEveryMs, start]);
 
+  /** Send a message; `images`: ids of images kept with `uploadImage`, in order. */
   const send = useCallback(
-    async (text: string) => {
-      if (!connected || !text.trim()) return;
-      dispatch({ type: "user_sent", text, at: Date.now() });
+    async (text: string, images: string[] = []) => {
+      if (!connected || (!text.trim() && images.length === 0)) return;
+      dispatch({ type: "user_sent", text, at: Date.now(), images });
       let id = state.conversationId;
       if (!id) {
         // A fresh chat becomes real with its first message, with any model chosen before it.
@@ -251,7 +256,8 @@ export function useChat(
       }
       const chat = id;
       const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      await pump(() => client.send(chat, text, { timezone, device }), dispatch, { sending: true });
+      const context = { timezone, device, ...(images.length ? { images } : {}) };
+      await pump(() => client.send(chat, text, context), dispatch, { sending: true, chat });
     },
     [client, memory, connected, state.conversationId, state.brain, device],
   );
@@ -260,7 +266,7 @@ export function useChat(
   const resend = useCallback(async (): Promise<boolean> => {
     const last = state.items.findLast((i) => i.role === "user");
     if (!last?.unsent) return false;
-    await send(last.text);
+    await send(last.text, last.images ?? []);
     return true;
   }, [state.items, send]);
 
@@ -272,7 +278,7 @@ export function useChat(
         await client.decide(id, approvalId, approved);
         dispatch({ type: "approval_decided", id: approvalId, approved });
         dispatch({ type: "resuming", at: Date.now() });
-        await pump(() => client.resume(id), dispatch, { sending: false });
+        await pump(() => client.resume(id), dispatch, { sending: false, chat: id });
       } catch (e: unknown) {
         dispatch({ type: "event", event: { type: "error", message: message(e) } });
       }
@@ -343,11 +349,43 @@ export function useChat(
 
   /** The chat's new name, after the gateway took it (/rename). */
   const renamed = useCallback((title: string) => dispatch({ type: "renamed", title }), []);
-  /** A reminder or task report arrived while the app is open: shown in the chat on screen. */
-  const reminded = useCallback((event: GatewayEvent) => {
-    const text = eventText(event);
-    if (text) dispatch({ type: "scheduled", text });
-  }, []);
+  /** Reopen the chat on screen from the gateway: a helper changed it in the background. */
+  const latest = useRef(state);
+  latest.current = state;
+  const refresh = useCallback(async () => {
+    // Read the state when it is needed: it may change while the chat loads.
+    const now = (): ChatState => latest.current;
+    const id = now().conversationId;
+    if (!id || now().status === "streaming") return;
+    try {
+      const opened = await load(client, await client.conversation(id));
+      if (now().conversationId !== id || now().status === "streaming") return;
+      dispatch({ type: "connected", ...opened, brains: now().brains });
+    } catch {
+      // the chat on screen stays as it is; the next event tries again
+    }
+  }, [client]);
+
+  /** A reminder, task report or helper's news arrived while the app is open (spec §9.3,
+   * §9.5): shown in the chat on screen. A helper's own chat, or the chat its lines belong to,
+   * is reopened instead, so its steps and Enzo's review of its report appear in place. */
+  const reminded = useCallback(
+    (event: GatewayEvent) => {
+      const here = latest.current.conversationId;
+      if (
+        event.kind === "helper" &&
+        here &&
+        (event.chat_id === here || event.conversation_id === here)
+      ) {
+        void refresh();
+        return;
+      }
+      const text = eventText(event);
+      if (!text) return;
+      dispatch(event.kind === "helper" ? { type: "notice", text } : { type: "scheduled", text });
+    },
+    [refresh],
+  );
 
   /** Reload the catalog, e.g. after an account was connected and more models became available. */
   const refreshBrains = useCallback(async () => {
@@ -365,13 +403,15 @@ export function useChat(
     openChat,
     renamed,
     reminded,
+    refresh,
     stop,
   } satisfies {
+    refresh: () => Promise<void>;
     renamed: (title: string) => void;
     reminded: (event: GatewayEvent) => void;
     state: ChatState;
     openChat: (conversationId: string) => Promise<void>;
-    send: (text: string) => Promise<void>;
+    send: (text: string, images?: string[]) => Promise<void>;
     resend: () => Promise<boolean>;
     decide: (id: string, approved: boolean) => Promise<void>;
     chooseBrain: (brain: string | null) => Promise<void>;

@@ -1,25 +1,28 @@
 """Conversation endpoints: create, read, choose a brain, run turns over SSE, decide approvals."""
 
+import re
 import uuid
 from collections.abc import AsyncIterator, Awaitable
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Self
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, params
 from fastapi.sse import EventSourceResponse, ServerSentEvent
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from enzo.agent.loop import ApprovalNeeded, ToolFinished, ToolStarted, TurnDone
 from enzo.agent.service import (
     ConversationNotFoundError,
     ConversationService,
+    ImageNotFoundError,
     ServiceEvent,
     TurnFailed,
     TurnInProgressError,
     TurnMeta,
 )
 from enzo.brain.config import TIERS
-from enzo.brain.models import Message, TextDelta, ToolCall
+from enzo.brain.models import IMAGE_ID_PATTERN, Message, TextDelta, ToolCall
+from enzo.brain.router import CantSeeImagesError
 from enzo.compaction import Compacted, Compaction
 from enzo.compaction.view import turn_positions
 from enzo.context import BrowserInUse
@@ -71,6 +74,8 @@ class ApprovalOut(BaseModel):
     arguments: dict[str, Any]
     summary: str | None
     detail: str | None
+    #: Private details the action includes, one plain line each (ADR 0029).
+    privacy: list[str] = Field(default_factory=list)
 
 
 class ConversationOut(BaseModel):
@@ -98,10 +103,27 @@ class BrainChoice(_In):
 MAX_MESSAGE_CHARS = 1_000_000
 
 
+#: The most images one message can carry.
+MAX_IMAGES = 10
+
+
 class TurnIn(_In):
-    message: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
+    #: May be empty when the message is only images.
+    message: str = Field(default="", max_length=MAX_MESSAGE_CHARS)
     timezone: str | None = Field(default=None, max_length=64)
     device: str | None = Field(default=None, max_length=64)
+    #: Images kept with ``POST /images`` first, in the order the user attached them.
+    images: list[str] = Field(default_factory=list, max_length=MAX_IMAGES)
+
+    @model_validator(mode="after")
+    def _says_something(self) -> Self:
+        if not self.message.strip() and not self.images:
+            msg = "a message needs words or an image"
+            raise ValueError(msg)
+        if any(not re.fullmatch(IMAGE_ID_PATTERN, i) for i in self.images):
+            msg = "images must be image ids from POST /images"
+            raise ValueError(msg)
+        return self
 
 
 class Decision(_In):
@@ -159,7 +181,12 @@ def conversation_routes(auth: params.Depends) -> APIRouter:
             brain=info.brain,
             pending_approvals=[
                 ApprovalOut(
-                    id=r.id, tool=r.tool, arguments=r.arguments, summary=r.summary, detail=r.detail
+                    id=r.id,
+                    tool=r.tool,
+                    arguments=r.arguments,
+                    summary=r.summary,
+                    detail=r.detail,
+                    privacy=r.privacy or [],
                 )
                 for r in pending
             ],
@@ -182,11 +209,12 @@ def conversation_routes(auth: params.Depends) -> APIRouter:
     async def messages(conversation_id: uuid.UUID, s: ServiceDep) -> list[dict[str, Any]]:
         await _require(s, conversation_id)
         took = {t.call_id: t.latency_ms for t in await s.store.tool_calls(conversation_id)}
-        runs = await s.store.scheduled(conversation_id)
+        origins = await s.store.origins(conversation_id)
         history = await s.store.history(conversation_id)
         shown = [_shown(m, s.registry, took) for m in history]
-        for i in runs:
-            shown[i]["origin"] = "schedule"  # a scheduled task's run, not the user typing
+        for i, origin in origins.items():
+            # A scheduled run, a watch, a helper's brief or helpers' reports: not the user typing.
+            shown[i]["origin"] = origin
         _mark_summaries(shown, history, await s.store.compactions(conversation_id))
         return shown
 
@@ -202,7 +230,7 @@ def conversation_routes(auth: params.Depends) -> APIRouter:
         conversation_id: uuid.UUID, body: TurnIn, s: ServiceDep
     ) -> AsyncIterator[ServiceEvent]:
         meta = TurnMeta(timezone=body.timezone, device=body.device)
-        return await _guard(s.send(conversation_id, body.message, meta))
+        return await _guard(s.send(conversation_id, body.message, meta, images=body.images))
 
     async def start_resume(
         conversation_id: uuid.UUID, s: ServiceDep
@@ -264,6 +292,9 @@ async def _guard(
         raise HTTPException(
             409, "Enzo is still finishing the last reply in this chat. Stop it, or wait."
         ) from exc
+    except (CantSeeImagesError, ImageNotFoundError) as exc:
+        # Said before sending, and nothing was saved: the message stays with the user (#53).
+        raise HTTPException(422, str(exc)) from exc
     return stream
 
 
@@ -329,6 +360,7 @@ def _sse(event: ServiceEvent) -> ServerSentEvent:  # noqa: PLR0911 - one return 
                 "arguments": r.arguments,
                 "summary": r.summary,
                 "detail": r.detail,
+                "privacy": list(r.privacy),
             }
             return ServerSentEvent(event="approval_needed", data=data)
         case TurnDone(outcome=o):

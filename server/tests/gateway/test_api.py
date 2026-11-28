@@ -96,6 +96,7 @@ async def test_brains_are_listed_and_chosen_per_conversation(store: Store) -> No
             "recommended": True,
             "note": None,
             "available": True,
+            "vision": False,
         }
         assert names["backup"]["priced"] is False
         cid = await new_conversation(c)

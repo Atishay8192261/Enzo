@@ -11,10 +11,10 @@
 import asyncio
 import logging
 from collections import Counter
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, Protocol
 
 from enzo.agent.approvals import ApprovalRequest, approval_request
 from enzo.agent.history import open_calls
@@ -30,7 +30,9 @@ from enzo.brain.router import (
 )
 from enzo.brain.toolcall import ValidatedCall
 from enzo.compaction import Compacted, ContextOverflowError, ContextWindow, Fit
-from enzo.tools.registry import ToolOutcome, ToolRegistry, plain_words
+from enzo.context import brain_var
+from enzo.privacy.check import Verdict
+from enzo.tools.registry import Outgoing, ToolOutcome, ToolRegistry, plain_words
 
 log = logging.getLogger(__name__)
 
@@ -46,6 +48,18 @@ type StopReason = Literal[
     "over_budget",
     "cancelled",
 ]
+
+
+#: What the brain hears when the user says no to a card.
+DECLINED = "The user declined this action. Do not retry it unasked."
+
+
+class OutboundCheck(Protocol):
+    """Looks for private details in what a call sends to a third party (spec §12.5, ADR 0029)."""
+
+    async def check(self, outgoing: Sequence[Outgoing], history: Sequence[Message]) -> Verdict:
+        """What the card must say, and whether a send that would not ask must ask first."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +100,19 @@ class TurnDone:
     outcome: TurnOutcome
 
 
+@dataclass(frozen=True, slots=True)
+class Progress:
+    """A turn so far, after a step finished: what a checkpoint saves."""
+
+    messages: tuple[Message, ...]
+    brain_calls: tuple[CallRecord, ...]
+    tool_outcomes: tuple[ToolOutcome, ...]
+
+
+#: Called after each finished step (the brain's calls and their results are in the history).
+type Checkpoint = Callable[[Progress], Awaitable[None]]
+
+
 #: ``Compacted``: older turns were summarized before a brain call (spec §5.2).
 type AgentEvent = TextDelta | ToolStarted | ToolFinished | ApprovalNeeded | Compacted | TurnDone
 
@@ -97,6 +124,9 @@ class _Turn:
     steps: int = 0
     brain_calls: list[CallRecord] = field(default_factory=list)
     tool_outcomes: list[ToolOutcome] = field(default_factory=list)
+
+    def progress(self) -> Progress:
+        return Progress(tuple(self.messages), tuple(self.brain_calls), tuple(self.tool_outcomes))
 
     def done(
         self,
@@ -135,6 +165,9 @@ async def run_turn(  # noqa: PLR0913 - keyword-only turn settings
     override: str | None = None,
     affinity: str | None = None,
     window: ContextWindow | None = None,
+    privacy: OutboundCheck | None = None,
+    declined: Collection[str] = (),
+    checkpoint: Checkpoint | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """Run one user turn. ``history`` already ends with the user's message (or a paused turn).
 
@@ -142,11 +175,19 @@ async def run_turn(  # noqa: PLR0913 - keyword-only turn settings
     ``affinity`` (the conversation id) keeps the conversation with one provider (ADR 0010).
     ``window``: before every brain call the prompt is counted and, when over budget, older turns
     are summarized first (spec §1.3.5, §5.2). The returned history stays complete either way.
+    ``privacy``: what a call sends out is checked for private details before it runs (ADR 0029).
+    ``declined``: calls the user said no to; they never run, whatever their check says now.
+    ``checkpoint``: awaited after each finished step, while the history is consistent (every call
+    answered), so a turn saved there can be resumed from that step.
     """
     turn = _Turn(messages=list(history))
+    # Tools that show the brain an image are offered only to a brain that can see (ADR 0033).
+    sees = router.can_see(
+        task, override=override, affinity=affinity, vision=any(m.images for m in history)
+    )
     ask = _Ask(
         router,
-        registry.specs(tools),
+        registry.specs(tools, vision=sees),
         task,
         max_output_tokens,
         budget_tokens,
@@ -158,12 +199,9 @@ async def run_turn(  # noqa: PLR0913 - keyword-only turn settings
     while True:
         unanswered = open_calls(turn.messages)
         if unanswered:
+            checks = (_gate(registry, c, privacy, turn.messages, declined) for c in unanswered)
             gates = dict(
-                zip(
-                    (c.id for c in unanswered),
-                    await asyncio.gather(*(_gate(registry, c) for c in unanswered)),
-                    strict=True,
-                )
+                zip((c.id for c in unanswered), await asyncio.gather(*checks), strict=True)
             )
             pending = [
                 g.request for g in gates.values() if g.request and g.request.id not in decided
@@ -176,6 +214,8 @@ async def run_turn(  # noqa: PLR0913 - keyword-only turn settings
                 return
             async for event in _execute(registry, unanswered, gates, decided, turn):
                 yield event
+            if checkpoint is not None:
+                await checkpoint(turn.progress())
             continue
         if (halt := _halt(turn, stop, max_steps, registry)) is not None:
             yield halt
@@ -282,6 +322,7 @@ async def _ask_brain(
     turn.steps += 1
     turn.brain_calls.extend(routed.attempts)
     turn.messages.append(routed.response.message)
+    brain_var.set(routed.brain)  # the steps it asks for are its (an image's provenance)
     turn.last = routed.response
     if ask.window is not None:  # the exact size of what was sent: sharper estimates next time
         ask.window.learn(routed.brain, sent, ask.specs, routed.response.usage.input_tokens)
@@ -379,23 +420,51 @@ class _Gate:
     run: ToolCall
     #: Preparing the call failed: it does not run, and the brain is told why.
     error: str | None = None
+    #: What the brain hears if the user says no (the card named private details).
+    declined: str = DECLINED
+    #: The user already said no to this call: it never runs.
+    refused: bool = False
 
 
-async def _gate(registry: ToolRegistry, call: ToolCall) -> _Gate:
+async def _gate(
+    registry: ToolRegistry,
+    call: ToolCall,
+    privacy: OutboundCheck | None = None,
+    history: Sequence[Message] = (),
+    declined: Collection[str] = (),
+) -> _Gate:
+    """What a call needs before it runs. A call the user said no to never runs, whatever its
+    check says now; the brain still hears why its card asked (the private details it named)."""
+    gate = await _ask_for(registry, call, privacy, history)
+    if call.id not in declined:
+        return gate
+    return _Gate(None, gate.run, declined=gate.declined if gate.request else DECLINED, refused=True)
+
+
+async def _ask_for(
+    registry: ToolRegistry,
+    call: ToolCall,
+    privacy: OutboundCheck | None = None,
+    history: Sequence[Message] = (),
+) -> _Gate:
     """The approval this exact call needs, if any. Invalid calls need none: they will not run.
 
     A tool with a ``prepare`` step is made exact first (e.g. a merge pinned to the PR's current
     head commit). The approval id covers the prepared arguments, so when the target has changed
     since the user was asked, the id differs and the user is asked again (§12.3). A tool that
     asks only sometimes (a browser step) says in its prepared call whether this one needs a yes.
+    What the call sends out is checked for private details (ADR 0029): the card names them, and
+    a send that would not ask (a search) asks first when it carries one.
     """
     tool = registry.get(call.name)
-    if tool is None or not (tool.requires_approval or tool.prepare):
+    outward = tool is not None and tool.outbound is not None and privacy is not None
+    if tool is None or not (tool.requires_approval or tool.prepare or outward):
         return _Gate(None, call)
     checked = registry.validate(call)
     if not isinstance(checked, ValidatedCall):
         return _Gate(None, call)
     args, detail, summary, ask = checked.args, None, None, tool.requires_approval
+    sends: tuple[Outgoing, ...] = ()
     if tool.prepare is not None:
         try:
             async with asyncio.timeout(tool.timeout_s):
@@ -403,13 +472,34 @@ async def _gate(registry: ToolRegistry, call: ToolCall) -> _Gate:
         except Exception as exc:  # a lookup failed: nothing is asked and nothing runs
             return _Gate(None, call, error=f"{type(exc).__name__}: {exc}")
         args, detail, summary = prepared.args, prepared.detail, prepared.summary
-        ask = ask or prepared.ask
+        ask, sends = ask or prepared.ask, prepared.sends
         call = ToolCall(id=call.id, name=call.name, arguments_json=args.model_dump_json())
-    if not ask:
+    verdict = Verdict()
+    if privacy is not None and tool.outbound is not None:
+        verdict = await privacy.check([*tool.outbound(args), *sends], history)
+    forced = verdict.ask and not ask
+    if not (ask or forced):
         return _Gate(None, call)  # runs as prepared, without asking
     if summary is None and tool.summary:
         summary = tool.summary(args)
-    return _Gate(approval_request(call, args, summary, detail), call)
+    request = approval_request(call, args, summary, detail, privacy=verdict.lines)
+    return _Gate(request, call, declined=_declined(verdict, forced=forced))
+
+
+def _declined(verdict: Verdict, *, forced: bool) -> str:
+    """What the brain hears after a no to a card that named private details (§12.5)."""
+    if not verdict.lines:
+        return DECLINED
+    what = " and ".join(verdict.kinds) or "private details"
+    if forced:
+        return (
+            f"The user did not want this sent with {what}. Do it again without those details, "
+            "or tell the user what you could not do."
+        )
+    return (
+        f"The user declined. The card said it includes {what}: offer to do it without those "
+        "details. Do not do it again unasked."
+    )
 
 
 async def _execute(
@@ -423,15 +513,16 @@ async def _execute(
     declined: dict[str, ToolOutcome] = {}
     for call in calls:
         gate = gates[call.id]
+        if gate.refused:
+            declined[call.id] = registry.not_executed(call, "declined", gate.declined)
+            continue
         if gate.error is not None:
             declined[call.id] = registry.not_executed(
                 call, "failed", f"Could not check this action, so it was not run: {gate.error}"
             )
             continue
         if gate.request is not None and not decided[gate.request.id]:
-            declined[call.id] = registry.not_executed(
-                call, "declined", "The user declined this action. Do not retry it unasked."
-            )
+            declined[call.id] = registry.not_executed(call, "declined", gate.declined)
             continue
         runnable.append(gate.run)
     for call in runnable:

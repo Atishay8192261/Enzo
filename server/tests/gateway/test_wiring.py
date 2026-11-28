@@ -101,6 +101,7 @@ async def test_the_app_registers_the_core_tools(
             "remember",
             "forget",
             "search_memory",
+            "search_past_chats",
             "remind",
             "schedule_task",
             "finish_task",
@@ -111,6 +112,7 @@ async def test_the_app_registers_the_core_tools(
             "close_goal",
             "list_goals",
             "read_stored_output",
+            "view_image",
             "browser_start",
             "browser_open",
             "browser_click",
@@ -120,7 +122,21 @@ async def test_the_app_registers_the_core_tools(
             "browser_back",
             "browser_read",
             "browser_close",
+            "browser_screenshot",
+            "add_discretion_rule",
+            "remove_discretion_rule",
+            "watch",
+            "enable_watch",
+            "list_watches",
+            "cancel_watch",
+            "delegate",
+            "stop_helper",
         ]
+        # Tools that show the brain an image are left out for a brain that cannot see.
+        blind = [s.name for s in registry.specs(vision=False)]
+        assert set(names) - set(blind) == {"view_image", "browser_screenshot"}
+        # Images are kept in Enzo's private data folder, and the router sends them (ADR 0033).
+        assert app.state.service.images is app.state.service.router.images is not None
         # Long results are kept whole outside the context (ADR 0024).
         assert registry.retain is app.state.service.outputs is not None
         gated = [n for n in names if registry.get(n).requires_approval]
@@ -129,16 +145,36 @@ async def test_the_app_registers_the_core_tools(
         assert "Enzo folder is" in app.state.service._developer
         assert app.state.service.memory is not None
         assert app.state.service.goals is not None  # open goals come with each message
+        # Search by meaning (ADR 0030): one index for memory, past chats and stored texts.
+        index = app.state.service.index
+        assert index is not None
+        assert app.state.service.memory._index is index
+        assert index.embedder.state == "off"  # tests never download the model
         assert app.state.background.runner is not None  # reminders are delivered
         # The browser lives as long as a turn: the service tells it when turns end (ADR 0027).
-        (browsers,) = app.state.service._hooks
+        (browsers, helpers) = app.state.service._hooks
         assert browsers.own_port == settings.port
+        # What goes out is checked for private details, with the user's rules (ADR 0029).
+        assert app.state.service.discretion is not None
+        outward = [n for n in names if registry.get(n).outbound is not None]
+        # Helpers shape each chat's turns and close when their chat is stopped (ADR 0028).
+        assert app.state.service.planner is helpers is app.state.helpers
+        assert (helpers._max, helpers._steps) == (settings.helpers_max, settings.helper_steps)
+        # Watches check on the runner's clock and never read Enzo's own port (ADR 0031).
+        watcher = app.state.background.watcher
+        assert watcher in app.state.background.runner._workers
+        assert watcher.sources.own_site(f"http://127.0.0.1:{settings.port}/healthz")
     # A task acts on its own: approved first. A browser task is approved once, as a whole.
-    assert gated == ["delete_file", "schedule_task", "browser_start"]
+    # Setting up a watch and turning it on are two separate yeses (spec §9.4, §12.4).
+    assert gated == ["delete_file", "schedule_task", "browser_start", "watch", "enable_watch"]
+    # Everything that sends text to a third party is checked first (§12.5, ADR 0029).
+    assert outward == ["web_search", "read_page", "browser_start", "browser_open", "browser_type"]
     assert fenced == [
         "web_search",
         "read_page",
         "read_file",
+        "search_past_chats",
         "read_stored_output",
         *(n for n in names if n.startswith("browser_") and n != "browser_close"),
+        "list_watches",  # what a watch last read is outside content
     ]

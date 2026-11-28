@@ -11,8 +11,8 @@ from alembic.config import Config
 ADMIN_URL = os.environ.get("ENZO_TEST_ADMIN_URL", "postgresql://enzo:enzo@localhost:5432/postgres")
 ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 TABLES = (
-    "compactions, goal_events, goal_steps, goals, job_runs, jobs, memories, approvals, "
-    "tool_calls, brain_calls, messages, conversations"
+    "hook_events, hooks, helper_notices, helpers, chunks, compactions, goal_events, goal_steps, "
+    "goals, job_runs, jobs, memories, approvals, tool_calls, brain_calls, messages, conversations"
 )
 
 

@@ -6,7 +6,10 @@ import type {
   ChatsClient,
   ConversationMemory,
   GoalsClient,
+  HelpersClient,
+  ImagesClient,
   MemoryClient,
+  PrivacyClient,
   ScheduleClient,
   Start,
 } from "@enzo/chat";
@@ -16,6 +19,7 @@ import type {
   Conversation,
   ConversationUsage,
   GatewayEvent,
+  Helper,
   ProviderConnection,
   Usage,
 } from "@enzo/sdk";
@@ -142,8 +146,11 @@ export type Client = ChatClient &
   AccountsClient &
   ChatsClient &
   MemoryClient &
+  PrivacyClient &
   ScheduleClient &
-  GoalsClient;
+  GoalsClient &
+  HelpersClient &
+  ImagesClient;
 
 /** An event stream with nothing to say: it stays open until the app closes it. */
 export async function* quiet(signal?: AbortSignal): AsyncGenerator<GatewayEvent> {
@@ -151,6 +158,28 @@ export async function* quiet(signal?: AbortSignal): AsyncGenerator<GatewayEvent>
     if (signal?.aborted) return resolve();
     signal?.addEventListener("abort", () => resolve(), { once: true });
   });
+}
+
+/** A helper as the gateway lists it. */
+export function helperOf(id: number, more: Partial<Helper> = {}): Helper {
+  return {
+    id,
+    title: "Compare 5 laptops",
+    status: "working",
+    depth: 1,
+    chat_id: `h${id}`,
+    parent_id: "c1",
+    conversation_id: "c1",
+    coordinator_id: null,
+    created_at: "2026-11-27T10:00:00Z",
+    finished_at: null,
+    steps: 4,
+    calls: 5,
+    cost_usd: 0.02,
+    plan: false,
+    waiting: null,
+    ...more,
+  };
 }
 
 export function fakeClient(overrides: Partial<Client> = {}): Client {
@@ -195,8 +224,30 @@ export function fakeClient(overrides: Partial<Client> = {}): Client {
     scheduled: async () => [],
     cancelScheduled: mock(async () => {}),
     conversationScheduled: async () => [],
+    helpers: async () => [],
+    stopHelper: mock(async (id: number) => ({ stopped: true, helper: helperOf(id) })),
+    conversationHelpers: async () => [],
+    watches: async () => [],
+    checkWatch: mock(async () => {
+      throw new Error("no watch");
+    }),
+    enableWatch: mock(async () => {
+      throw new Error("no watch");
+    }),
+    cancelWatch: mock(async () => {}),
     events: quiet,
+    uploadImage: mock(async (_data: unknown, options?: { name?: string }) => ({
+      id: "img_0123456789abcdef",
+      media_type: "image/png",
+      width: 1456,
+      height: 819,
+      bytes: 1000,
+      name: options?.name ?? null,
+      stripped: [],
+    })),
     forgetMemory: mock(async () => {}),
+    privacyRules: async () => [],
+    removePrivacyRule: mock(async () => {}),
     chooseBrain: mock(async () => {}),
     send: () => events(),
     resume: () => events(),
@@ -224,6 +275,8 @@ export interface ScreenOptions {
   start?: Start;
   /** What the terminal says it supports once it answers (e.g. the kitty keyboard protocol). */
   terminal?: Partial<TerminalCapabilities>;
+  /** The system clipboard's image, for Ctrl+V. */
+  readClipboard?: () => Promise<{ bytes: Uint8Array; type: string } | null>;
 }
 
 /** The app on a test screen, ready to type into. */
@@ -238,6 +291,7 @@ export async function screen(client: Client, options: ScreenOptions = {}): Promi
       version="0.1.0"
       healthEveryMs={options.healthEveryMs ?? 60_000}
       start={options.start ?? "fresh"}
+      readClipboard={options.readClipboard ?? (async () => null)}
     />,
     {
       width: options.width ?? 90,

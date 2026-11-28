@@ -18,6 +18,12 @@ export function ApprovalCard({ approval }: { approval: PendingApproval }) {
       <text>
         <strong>{describeApproval(approval)}</strong>
       </text>
+      {approval.privacy.map((line) => (
+        // What private detail this sends to someone else (ADR 0029): said before the details.
+        <text key={line} fg={COLOR.warn}>
+          ! {line}
+        </text>
+      ))}
       <text fg={COLOR.dim}>Exact details: {JSON.stringify(approval.arguments, null, 2)}</text>
       {approval.detail ? <text fg={COLOR.dim}>{clip(approval.detail, 12)}</text> : null}
       <text>

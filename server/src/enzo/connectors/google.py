@@ -47,6 +47,7 @@ from enzo.connectors.mcp import (
     McpConnector,
     McpServer,
     PrepareFn,
+    Ready,
     http_transport,
 )
 from enzo.tools.registry import Tool, tool
@@ -200,7 +201,7 @@ def _reply_pin(me: str | None) -> PrepareFn:
     return pin
 
 
-async def _forward(args: dict[str, Any], call: CallFn) -> tuple[dict[str, Any], str | None]:
+async def _forward(args: dict[str, Any], call: CallFn) -> Ready:
     message = {"messageId": args["messageId"], "messageFormat": "PLAIN_TEXT"}
     original = await _read(call, "get_message", message, "the email to forward")
     about = _clean(original.get("subject") or "(no subject)", line=True)
@@ -211,7 +212,30 @@ async def _forward(args: dict[str, Any], call: CallFn) -> tuple[dict[str, Any], 
         f"Forwards the email “{about}” from {sender} (its full text{carried}). "
         "Sends now; an email cannot be taken back."
     )
-    return args, _email(args, intro)
+    # The forwarded email's own words go out too: checked for private details (ADR 0029).
+    body = original.get("plaintextBody")
+    return Ready(args, _email(args, intro), sends=(body,) if isinstance(body, str) else ())
+
+
+#: What each Gmail write sends to its recipients (a draft stays in the user's own mailbox).
+GMAIL_OUTBOUND: Mapping[str, Mapping[str, str | None]] = {
+    "send_message": {"subject": None, "body": None},
+    "reply": {"body": None},
+    "forward": {"forwardText": None},
+    "create_draft": {},
+}
+#: What each Calendar write tells the guests; the place is a field that asks for one.
+_EVENT_TEXT: Mapping[str, str | None] = {
+    "summary": None,
+    "description": None,
+    "location": "Location",
+}
+CALENDAR_OUTBOUND: Mapping[str, Mapping[str, str | None]] = {
+    "create_event": _EVENT_TEXT,
+    "update_event": _EVENT_TEXT,
+    "respond_to_event": {"responseComment": None},
+    "delete_event": {},
+}
 
 
 def _send_summary(args: dict[str, Any]) -> str:
@@ -263,6 +287,7 @@ def gmail_server(me: str | None, granted: frozenset[str]) -> McpServer:
             "get_message": lambda _a: "Reading an email",
         },
         drop=GMAIL_DROP,
+        outbound=GMAIL_OUTBOUND,
         strict=True,
         login=LOGIN,
         rate_limit_phrases=RATE_LIMIT_PHRASES,
@@ -444,6 +469,7 @@ def calendar_server(granted: frozenset[str]) -> McpServer:
             "suggest_time": lambda _a: "Looking for a free time",
         },
         drop=CALENDAR_DROP,
+        outbound=CALENDAR_OUTBOUND,
         strict=True,
         login=LOGIN,
         rate_limit_phrases=RATE_LIMIT_PHRASES,

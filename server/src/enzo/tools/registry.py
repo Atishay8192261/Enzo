@@ -17,9 +17,9 @@ from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, cast, get_type_hints
 
 import jsonschema
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
-from enzo.brain.models import ToolCall, ToolResult, ToolSpec
+from enzo.brain.models import ImagePart, ToolCall, ToolResult, ToolSpec
 from enzo.brain.toolcall import ToolCallRejection, ValidatedCall, validate_call
 from enzo.tools.fence import fence
 
@@ -60,6 +60,13 @@ class ToolError(BaseModel):
     message: str
 
 
+class ImageResult(BaseModel):
+    """A result that shows the brain images (a screenshot): they go with the result, after its
+    text, and never into its JSON."""
+
+    images: tuple[ImagePart, ...] = Field(default=(), exclude=True)
+
+
 class JsonArgs(BaseModel):
     """Arguments of a tool defined by a JSON Schema (an MCP tool), checked with ``jsonschema``."""
 
@@ -67,6 +74,22 @@ class JsonArgs(BaseModel):
 
     def as_dict(self) -> dict[str, Any]:
         return dict(self.model_extra or {})
+
+
+#: How text leaves the computer (spec §12.5, ADR 0029): an email or a post, a web form's field,
+#: a search query, or a page's address. It decides which private details count.
+type Channel = Literal["message", "field", "search", "address"]
+
+
+@dataclass(frozen=True, slots=True)
+class Outgoing:
+    """Text a call sends to someone outside the conversation, checked before it goes."""
+
+    text: str
+    channel: Channel
+    #: For a form field: what it asks for (label, name, autocomplete hint), e.g. "Delivery
+    #: address street-address". A detail of that kind typed into it is what the site needs.
+    field: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +105,9 @@ class Prepared[P: BaseModel]:
     #: For a tool that does not always need approval: True when this exact call does (a
     #: browser click that would place an order). A tool with ``requires_approval`` always asks.
     ask: bool = False
+    #: Text the call also sends that is not in its arguments (a forwarded email's own text),
+    #: checked for private details with the call's ``outbound`` text (ADR 0029).
+    sends: tuple[Outgoing, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +138,11 @@ class Tool[P: BaseModel, R: BaseModel]:
     group: str | None = None
     #: Its result always stays whole in the context, however long (it reads stored text itself).
     keep_whole: bool = False
+    #: What the call sends to a third party (a query, an email's text, a typed field), from its
+    #: prepared arguments: checked for private details before it runs (§12.5, ADR 0029).
+    outbound: Callable[[P], Sequence[Outgoing]] | None = None
+    #: It shows the brain an image: offered only to a brain that can see (ADR 0033).
+    needs_vision: bool = False
 
     def spec(self) -> ToolSpec:
         # The card is the one confirmation: a model that asks in chat first makes the user
@@ -134,6 +165,7 @@ def tool[P: BaseModel, R: BaseModel](  # noqa: PLR0913 - keyword-only tool optio
     summary: Callable[[P], str] | None = None,
     activity: Callable[[P], str] | None = None,
     prepare: Callable[[P], Awaitable[Prepared[P]]] | None = None,
+    outbound: Callable[[P], Sequence[Outgoing]] | None = None,
 ) -> Callable[[Handler[P, R]], Tool[P, R]]:
     """Declare a tool from an async function; parameter and result models come from its hints."""
 
@@ -156,6 +188,7 @@ def tool[P: BaseModel, R: BaseModel](  # noqa: PLR0913 - keyword-only tool optio
             summary=summary,
             activity=activity,
             prepare=prepare,
+            outbound=outbound,
         )
 
     return wrap
@@ -220,10 +253,11 @@ class ToolRegistry:
     def get(self, name: str) -> Tool[Any, Any] | None:
         return self._tools.get(name)
 
-    def specs(self, names: Sequence[str] | None = None) -> list[ToolSpec]:
-        """Specs for the brain; ``names`` loads only the tools a task needs (§3 step 2)."""
+    def specs(self, names: Sequence[str] | None = None, *, vision: bool = True) -> list[ToolSpec]:
+        """Specs for the brain; ``names`` loads only the tools a task needs (§3 step 2).
+        ``vision``: the brain can see images (else tools that show it one are left out)."""
         chosen = self._tools if names is None else {n: self._tools[n] for n in names}
-        return [t.spec() for t in chosen.values()]
+        return [t.spec() for t in chosen.values() if vision or not t.needs_vision]
 
     def activity(self, call: ToolCall) -> str:
         """The step in plain words for the chat (#40), never the tool's name (§10.3).
@@ -274,6 +308,7 @@ class ToolRegistry:
             msg = f"{call.name} returned {got}, expected {t.returns.__name__}"
             return self._failed(call, "bad_result", msg, started, began)
         content = value.model_dump_json()
+        images = value.images if isinstance(value, ImageResult) else ()
         shortened = (
             self.retain.shorten_result(content, source=call.name, untrusted=t.untrusted_output)
             if self.retain is not None and not t.keep_whole
@@ -285,7 +320,7 @@ class ToolRegistry:
             content = fence(content, source=call.name)
         return ToolOutcome(
             call=call,
-            result=ToolResult(call_id=call.id, name=call.name, content=content),
+            result=ToolResult(call_id=call.id, name=call.name, content=content, images=images),
             status="ok",
             latency_ms=_since(started),
             started_at=began,

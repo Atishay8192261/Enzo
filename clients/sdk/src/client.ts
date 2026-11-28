@@ -21,6 +21,23 @@ export interface Brain {
   note: string | null;
   /** The provider is connected, so this model can answer now. */
   available: boolean;
+  /** It can see images (older gateways leave it out: treat as false). */
+  vision?: boolean;
+}
+
+/** How an image came to Enzo: pasted (or from the clipboard), or a file the user picked. */
+export type ImageSource = "pasted" | "file";
+
+/** An image the gateway kept (cleaned of its metadata), to send with a message by `id`. */
+export interface UploadedImage {
+  id: string;
+  media_type: string;
+  width: number;
+  height: number;
+  bytes: number;
+  name: string | null;
+  /** What was removed before it was kept: "EXIF", "GPS position", ... */
+  stripped: string[];
 }
 
 export interface Conversation {
@@ -67,6 +84,8 @@ export interface MemoryList {
   memories: Remembered[];
   /** Where the readable copy is, as the user types it: ~/Enzo/Memory.md. */
   file: string | null;
+  /** Whether Enzo also finds things by meaning, in plain words (ADR 0030); absent from older gateways. */
+  search?: string | null;
 }
 
 /** A reminder or scheduled task still to come (spec §9.3). */
@@ -91,6 +110,43 @@ export interface Scheduled {
   chat_id: string | null;
   /** The goal it checks in on: closing the goal cancels it. */
   goal_id?: number | null;
+}
+
+/**
+ * A watch (spec §9.4): Enzo checks something on its own with no model call and wakes up only
+ * when it changes. It starts off; turning it on needs a check the user saw (`checkWatch`).
+ */
+export interface Watch {
+  id: number;
+  /** "the price of the blue kettle". */
+  what: string;
+  status: "off" | "on" | "stopped" | "done" | "cancelled";
+  /** "the text at “.price” on shop.example/kettle, every 30 minutes". */
+  checks: string;
+  /** What counts as a change: "the number in it goes below 40". */
+  change: string;
+  /** "until Thu 10 Dec 2026, at most 1 wake". */
+  ends: string;
+  /** What Enzo does when it changes. */
+  on_change: string;
+  /** What it read last (outside content: show it as plain text), and when. */
+  reads: string | null;
+  read_at: string | null;
+  next_check: string | null;
+  /** Why a stopped one stopped: rate_limited, auth, failing. */
+  stop_reason: string | null;
+  last_error: string | null;
+  wakes: number;
+}
+
+/** A watch read right now: what the user sees before turning it on. */
+export interface WatchCheck {
+  watch: Watch;
+  reads: string;
+  change: string;
+  checked_at: string | null;
+  /** Turning it on names this check: the one the user saw. */
+  token: string;
 }
 
 /** What a change of a goal rests on (spec §6.5). */
@@ -152,21 +208,24 @@ export interface GoalList {
   file: string | null;
 }
 
-/** How a task run went: a report, nothing new yet, done, waiting for approval, or failed. */
+/** How a task run or a watch's wake went: a report, nothing new yet, done, waiting for
+ * approval, failed, or (a watch) stopped. */
 export type RunOutcome =
   | "delivered"
   | "reported"
   | "quiet"
   | "finished"
   | "needs_approval"
-  | "failed";
+  | "failed"
+  | "stopped";
 
-/** A reminder, or a task's report, that arrived in a chat: shown after `after` messages. */
+/** A reminder, a task's report or a watch's, that arrived in a chat: shown after `after`
+ * messages. */
 export interface ScheduledNotice {
-  kind: "reminder" | "task";
-  /** A task: what it does. */
+  kind: "reminder" | "task" | "watch";
+  /** A task: what it does. A watch: what it watches. */
   task: string | null;
-  /** A reminder's words, or the run's report. */
+  /** A reminder's words, or the run's report (a watch's is the whole line to show). */
   text: string;
   due_at: string;
   delivered_at: string;
@@ -177,6 +236,44 @@ export interface ScheduledNotice {
   /** When it was due, in the user's zone: "Fri 09:00". */
   due: string;
   /** A task's own chat, where the whole run can be read. */
+  chat_id: string | null;
+}
+
+/** How a helper is doing: at work, waiting for the user's approval, or how it ended. */
+export type HelperStatus = "working" | "waiting" | "done" | "failed" | "stopped" | "interrupted";
+
+/** A helper: long work Enzo handed to a child agent in its own chat (spec §9.5). */
+export interface Helper {
+  id: number;
+  /** A short name: "Compare 5 laptops". */
+  title: string;
+  status: HelperStatus;
+  /** 1: the user's chat handed it the work; 2: another helper did. */
+  depth: number;
+  /** Its own chat: open it to watch it, answer its approval, or stop it (Esc). */
+  chat_id: string | null;
+  /** The chat that handed it the work, and the user's own chat at the top. */
+  parent_id: string | null;
+  conversation_id: string | null;
+  coordinator_id: number | null;
+  created_at: string;
+  finished_at: string | null;
+  /** Steps it took, and what its model calls used (the user's own accounts pay). */
+  steps: number;
+  calls: number;
+  cost_usd: number | null;
+  plan: boolean;
+  /** While it waits: the action it asks the user to approve, in plain words. */
+  waiting: string | null;
+}
+
+/** A line about a helper in a chat's timeline: "Helper #3 “Compare 5 laptops” finished." */
+export interface HelperNotice {
+  helper: number;
+  kind: "started" | "waiting" | "done" | "failed" | "stopped" | "interrupted" | "resumed";
+  text: string;
+  after: number;
+  at: string;
   chat_id: string | null;
 }
 
@@ -203,6 +300,28 @@ export type GatewayEvent =
       conversation_id: string | null;
       /** The task ended with this run. */
       stopped: boolean;
+    }
+  | {
+      kind: "helper";
+      /** Null for "reported": the chat that asked replied about its helpers' reports. */
+      helper: number | null;
+      status: HelperStatus | "reported" | "started" | "resumed";
+      /** The line to show, or null when there is nothing to say (a step, a reply). */
+      words: string | null;
+      /** The helper's own chat, and the user's chat its lines show in. */
+      chat_id?: string | null;
+      conversation_id: string | null;
+    }
+  | {
+      kind: "watch";
+      watch: number;
+      outcome: RunOutcome;
+      /** The whole line to show: "the kettle's price: now $39.00, under your $40." */
+      words: string;
+      chat_id: string | null;
+      conversation_id: string | null;
+      /** The watch is no longer on (its last wake, or it stopped). */
+      stopped: boolean;
     };
 
 export interface ApprovalCard {
@@ -211,21 +330,50 @@ export interface ApprovalCard {
   arguments: Record<string, unknown>;
   summary: string | null;
   detail: string | null;
+  /** Private details the action includes, one plain line each (ADR 0029). */
+  privacy?: string[];
+}
+
+/** A discretion rule the user stated (spec §12.5): what Enzo never shares with others. */
+export interface PrivacyRule {
+  id: number;
+  /** The rule in plain words: "Don't mention my health to anyone". */
+  text: string;
+  kinds: string[];
+  words: string[];
+  /** All it covers, in words: "health, and the words “work”". */
+  covers: string;
+  /** "all": every chat; "chat": only the chat it was set in. */
+  scope: "all" | "chat";
+  conversation_id: string | null;
+  /** That chat's title, when it has one. */
+  chat: string | null;
+  /** The user's own words that stated it. */
+  quote: string;
+  created_at: string;
 }
 
 export interface StoredMessage {
   role: "system" | "user" | "assistant" | "tool";
   parts: StoredPart[];
-  /** "schedule": a scheduled task's run started this turn; the user did not type it. */
-  origin?: "schedule";
+  /**
+   * Who wrote it, when not the user: "schedule" (a scheduled task's run), "watch" (a watch
+   * saw a change), "brief" (the work a helper was given, in its own chat), "handoff"
+   * (helpers' reports, for Enzo to review).
+   */
+  origin?: "schedule" | "watch" | "brief" | "handoff";
   /** Older messages were summarized just before this one (how many turns the summary covers). */
   summarized?: number;
 }
 
-/** One part of a stored message: text, a tool call (with its step in plain words) or a result. */
+/** One part of a stored message: text, an image, a tool call (with its step) or a result. */
 export interface StoredPart {
   type: string;
   text?: string;
+  /** An image (`type: "image"`): its size; a tool result's images are in `images`. */
+  width?: number;
+  height?: number;
+  images?: StoredPart[];
   name?: string;
   content?: string;
   /** A tool call's id; a result names the call it answers with `call_id`. */
@@ -305,6 +453,8 @@ export interface ConnectionCheck {
 export interface TurnContext {
   timezone?: string;
   device?: string;
+  /** Images kept with `uploadImage` first, in the order the user attached them. */
+  images?: string[];
 }
 
 export class GatewayError extends Error {
@@ -400,23 +550,66 @@ export class GatewayClient {
     await this.#json("DELETE", `/scheduled/${id}`);
   }
 
+  /** Watches that are on, off or stopped, newest first. */
+  async watches(): Promise<Watch[]> {
+    const body = (await this.#json("GET", "/watches")) as { watches: Watch[] };
+    return body.watches;
+  }
+
+  /** Read a watch right now (its dry run), to show the user before turning it on. */
+  checkWatch(id: number): Promise<WatchCheck> {
+    return this.#json("POST", `/watches/${id}/check`) as Promise<WatchCheck>;
+  }
+
+  /** Turn a watch on, from the check the user saw. Only after they said yes. */
+  enableWatch(id: number, token: string): Promise<Watch> {
+    return this.#json("POST", `/watches/${id}/enable`, { token }) as Promise<Watch>;
+  }
+
+  async cancelWatch(id: number): Promise<void> {
+    await this.#json("DELETE", `/watches/${id}`);
+  }
+
   /** The reminders and task reports that arrived in a chat, in order. */
   conversationScheduled(id: string): Promise<ScheduledNotice[]> {
     return this.#json("GET", `/conversations/${enc(id)}/scheduled`) as Promise<ScheduledNotice[]>;
   }
 
-  /** Live events while the app is open. Ends if the gateway goes away. */
-  async *events(signal?: AbortSignal): AsyncGenerator<GatewayEvent> {
+  /**
+   * Live events while the app is open. Ends if the gateway goes away. `opened` is called once
+   * the stream is open: what happened while it was not (a restart) can be caught up then.
+   */
+  async *events(signal?: AbortSignal, opened?: () => void): AsyncGenerator<GatewayEvent> {
     const res = await this.#request("GET", "/events", undefined, signal);
     if (!res.body) throw new GatewayError("event stream has no body", res.status);
+    opened?.();
     for await (const message of parseSse(res.body)) {
-      if (message.event !== "reminder" && message.event !== "task") continue; // not known here
+      if (!["reminder", "task", "helper", "watch"].includes(message.event)) continue; // not known here
       try {
         yield { kind: message.event, ...JSON.parse(message.data) } as GatewayEvent;
       } catch {
         // a malformed event is skipped, never fatal
       }
     }
+  }
+
+  /** Helpers at work first, then the latest that finished. */
+  async helpers(): Promise<Helper[]> {
+    const body = (await this.#json("GET", "/helpers")) as { helpers: Helper[] };
+    return body.helpers;
+  }
+
+  /** Stop a helper (and the helpers it handed parts to). False: it was not working any more. */
+  async stopHelper(id: number): Promise<{ stopped: boolean; helper: Helper }> {
+    return (await this.#json("POST", `/helpers/${id}/stop`)) as {
+      stopped: boolean;
+      helper: Helper;
+    };
+  }
+
+  /** The lines about helpers in a chat's timeline, in order. */
+  conversationHelpers(id: string): Promise<HelperNotice[]> {
+    return this.#json("GET", `/conversations/${enc(id)}/helpers`) as Promise<HelperNotice[]>;
   }
 
   /** Everything Enzo remembers, newest first. */
@@ -427,6 +620,18 @@ export class GatewayClient {
   /** Forgets a memory for good, with its earlier versions. */
   async forgetMemory(id: number): Promise<void> {
     await this.#json("DELETE", `/memory/${id}`);
+  }
+
+  /** The discretion rules that hold in a chat (its own and every chat's); with no chat,
+   * the ones for every chat. */
+  privacyRules(conversationId?: string | null): Promise<PrivacyRule[]> {
+    const query = conversationId ? `?conversation=${enc(conversationId)}` : "";
+    return this.#json("GET", `/privacy${query}`) as Promise<PrivacyRule[]>;
+  }
+
+  /** Lifts a discretion rule. */
+  async removePrivacyRule(id: number): Promise<void> {
+    await this.#json("DELETE", `/privacy/${id}`);
   }
 
   /** Open goals (due soonest first), or closed ones (done and given up, newest first). */
@@ -512,6 +717,23 @@ export class GatewayClient {
     await this.#json("PUT", "/connections/google/client", { client });
   }
 
+  /**
+   * Keep an image for a message: the gateway reads its real type from the bytes, strips its
+   * metadata (camera, GPS) and answers with the id to send. The name never goes in the URL.
+   */
+  async uploadImage(
+    data: Blob | ArrayBuffer | Uint8Array,
+    { source = "pasted", name, type }: { source?: ImageSource; name?: string; type?: string } = {},
+  ): Promise<UploadedImage> {
+    const headers: Record<string, string> = {
+      "content-type": type || "application/octet-stream",
+      "x-enzo-image-source": source,
+    };
+    if (name) headers["x-enzo-image-name"] = encodeURIComponent(name);
+    const res = await this.#request("POST", "/images", data, undefined, headers);
+    return (await res.json()) as UploadedImage;
+  }
+
   checkConnection(provider: string): Promise<ConnectionCheck> {
     return this.#json("POST", `/connections/${enc(provider)}/check`) as Promise<ConnectionCheck>;
   }
@@ -553,12 +775,14 @@ export class GatewayClient {
     path: string,
     body?: unknown,
     signal?: AbortSignal,
+    /** Set: `body` is sent as it is (raw bytes), with these headers. */
+    raw?: Record<string, string>,
   ): Promise<Response> {
-    const headers: Record<string, string> = {};
-    if (body !== undefined) headers["content-type"] = "application/json";
+    const headers: Record<string, string> = { ...raw };
+    if (body !== undefined && !raw) headers["content-type"] = "application/json";
     if (this.#token) headers.authorization = `Bearer ${this.#token}`;
     const init: RequestInit = { method, headers };
-    if (body !== undefined) init.body = JSON.stringify(body);
+    if (body !== undefined) init.body = raw ? (body as BodyInit) : JSON.stringify(body);
     if (signal) init.signal = signal;
     let res: Response;
     try {

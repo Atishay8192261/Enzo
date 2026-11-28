@@ -5,8 +5,10 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
+from pgvector.sqlalchemy import VECTOR
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Computed,
     Date,
@@ -66,7 +68,9 @@ class MessageRow(Base):
     __tablename__ = "messages"
     __table_args__ = (
         UniqueConstraint("conversation_id", "seq"),
-        CheckConstraint("origin IN ('user', 'schedule')", name="origin"),
+        CheckConstraint(
+            "origin IN ('user', 'schedule', 'brief', 'handoff', 'watch')", name="origin"
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -77,7 +81,8 @@ class MessageRow(Base):
     role: Mapped[str] = mapped_column(Text)
     body: Mapped[dict[str, Any]] = mapped_column(JSONB)
     created_at: Mapped[datetime] = _created_at()
-    #: "schedule": a scheduled task's run started this turn, not the user typing it.
+    #: Who wrote it, when not the user: "schedule" (a scheduled task's run), "brief" (the work
+    #: a helper was given, in its own chat), "handoff" (helpers' reports, ADR 0028).
     origin: Mapped[str] = mapped_column(Text, server_default="user")
 
 
@@ -151,6 +156,8 @@ class ApprovalRow(Base):
     #: What the card says: the action in plain words, and what it changes (e.g. a diff).
     summary: Mapped[str | None] = mapped_column(Text)
     detail: Mapped[str | None] = mapped_column(Text)
+    #: Private details the card says the action includes ("This includes a health detail: …").
+    privacy: Mapped[list[str] | None] = mapped_column(JSONB)
     #: NULL while waiting; set once, by the user.
     approved: Mapped[bool | None]
     requested_at: Mapped[datetime] = _created_at()
@@ -229,6 +236,34 @@ class MemoryRow(Base):
         TSVECTOR,
         Computed("to_tsvector('english', coalesce(about, '') || ' ' || text)", persisted=True),
     )
+
+
+class DiscretionRuleRow(Base):
+    """A discretion rule the user stated (spec §12.5): what Enzo never shares with others.
+
+    Saved only from the user's own words (``quote``), never inferred. ``conversation_id`` set:
+    the rule holds in that chat only; NULL: in every chat. Removing a rule deletes it.
+    """
+
+    __tablename__ = "discretion_rules"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    #: The rule in plain words: "Don't mention my health to anyone".
+    text: Mapped[str] = mapped_column(Text)
+    #: The kinds of private detail it covers (``enzo.privacy.RULE_KINDS``), and its own words.
+    kinds: Mapped[list[str]] = mapped_column(JSONB)
+    words: Mapped[list[str]] = mapped_column(JSONB)
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    #: The user's words that stated it, from their message (the evidence, §6.5).
+    quote: Mapped[str] = mapped_column(Text)
+    #: Where it was said: the chat and the run (the same id as its log lines).
+    said_in: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    turn_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
 
 
 class JobRow(Base):
@@ -318,6 +353,116 @@ class JobRunRow(Base):
     outcome: Mapped[str] = mapped_column(Text, server_default="delivered")
 
 
+class HookRow(Base):
+    """A watch: Enzo checks something cheaply, with no model call, and wakes up only when it
+    changes (spec §9.4, ADR 0031). It starts off; the user turns it on after a dry run.
+
+    Like a scheduled task it has an owner (the user), a stop condition (``ends_at`` or
+    ``max_wakes``) and a delivery destination (the chat it was set in); a change runs in its
+    own chat (``chat_id``).
+    """
+
+    __tablename__ = "hooks"
+    __table_args__ = (
+        CheckConstraint("source IN ('page', 'email', 'calendar', 'pull_request')", name="source"),
+        CheckConstraint("rule IN ('changes', 'new', 'above', 'below', 'appears')", name="rule"),
+        CheckConstraint("status IN ('off', 'on', 'stopped', 'done', 'cancelled')", name="status"),
+        CheckConstraint("interval_s >= 60", name="interval"),
+        CheckConstraint("ends_at IS NOT NULL OR max_wakes IS NOT NULL", name="stop"),
+        Index(None, "status", "next_poll_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    #: What it watches, in the user's words: "the price of the blue kettle".
+    what: Mapped[str] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(Text)
+    #: Where and how to read it (a page and a selector, an email search, a pull request).
+    target: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    #: Who answers its checks: a site ("site:shop.example") or a service ("gmail"). A rate
+    #: limit stops every watch of that scope (§8.3).
+    scope: Mapped[str] = mapped_column(Text, index=True)
+    rule: Mapped[str] = mapped_column(Text)
+    threshold: Mapped[Decimal | None] = mapped_column(Numeric)
+    #: For "appears": the words to look for.
+    match: Mapped[str | None] = mapped_column(Text)
+    #: What Enzo does when it changes.
+    instruction: Mapped[str] = mapped_column(Text)
+    interval_s: Mapped[int] = mapped_column(Integer)
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    max_wakes: Mapped[int | None] = mapped_column(Integer)
+    wakes: Mapped[int] = mapped_column(Integer, server_default="0")
+    polls: Mapped[int] = mapped_column(Integer, server_default="0")
+    #: Checks that failed in a row: it backs off, then stops after a few.
+    failures: Mapped[int] = mapped_column(Integer, server_default="0")
+    last_error: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, server_default="off")
+    #: Why it stopped: rate_limited, auth, failing, ended, max_wakes.
+    stop_reason: Mapped[str | None] = mapped_column(Text)
+    #: The last reading: what is compared (a digest for long text) and what the user sees.
+    value: Mapped[str | None] = mapped_column(Text)
+    shown: Mapped[str | None] = mapped_column(Text)
+    number: Mapped[Decimal | None] = mapped_column(Numeric)
+    matched: Mapped[bool | None]
+    value_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The dry run the user saw before turning it on; turning it on starts from it.
+    dry_value: Mapped[str | None] = mapped_column(Text)
+    dry_shown: Mapped[str | None] = mapped_column(Text)
+    dry_number: Mapped[Decimal | None] = mapped_column(Numeric)
+    dry_matched: Mapped[bool | None]
+    dry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_poll_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: A check in progress since then: it is never claimed twice.
+    polling_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    timezone: Mapped[str] = mapped_column(Text)
+    chat_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    turn_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+    enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class HookEventRow(Base):
+    """A change a watch saw (one wake, recorded with the reading that caused it, so it runs once
+    even across restarts), or the watch stopping; with how its report went."""
+
+    __tablename__ = "hook_events"
+    __table_args__ = (
+        CheckConstraint("kind IN ('wake', 'stopped')", name="kind"),
+        CheckConstraint("state IN ('pending', 'running', 'done')", name="state"),
+        CheckConstraint(
+            "outcome IS NULL OR outcome IN ('reported', 'needs_approval', 'failed', 'stopped')",
+            name="outcome",
+        ),
+        Index(None, "state"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    hook_id: Mapped[int] = mapped_column(ForeignKey("hooks.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(Text)
+    #: The readings before and after the change, as the user sees them.
+    before: Mapped[str | None] = mapped_column(Text)
+    after: Mapped[str | None] = mapped_column(Text)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    state: Mapped[str] = mapped_column(Text, server_default="pending")
+    outcome: Mapped[str | None] = mapped_column(Text)
+    #: The report (the first line of the wake's answer), or why the watch stopped.
+    text: Mapped[str | None] = mapped_column(Text)
+    #: The chat it was set in, where the report shows, after this many of its messages.
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    position: Mapped[int | None] = mapped_column(Integer)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: It was a while after the change: Enzo was not running when it was seen.
+    late: Mapped[bool] = mapped_column(server_default="false")
+
+
 class GoalRow(Base):
     """Something the user is working toward, as a record, not free text (spec §6.4).
 
@@ -391,4 +536,138 @@ class GoalEventRow(Base):
         ForeignKey("conversations.id", ondelete="SET NULL")
     )
     turn_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+
+
+class ChunkRow(Base):
+    """A piece of what Enzo knows, kept for search by meaning (spec §6.3, ADR 0030).
+
+    Memories, goals, past chats (a turn at a time) and the long texts kept from them are cut into
+    chunks; each chunk keeps where it came from, so a hit is checked against its source before
+    the brain sees it. ``embedding`` is NULL until the indexer embeds it, and ``model`` says which
+    model made it: when the model changes, chunks are embedded again.
+    """
+
+    __tablename__ = "chunks"
+    __table_args__ = (
+        UniqueConstraint("key", "part"),
+        CheckConstraint("source IN ('memory', 'goal', 'turn', 'stored')", name="source"),
+        Index(None, "search", postgresql_using="gin"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    source: Mapped[str] = mapped_column(Text)
+    #: Which source: ``memory:12``, ``goal:3``, ``turn:<chat>:<seq>``, ``stored:<chat>:<id>``.
+    key: Mapped[str] = mapped_column(Text)
+    #: Its place within the source, from 0.
+    part: Mapped[int] = mapped_column(Integer)
+    memory_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memories.id", ondelete="CASCADE"), index=True
+    )
+    goal_id: Mapped[int | None] = mapped_column(
+        ForeignKey("goals.id", ondelete="CASCADE"), index=True
+    )
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    #: A turn: the messages it covers (their ``seq`` in the chat).
+    seq_from: Mapped[int | None] = mapped_column(Integer)
+    seq_to: Mapped[int | None] = mapped_column(Integer)
+    #: A stored text's id (``s_…``) and where in it this chunk starts, in characters.
+    stored_id: Mapped[str | None] = mapped_column(Text)
+    start: Mapped[int] = mapped_column(Integer, server_default="0")
+    text: Mapped[str] = mapped_column(Text)
+    #: The text's SHA-256: an unchanged chunk keeps its vector when its source is read again.
+    digest: Mapped[str] = mapped_column(Text)
+    #: Outside content (a page, a file): shown fenced, never recalled on its own.
+    untrusted: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    #: When what it says was said or written.
+    happened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    model: Mapped[str | None] = mapped_column(Text)
+    embedding: Mapped[Any] = mapped_column(VECTOR(), nullable=True)
+    created_at: Mapped[datetime] = _created_at()
+    search: Mapped[Any] = mapped_column(
+        TSVECTOR, Computed("to_tsvector('english', text)", persisted=True)
+    )
+
+
+class HelperRow(Base):
+    """A helper: a child agent doing work it was handed, in its own chat (spec §9.5, ADR 0028).
+
+    Its report goes to the chat that asked (``parent_id``); its notices show in the user's own
+    chat (``root_id``). A helper of a helper (depth 2) cannot hand work on.
+    """
+
+    __tablename__ = "helpers"
+    __table_args__ = (
+        CheckConstraint("depth IN (1, 2)", name="depth"),
+        CheckConstraint(
+            "status IN ('working', 'waiting', 'done', 'failed', 'stopped', 'interrupted')",
+            name="status",
+        ),
+        CheckConstraint("restarts >= 0", name="restarts"),
+        Index(None, "status"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    #: The chat that handed it the work: its report goes there.
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL"), index=True
+    )
+    #: The user's own chat at the top: where its notices show.
+    root_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL"), index=True
+    )
+    #: Its own chat, where it works.
+    chat_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL"), unique=True
+    )
+    #: The helper that handed it the work (depth 2), if any.
+    coordinator_id: Mapped[int | None] = mapped_column(
+        ForeignKey("helpers.id", ondelete="SET NULL"), index=True
+    )
+    depth: Mapped[int] = mapped_column(Integer)
+    #: A short name the user sees: "Compare 5 laptops".
+    title: Mapped[str] = mapped_column(Text)
+    #: The message it was given: the task, the user's limits and what it needs to know.
+    brief: Mapped[str] = mapped_column(Text)
+    #: The user's own words that started the work, passed down to every helper below.
+    request: Mapped[str | None] = mapped_column(Text)
+    #: working, waiting (for the user's approval), or how it ended.
+    status: Mapped[str] = mapped_column(Text, server_default="working")
+    #: Its final answer, or why it did not finish: what the chat that asked reviews.
+    report: Mapped[str | None] = mapped_column(Text)
+    #: When the chat that asked took its report in (its brain saw it in a turn that ended).
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Times it picked up again after Enzo stopped while it worked.
+    restarts: Mapped[int] = mapped_column(Integer, server_default="0")
+    #: Who stopped it: "user", "parent" (the chat that asked) or "coordinator" (with its own).
+    stopped_by: Mapped[str | None] = mapped_column(Text)
+    #: The run that handed it the work (the same id as its log lines).
+    turn_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class HelperNoticeRow(Base):
+    """A line about a helper in the user's chat: it waits for approval, finished, was stopped…"""
+
+    __tablename__ = "helper_notices"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('started', 'waiting', 'done', 'failed', 'stopped', 'interrupted', 'resumed')",
+            name="kind",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    helper_id: Mapped[int] = mapped_column(ForeignKey("helpers.id", ondelete="CASCADE"), index=True)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(Text)
+    #: In plain words, without tool names: "Helper #3 “Compare 5 laptops” finished."
+    text: Mapped[str] = mapped_column(Text)
+    #: Shown after this many of the chat's messages.
+    after: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = _created_at()
