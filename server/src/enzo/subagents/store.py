@@ -43,6 +43,12 @@ class Helper:
     stopped_by: str | None
     created_at: datetime
     finished_at: datetime | None
+    #: The workflow step it does (ADR 0032): its report goes to the workflow, not to a chat.
+    step_id: int | None = None
+    #: The only tools it may use (None: every tool), those that always ask first, its limit.
+    tools: tuple[str, ...] | None = None
+    ask: tuple[str, ...] = ()
+    max_steps: int | None = None
 
     @property
     def open(self) -> bool:
@@ -68,8 +74,8 @@ class HelperStore:
     async def add(  # noqa: PLR0913 - one helper's parts, keyword-only
         self,
         *,
-        parent_id: uuid.UUID,
-        root_id: uuid.UUID,
+        parent_id: uuid.UUID | None,
+        root_id: uuid.UUID | None,
         chat_id: uuid.UUID,
         coordinator_id: int | None,
         depth: int,
@@ -77,6 +83,10 @@ class HelperStore:
         brief: str,
         request: str | None,
         turn_id: str | None,
+        step_id: int | None = None,
+        tools: tuple[str, ...] | None = None,
+        ask: tuple[str, ...] = (),
+        max_steps: int | None = None,
     ) -> Helper:
         async with self._sessions.begin() as session:
             row = HelperRow(
@@ -90,6 +100,10 @@ class HelperStore:
                 request=request,
                 turn_id=turn_id,
                 status="working",
+                step_id=step_id,
+                tools=None if tools is None else list(tools),
+                ask=list(ask) if ask else None,
+                max_steps=max_steps,
             )
             session.add(row)
             await session.flush()
@@ -105,6 +119,12 @@ class HelperStore:
         """The helper that works in this chat, if it is a helper's chat."""
         async with self._sessions() as session:
             row = await session.scalar(select(HelperRow).where(HelperRow.chat_id == chat_id))
+            return _helper(row) if row is not None else None
+
+    async def by_step(self, step_id: int) -> Helper | None:
+        """The helper that does this workflow step, if it was started."""
+        async with self._sessions() as session:
+            row = await session.scalar(select(HelperRow).where(HelperRow.step_id == step_id))
             return _helper(row) if row is not None else None
 
     async def open(self) -> list[Helper]:
@@ -269,4 +289,8 @@ def _helper(row: HelperRow) -> Helper:
         stopped_by=row.stopped_by,
         created_at=row.created_at,
         finished_at=row.finished_at,
+        step_id=row.step_id,
+        tools=None if row.tools is None else tuple(row.tools),
+        ask=tuple(row.ask or ()),
+        max_steps=row.max_steps,
     )

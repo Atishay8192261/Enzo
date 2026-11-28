@@ -253,6 +253,22 @@ class ToolRegistry:
     def get(self, name: str) -> Tool[Any, Any] | None:
         return self._tools.get(name)
 
+    def only(self, names: Iterable[str], *, ask: Iterable[str] = ()) -> "ToolRegistry":
+        """A view with only these tools (a workflow step's allowlist, ADR 0032): any other call
+        is an unknown tool and never runs. Tools in ``ask`` always wait for the user's approval
+        here, even those that normally do not; a tool that asks always still asks. Tools that
+        are not registered now (an account was disconnected) are left out."""
+        asking = set(ask)
+        view = ToolRegistry(retain=self.retain)
+        for name in dict.fromkeys(names):
+            t = self._tools.get(name)
+            if t is None:
+                continue
+            if name in asking and not t.requires_approval:
+                t = dataclasses.replace(t, requires_approval=True, summary=t.summary or t.activity)
+            view._tools[name] = t
+        return view
+
     def specs(self, names: Sequence[str] | None = None, *, vision: bool = True) -> list[ToolSpec]:
         """Specs for the brain; ``names`` loads only the tools a task needs (§3 step 2).
         ``vision``: the brain can see images (else tools that show it one are left out)."""

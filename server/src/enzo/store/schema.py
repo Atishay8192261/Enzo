@@ -647,6 +647,15 @@ class HelperRow(Base):
     turn_id: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = _created_at()
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The workflow step it does (ADR 0032): its report goes to the workflow, not to a chat.
+    step_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflow_steps.id", ondelete="SET NULL"), unique=True
+    )
+    #: The only tools it may use (None: every tool), and those that always ask first here.
+    tools: Mapped[list[str] | None] = mapped_column(JSONB)
+    ask: Mapped[list[str] | None] = mapped_column(JSONB)
+    #: Steps its turn may take (None: the helpers' limit).
+    max_steps: Mapped[int | None] = mapped_column(Integer)
 
 
 class HelperNoticeRow(Base):
@@ -668,6 +677,132 @@ class HelperNoticeRow(Base):
     kind: Mapped[str] = mapped_column(Text)
     #: In plain words, without tool names: "Helper #3 “Compare 5 laptops” finished."
     text: Mapped[str] = mapped_column(Text)
+    #: Shown after this many of the chat's messages.
+    after: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = _created_at()
+
+
+class WorkflowRunRow(Base):
+    """One run of a workflow (spec §9.6, ADR 0032): the plan it ran (name, version, fingerprint
+    and the whole definition, as it was), its inputs, and how it ended. Its notices and result
+    go to the chat it was started from (``conversation_id``)."""
+
+    __tablename__ = "workflow_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('running', 'waiting', 'done', 'failed', 'stopped', 'interrupted')",
+            name="status",
+        ),
+        CheckConstraint("started_by IN ('user', 'enzo', 'schedule')", name="started_by"),
+        CheckConstraint("restarts >= 0", name="restarts"),
+        Index(None, "status"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    #: The workflow's name in code ("compare-products"), and its title for people.
+    workflow: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text)
+    version: Mapped[int] = mapped_column(Integer)
+    #: A hash of the whole definition: a changed definition is a new version.
+    fingerprint: Mapped[str] = mapped_column(Text)
+    #: The definition as it ran: a resumed run follows the plan it started with.
+    definition: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    inputs: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL"), index=True
+    )
+    #: Who started it: the user (a command), Enzo (asked in a chat), or a scheduled task.
+    started_by: Mapped[str] = mapped_column(Text)
+    #: running, waiting (a step waits for the user's approval), or how it ended.
+    status: Mapped[str] = mapped_column(Text, server_default="running")
+    #: The last step's output: what the user gets.
+    result: Mapped[str | None] = mapped_column(Text)
+    #: Why it did not finish, in plain words.
+    error: Mapped[str | None] = mapped_column(Text)
+    stopped_by: Mapped[str | None] = mapped_column(Text)
+    #: Times it picked up again after Enzo stopped while it worked.
+    restarts: Mapped[int] = mapped_column(Integer, server_default="0")
+    #: When the chat's brain took in its result (it rides with the chat's next message once).
+    seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The run (one send or resume) that started it: the same id as its log lines.
+    turn_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WorkflowStepRow(Base):
+    """One step of a run: a helper's turn (one per item of a fan-out step). It records what it
+    was given (``input``), what it gave back (``output``), the agent that did it and what it
+    used (spec §9.6 "each step must record its input, output, and agent used")."""
+
+    __tablename__ = "workflow_steps"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'working', 'waiting', 'done', 'failed', 'stopped', "
+            "'interrupted', 'skipped')",
+            name="status",
+        ),
+        UniqueConstraint("run_id", "step_index", "item_index"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("workflow_runs.id", ondelete="CASCADE"), index=True
+    )
+    #: The step's place in the plan, and the item's place in a fan-out (0 for a single step).
+    step_index: Mapped[int] = mapped_column(Integer)
+    item_index: Mapped[int] = mapped_column(Integer)
+    #: The step's name in code ("read"), and its title for people ("Read shop.example/kettle").
+    step: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text)
+    #: The item of a fan-out step (a page's address); None for a single step.
+    item: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, server_default="pending")
+    #: The brief as the helper got it, and its report.
+    input: Mapped[str | None] = mapped_column(Text)
+    output: Mapped[str | None] = mapped_column(Text)
+    #: The tools it could use, and those that asked first in this step.
+    tools: Mapped[list[str]] = mapped_column(JSONB)
+    ask: Mapped[list[str]] = mapped_column(JSONB)
+    #: The agent that did it: its brains and models, in the order they first answered.
+    brains: Mapped[list[str] | None] = mapped_column(JSONB)
+    models: Mapped[list[str] | None] = mapped_column(JSONB)
+    #: What it used: model calls, tool calls, tokens, cost (None: some call has no price).
+    calls: Mapped[int] = mapped_column(Integer, server_default="0")
+    tool_calls: Mapped[int] = mapped_column(Integer, server_default="0")
+    input_tokens: Mapped[int] = mapped_column(Integer, server_default="0")
+    output_tokens: Mapped[int] = mapped_column(Integer, server_default="0")
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(14, 8))
+    #: Some call was paid by the user's ChatGPT plan.
+    plan: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WorkflowNoticeRow(Base):
+    """A line about a workflow run in the chat it was started from; a finished run's carries
+    its result, shown under it."""
+
+    __tablename__ = "workflow_notices"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('started', 'waiting', 'resumed', 'done', 'failed', 'stopped', "
+            "'interrupted')",
+            name="kind",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("workflow_runs.id", ondelete="CASCADE"), index=True
+    )
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(Text)
+    #: In plain words, without tool names: "Workflow “Compare products” (run #3) finished."
+    text: Mapped[str] = mapped_column(Text)
+    result: Mapped[str | None] = mapped_column(Text)
     #: Shown after this many of the chat's messages.
     after: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = _created_at()

@@ -9,7 +9,7 @@ import logging
 import time
 import uuid
 from collections import Counter
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from importlib import resources
@@ -118,6 +118,14 @@ class TurnPlan:
     checkpoint: bool = False
     #: The reports this turn hands to the brain (helper ids), to mark as delivered once it ends.
     carrying: tuple[int, ...] = ()
+    #: The only tools the turn may use (a workflow step, ADR 0032); None: every tool.
+    tools: tuple[str, ...] | None = None
+    #: Tools that always wait for the user's approval in this turn.
+    ask: tuple[str, ...] = ()
+
+
+#: Something each new message in a chat carries for the brain (workflow runs, ADR 0032).
+type NoteSource = Callable[[uuid.UUID], Awaitable[str | None]]
 
 
 class TurnPlanner(Protocol):
@@ -195,9 +203,14 @@ class ConversationService:
         self._background: set[uuid.UUID] = set()
         #: Chats where a user's message waits for such a turn to end.
         self._waiting: Counter[uuid.UUID] = Counter()
+        self._note_sources: tuple[NoteSource, ...] = ()
 
     def add_hook(self, hook: TurnHooks) -> None:
         self._hooks = (*self._hooks, hook)
+
+    def add_notes(self, source: NoteSource) -> None:
+        """``source`` adds a note for the brain to each new message in a chat."""
+        self._note_sources = (*self._note_sources, source)
 
     async def require(self, conversation_id: uuid.UUID) -> ConversationInfo:
         info = await self.store.conversation(conversation_id)
@@ -285,6 +298,9 @@ class ConversationService:
             notes += [rules] if rules else []
         plan = await self._plan(conversation_id, message=True)
         notes += plan.notes
+        for source in self._note_sources:
+            noted = await source(conversation_id)
+            notes += [noted] if noted else []
         prompt = compose_prompt(
             system=self._system,
             developer=self._developer,
@@ -507,7 +523,7 @@ class ConversationService:
 
             async for event in run_turn(
                 self.router,
-                self.registry,
+                self._tools_for(plan),
                 prompt,
                 task=task,
                 decisions=decisions,
@@ -553,6 +569,12 @@ class ConversationService:
                     await self.planner.turn_done(info.id, plan, done)
                 except Exception:  # a planner must never break the turn that ended
                     log.exception("turn planner failed")
+
+    def _tools_for(self, plan: TurnPlan) -> ToolRegistry:
+        """A workflow step may use only its own tools (ADR 0032): any other call never runs."""
+        if plan.tools is None:
+            return self.registry
+        return self.registry.only(plan.tools, ask=plan.ask)
 
     async def _ended(self, conversation_id: uuid.UUID, stop: StopReason | None) -> None:
         for hook in self._hooks:

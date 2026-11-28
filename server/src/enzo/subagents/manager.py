@@ -13,11 +13,12 @@
 
 import asyncio
 import contextvars
+import dataclasses
 import logging
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Sequence
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, Protocol
 
 from enzo.agent.loop import TurnOutcome
 from enzo.agent.service import (
@@ -62,6 +63,17 @@ class HelperRefusedError(ValueError):
     """Why a helper was not started or stopped, in plain words for the brain."""
 
 
+#: What a listener hears: a notice's kind, or "working" (an approval was answered).
+type Change = NoticeKind | Literal["working"]
+
+
+class HelperListener(Protocol):
+    """Hears how every helper is doing (workflows, ADR 0032: a step is a helper)."""
+
+    async def helper_changed(self, helper: Helper, change: Change, detail: str | None) -> None:
+        """``helper`` as it is now. ``detail``: for "waiting", the action it asks to approve."""
+
+
 class Subagents:
     """The helpers of this gateway. It shapes each chat's turns (``TurnPlanner``) and hears when
     one is stopped (``TurnHooks``)."""
@@ -91,8 +103,12 @@ class Subagents:
         #: Turns whose end is being handled right now (a report may be handed on next).
         self._handling = 0
         self._starting = asyncio.Lock()
+        self._listeners: list[HelperListener] = []
         service.planner = self
         service.add_hook(self)
+
+    def listen(self, listener: HelperListener) -> None:
+        self._listeners.append(listener)
 
     @property
     def busy(self) -> bool:
@@ -117,6 +133,10 @@ class Subagents:
             raise HelperRefusedError(msg)
         above = await self.store.by_chat(parent)
         depth = (above.depth if above else 0) + 1
+        if above is not None and above.step_id is not None:
+            log.info("child.refused", extra={"reason": "workflow_step"})
+            msg = "A workflow step cannot hand work on: do this part yourself."
+            raise HelperRefusedError(msg)
         if depth > MAX_DEPTH:
             log.info("child.refused", extra={"reason": "depth", "depth": depth})
             msg = (
@@ -168,6 +188,56 @@ class Subagents:
         self._spawn(self._work(helper, resume=False, timezone=timezone_var.get()), chat)
         return helper
 
+    async def start_step(  # noqa: PLR0913 - one step's settings, all keyword-only
+        self,
+        *,
+        step_id: int,
+        root: uuid.UUID | None,
+        title: str,
+        brief: str,
+        tools: Sequence[str],
+        ask: Sequence[str] = (),
+        max_steps: int | None = None,
+        timezone: str | None = None,
+    ) -> Helper:
+        """Start a workflow step (ADR 0032): a helper with a fixed brief that may use only
+        ``tools`` (those in ``ask`` always wait for approval), whose report goes back to the
+        workflow, not to a chat. ``root``: the chat the run reports to. Refused when Enzo is
+        shutting down or too many helpers work already (the workflow starts it later)."""
+        if self._closing:
+            msg = "Enzo is shutting down."
+            raise HelperRefusedError(msg)
+        name = plain_words(title, 60)
+        async with self._starting:
+            working = await self.store.working()
+            if working >= self._max:
+                log.info("child.refused", extra={"reason": "cap", "working": working})
+                msg = f"{working} helpers are working already, the most at once."
+                raise HelperRefusedError(msg)
+            chat = await self.service.store.create_conversation("side", f"Workflow step: {name}")
+            helper = await self.store.add(
+                parent_id=None,
+                root_id=root,
+                chat_id=chat,
+                coordinator_id=None,
+                depth=1,
+                title=name,
+                brief=brief,
+                request=None,
+                turn_id=turn_var.get(),
+                step_id=step_id,
+                tools=tuple(tools),
+                ask=tuple(ask),
+                max_steps=max_steps,
+            )
+        log.info(
+            "child.start",
+            extra={"helper": helper.id, "depth": 1, "step": step_id, "working": working + 1},
+        )
+        self._publish(helper, "working")
+        self._spawn(self._work(helper, resume=False, timezone=timezone), chat)
+        return helper
+
     async def _work(self, helper: Helper, *, resume: bool, timezone: str | None = None) -> None:
         """The helper's turn, in the background: from its brief, or from its saved steps."""
         chat = helper.chat_id
@@ -176,7 +246,8 @@ class Subagents:
             if resume:
                 events = await self.service.resume(chat, background=True)
             else:
-                meta = TurnMeta(timezone=timezone, device="helper", note=helper_note(helper))
+                note = step_note(helper) if helper.step_id is not None else helper_note(helper)
+                meta = TurnMeta(timezone=timezone, device="helper", note=note)
                 events = await self.service.send(
                     chat, helper.brief, meta, origin="brief", background=True
                 )
@@ -198,6 +269,7 @@ class Subagents:
         waiting = helper is not None and helper.status == "waiting"
         if helper is not None and waiting and await self.store.set_status(helper.id, "working"):
             self._publish(helper, "working")
+            await self._tell(dataclasses.replace(helper, status="working"), "working")
         notes: list[str] = []
         carrying: tuple[int, ...] = ()
         if message:
@@ -208,11 +280,15 @@ class Subagents:
             working = await self.store.open_for(conversation_id)
             if working:
                 notes.append(working_note(working))
+        fixed = helper if own and helper is not None and helper.tools is not None else None
         return TurnPlan(
             notes=tuple(notes),
-            max_steps=self._steps if own else None,
+            max_steps=((fixed and fixed.max_steps) or self._steps) if own else None,
             checkpoint=own,
             carrying=carrying,
+            # A workflow step uses only its own tools, with its own approvals (ADR 0032).
+            tools=fixed.tools if fixed else None,
+            ask=fixed.ask if fixed else (),
         )
 
     async def step_saved(self, conversation_id: uuid.UUID) -> None:
@@ -259,7 +335,8 @@ class Subagents:
                 words = f"Helper #{helper.id} “{helper.title}” waits for your approval"
                 words += f": {plain_words(what, 160)}" if what else "."
                 log.info("child.waiting", extra={"helper": helper.id})
-                await self._say(helper, "waiting", words, notify=True)
+                waits = dataclasses.replace(helper, status="waiting")
+                await self._say(waits, "waiting", words, notify=True, detail=what)
             return
         if outcome.stop == "cancelled":  # stopped: by now it is closed (this is a safety net)
             await self._stop(helper, "user")
@@ -450,14 +527,31 @@ class Subagents:
     # Telling the user.
 
     async def _say(
-        self, helper: Helper, kind: NoticeKind, words: str, *, notify: bool = False
+        self,
+        helper: Helper,
+        kind: NoticeKind,
+        words: str,
+        *,
+        notify: bool = False,
+        detail: str | None = None,
     ) -> None:
         """A line in the user's chat, an event for open apps, and (for what matters) a desktop
-        notification."""
-        await self.store.notice(helper, kind, words)
-        self._publish(helper, kind, words)
-        if notify:
-            await self._notify("Enzo: helper", words)
+        notification. A workflow step's news is the workflow's to tell (ADR 0032)."""
+        if helper.step_id is None:
+            await self.store.notice(helper, kind, words)
+            self._publish(helper, kind, words)
+            if notify:
+                await self._notify("Enzo: helper", words)
+        else:
+            self._publish(helper, kind)
+        await self._tell(helper, kind, detail)
+
+    async def _tell(self, helper: Helper, change: Change, detail: str | None = None) -> None:
+        for listener in self._listeners:
+            try:
+                await listener.helper_changed(helper, change, detail)
+            except Exception:  # a listener must never break the helper it hears about
+                log.exception("child.listener_failed", extra={"helper": helper.id})
 
     def _publish(self, helper: Helper, status: str, words: str | None = None) -> None:
         self._bus.publish(
@@ -567,6 +661,19 @@ def helper_note(helper: Helper) -> str:
             "their reports come back here, and they cannot hand work on."
         )
     return f"{note} You cannot hand work to other helpers: do it all yourself."
+
+
+def step_note(helper: Helper) -> str:
+    """What a workflow step's brain is told about its situation (ADR 0032)."""
+    return (
+        f"This chat is one step of a workflow Enzo runs (helper #{helper.id}): do exactly the "
+        "work above, with only the tools you have here. The user is not watching this chat: do "
+        "not ask them anything; where something is unclear, choose what fits and say what you "
+        "assumed. Steps that need the user's approval still wait for it here. Do not save "
+        "memories. You cannot hand work to helpers. Your final answer is this step's output: "
+        "the workflow passes it on as data, so give exactly what the work above asks for, in the "
+        "form it asks for, with sources."
+    )
 
 
 def reports_note(reports: Sequence[Helper]) -> str:
