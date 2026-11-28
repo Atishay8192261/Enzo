@@ -1,7 +1,8 @@
 """When a repeating reminder comes next, in the user's own clock (spec §9.3).
 
 Repeats are counted in local wall time: "every day at 9:00" stays at 9:00 across a daylight-saving
-change, and "every month on the 31st" falls on the last day of shorter months. Hourly repeats
+change, "every month on the 31st" falls on the last day of shorter months, and "every year on 29
+Feb" on 28 Feb in other years (a birthday reminder, ADR 0036). Hourly repeats
 count real hours. A wall time that does not exist on a given day (the hour skipped in spring)
 comes out an hour later, as clocks show it.
 """
@@ -11,7 +12,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-type Repeat = Literal["once", "hourly", "daily", "weekdays", "weekly", "monthly"]
+type Repeat = Literal["once", "hourly", "daily", "weekdays", "weekly", "monthly", "yearly"]
 
 #: How far ahead an occurrence is searched for: a schedule has one long before this.
 _SEARCH = 2000
@@ -64,8 +65,8 @@ def occurrence(first: datetime, repeat: Repeat, every: int, n: int) -> datetime:
         day = day + timedelta(weeks=every * n)
     elif repeat == "weekdays":
         day = _weekday_after(day, n)
-    else:  # monthly
-        months = day.month - 1 + every * n
+    else:  # monthly, yearly: the same day of the month, or the month's last when it is shorter
+        months = day.month - 1 + every * n * (12 if repeat == "yearly" else 1)
         year, month = day.year + months // 12, months % 12 + 1
         day = date(year, month, min(first.day, calendar.monthrange(year, month)[1]))
     wall = datetime.combine(day, first.timetz().replace(tzinfo=None))
@@ -107,6 +108,7 @@ def _estimate(first: datetime, repeat: Repeat, every: int, after: datetime) -> i
         "weekly": timedelta(weeks=every),
         "weekdays": timedelta(days=7 / 5),
         "monthly": timedelta(days=28 * every),
+        "yearly": timedelta(days=366 * every),
     }[repeat]
     # Two steps back from the estimate absorbs clock changes and short months.
     return max(0, int(span / per) - 2) if repeat != "monthly" else max(0, int(span / per) // 2)
@@ -126,5 +128,8 @@ def describe(first: datetime, repeat: Repeat, every: int) -> str:
     if repeat == "weekly":
         unit = "every week" if every == 1 else f"every {every} weeks"
         return f"{unit} on {first:%A} at {clock}"
+    if repeat == "yearly":
+        unit = "every year" if every == 1 else f"every {every} years"
+        return f"{unit} on {first:%-d %b} at {clock}"
     unit = "every month" if every == 1 else f"every {every} months"
     return f"{unit} on day {first.day} at {clock}"

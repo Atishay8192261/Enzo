@@ -38,10 +38,10 @@ _AT: Any = Field(
 )
 _REPEAT: Any = Field(
     default="once",
-    description="once, or hourly, daily, weekdays (Monday to Friday), weekly or monthly.",
+    description="once, or hourly, daily, weekdays (Monday to Friday), weekly, monthly or yearly.",
 )
 _EVERY: Any = Field(
-    default=1, ge=1, le=366, description="Repeat every this many hours/days/weeks/months."
+    default=1, ge=1, le=366, description="Repeat every this many hours/days/weeks/months/years."
 )
 _UNTIL: Any = Field(default=None, description="For a repeat: the last local date it may run on.")
 _TIMES: Any = Field(default=None, ge=1, le=1000, description="For a repeat: stop after this many.")

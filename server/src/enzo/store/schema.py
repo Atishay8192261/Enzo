@@ -278,7 +278,7 @@ class JobRow(Base):
     __table_args__ = (
         CheckConstraint("kind IN ('reminder', 'task')", name="kind"),
         CheckConstraint(
-            "repeat IN ('once', 'hourly', 'daily', 'weekdays', 'weekly', 'monthly')",
+            "repeat IN ('once', 'hourly', 'daily', 'weekdays', 'weekly', 'monthly', 'yearly')",
             name="repeat",
         ),
         CheckConstraint("status IN ('active', 'done', 'cancelled')", name="status"),
@@ -539,6 +539,201 @@ class GoalEventRow(Base):
     created_at: Mapped[datetime] = _created_at()
 
 
+class PersonRow(Base):
+    """Someone in the user's life, as a record (spec §6.4, ADR 0036): who they are is their name
+    and the other names they go by; everything Enzo knows about them is a ``person_facts`` row,
+    each with its evidence."""
+
+    __tablename__ = "people"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    name: Mapped[str] = mapped_column(Text)
+    #: When the name was last set (written, or corrected): People.md edits compare against it.
+    named_at: Mapped[datetime] = _created_at()
+    #: Where Enzo first heard of them: the chat and the run ("People.md": added there by hand).
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    turn_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+
+
+class PersonAliasRow(Base):
+    """Another name someone goes by ("Mom", "Pri"): Enzo knows them when it is said."""
+
+    __tablename__ = "person_aliases"
+    __table_args__ = (Index(None, "person_id", text("lower(alias)"), unique=True),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="CASCADE"))
+    alias: Mapped[str] = mapped_column(Text)
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    turn_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+
+
+class PersonFactRow(Base):
+    """One thing Enzo knows about a person, with its evidence (spec §6.5): who said it, when, and
+    in which chat. A correction is a new row naming the one it ``replaces``; the old one is kept,
+    replaced, and never used again (never two truths). A person has one relation to the user and
+    one birthday at a time; a ``tie`` says how they relate to someone else ("Priya is Sam's
+    sister": Priya's fact, ``other_id`` Sam, text "sister")."""
+
+    __tablename__ = "person_facts"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('relation', 'birthday', 'likes', 'food', 'contact', 'other', 'tie')",
+            name="kind",
+        ),
+        CheckConstraint("said_by IN ('user', 'inferred')", name="said_by"),
+        CheckConstraint("status IN ('active', 'replaced')", name="status"),
+        CheckConstraint("(kind = 'tie') = (other_id IS NOT NULL)", name="tie"),
+        CheckConstraint(
+            "kind <> 'birthday' OR (month BETWEEN 1 AND 12 AND day BETWEEN 1 AND 31)",
+            name="birthday",
+        ),
+        # One current relation to the user and one birthday each; one current tie to each person.
+        Index(
+            "ix_person_facts_one_current",
+            "person_id",
+            "kind",
+            unique=True,
+            postgresql_where=text("status = 'active' AND kind IN ('relation', 'birthday')"),
+        ),
+        Index(
+            "ix_person_facts_one_tie",
+            "person_id",
+            "other_id",
+            unique=True,
+            postgresql_where=text("status = 'active' AND kind = 'tie'"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    person_id: Mapped[int] = mapped_column(
+        ForeignKey("people.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(Text)
+    #: The fact in plain words; a birthday's date in words; a tie's relation ("sister").
+    text: Mapped[str] = mapped_column(Text)
+    #: A tie: the other person.
+    other_id: Mapped[int | None] = mapped_column(
+        ForeignKey("people.id", ondelete="CASCADE"), index=True
+    )
+    #: A birthday: its month and day, and the year when known.
+    month: Mapped[int | None] = mapped_column(Integer)
+    day: Mapped[int | None] = mapped_column(Integer)
+    year: Mapped[int | None] = mapped_column(Integer)
+    #: "user": they said it. "inferred": Enzo concluded it (labelled as such, §6.5).
+    said_by: Mapped[str] = mapped_column(Text)
+    #: When it happened, for an event, when known (§6.5).
+    happened_on: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(Text, server_default="active")
+    replaces: Mapped[int | None] = mapped_column(
+        ForeignKey("person_facts.id", ondelete="CASCADE"), index=True
+    )
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    turn_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+
+
+class PersonLinkRow(Base):
+    """A goal, reminder or task about someone ("Plan Mom's party"); ``days_before`` marks a
+    yearly birthday reminder (it moves when the birthday is corrected)."""
+
+    __tablename__ = "person_links"
+    __table_args__ = (
+        CheckConstraint("(goal_id IS NULL) <> (job_id IS NULL)", name="one"),
+        CheckConstraint("days_before IS NULL OR days_before BETWEEN 0 AND 60", name="days"),
+        UniqueConstraint("person_id", "goal_id", name="uq_person_links_goal"),
+        UniqueConstraint("person_id", "job_id", name="uq_person_links_job"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    person_id: Mapped[int] = mapped_column(
+        ForeignKey("people.id", ondelete="CASCADE"), index=True
+    )
+    goal_id: Mapped[int | None] = mapped_column(
+        ForeignKey("goals.id", ondelete="CASCADE"), index=True
+    )
+    job_id: Mapped[int | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="CASCADE"), index=True
+    )
+    days_before: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = _created_at()
+
+
+class TrackedItemRow(Base):
+    """Something the user is waiting on or keeping track of (spec §6.4): a thing lent or
+    borrowed, money owed either way, a refund or reply they wait for. Its status changes only on
+    evidence, kept in ``tracked_events``."""
+
+    __tablename__ = "tracked_items"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('lent', 'borrowed', 'owed_to_me', 'i_owe', 'waiting_for', 'other')",
+            name="kind",
+        ),
+        CheckConstraint("status IN ('open', 'done', 'dropped')", name="status"),
+        Index(None, "status"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    title: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(Text)
+    #: Who it is with, when it is someone Enzo knows.
+    person_id: Mapped[int | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"), index=True
+    )
+    status: Mapped[str] = mapped_column(Text, server_default="open")
+    #: The user's local date it is due back or expected by, if any.
+    due_on: Mapped[date | None] = mapped_column(Date)
+    #: Where its papers live in the user's Enzo folder ("receipts/acme.pdf"), if anywhere.
+    path: Mapped[str | None] = mapped_column(Text)
+    #: What remains for it to be settled, in words.
+    remains: Mapped[str | None] = mapped_column(Text)
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    turn_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TrackedEventRow(Base):
+    """One change of a tracked item and what it rests on (spec §6.4, §6.5)."""
+
+    __tablename__ = "tracked_events"
+    __table_args__ = (
+        CheckConstraint("change IN ('created', 'updated', 'done', 'dropped')", name="change"),
+        CheckConstraint(
+            "basis IS NULL OR basis IN ('user_confirmed', 'verified', 'timeline_ended')",
+            name="basis",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    item_id: Mapped[int] = mapped_column(
+        ForeignKey("tracked_items.id", ondelete="CASCADE"), index=True
+    )
+    change: Mapped[str] = mapped_column(Text)
+    #: An update: what changed, in words ("due 2026-12-05").
+    detail: Mapped[str | None] = mapped_column(Text)
+    evidence: Mapped[str | None] = mapped_column(Text)
+    basis: Mapped[str | None] = mapped_column(Text)
+    source: Mapped[str | None] = mapped_column(Text)
+    happened_on: Mapped[date | None] = mapped_column(Date)
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    turn_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+
+
 class ChunkRow(Base):
     """A piece of what Enzo knows, kept for search by meaning (spec §6.3, ADR 0030).
 
@@ -551,13 +746,16 @@ class ChunkRow(Base):
     __tablename__ = "chunks"
     __table_args__ = (
         UniqueConstraint("key", "part"),
-        CheckConstraint("source IN ('memory', 'goal', 'turn', 'stored')", name="source"),
+        CheckConstraint(
+            "source IN ('memory', 'goal', 'turn', 'stored', 'person', 'tracked')", name="source"
+        ),
         Index(None, "search", postgresql_using="gin"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     source: Mapped[str] = mapped_column(Text)
-    #: Which source: ``memory:12``, ``goal:3``, ``turn:<chat>:<seq>``, ``stored:<chat>:<id>``.
+    #: Which source: ``memory:12``, ``goal:3``, ``person:2``, ``tracked:4``, ``turn:<chat>:<seq>``,
+    #: ``stored:<chat>:<id>``.
     key: Mapped[str] = mapped_column(Text)
     #: Its place within the source, from 0.
     part: Mapped[int] = mapped_column(Integer)
@@ -566,6 +764,12 @@ class ChunkRow(Base):
     )
     goal_id: Mapped[int | None] = mapped_column(
         ForeignKey("goals.id", ondelete="CASCADE"), index=True
+    )
+    person_id: Mapped[int | None] = mapped_column(
+        ForeignKey("people.id", ondelete="CASCADE"), index=True
+    )
+    tracked_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tracked_items.id", ondelete="CASCADE"), index=True
     )
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE"), index=True
